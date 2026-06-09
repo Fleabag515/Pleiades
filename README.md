@@ -35,6 +35,42 @@ you ─▶ Pleiades engine ─▶ Anamnesis character proxy ─▶ Pleiades infe
 
 ## Install
 
+### One-line install (recommended)
+
+Installs everything — repo, virtualenv, the in-process inference engine (with
+**auto-detected GPU** build), Anamnesis, the headed browser, a generated `.env`,
+and SearXNG — in one command.
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.ps1 | iex
+```
+
+The installer auto-installs Python and Node where it can (apt/dnf/pacman/zypper,
+Homebrew, or winget), detects an NVIDIA/Apple GPU and builds `llama-cpp-python`
+accordingly (falling back to CPU), and detects Docker for SearXNG (guiding you if
+it's missing). Options (pass after the pipe on Linux, e.g.
+`... | bash -s -- --gpu --dir ~/apps/Pleiades`; as parameters on Windows):
+
+| Option (sh / ps1)            | Effect                                            |
+|------------------------------|---------------------------------------------------|
+| `--dir DIR` / `-Dir`         | Install location (default `~/Pleiades`)           |
+| `--branch N` / `-Branch`     | Git branch (default `main`)                        |
+| `--gpu` `--cpu` / `-Gpu`     | Force GPU or CPU build (default: auto-detect)      |
+| `--core` / `-Core`           | Core only — skip browser, SearXNG, Discord        |
+| `--no-browser` / `-NoBrowser`| Skip Camoufox                                      |
+| `--no-searxng` / `-NoSearxng`| Skip SearXNG                                       |
+| `--no-discord` / `-NoDiscord`| Skip the Discord extra                            |
+
+### Manual install
+
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[all]"          # core + browser + discord

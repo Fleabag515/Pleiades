@@ -134,6 +134,8 @@ pleiades/
 ├── .gitignore                      # python + ~/.pleiades secrets never committed
 ├── .env.example                    # master key, model path, inference + searxng URLs
 ├── docker-compose.yml              # SearXNG service
+├── install.sh                      # one-line installer (Linux/macOS): prereqs, GPU autodetect, full stack
+├── install.ps1                     # one-line installer (Windows): winget prereqs, CUDA autodetect, full stack
 ├── services/searxng/settings.yml   # SearXNG config WITH json format enabled
 └── pleiades/
     ├── __init__.py
@@ -233,6 +235,13 @@ the inference server, the Discord bot); GitHub (`gh repo create` — repo doesn'
 - **Anamnesis installed** — `npm install -g anamnesis`; `anamnesis status`.
 
 ## 7. First-session checklist
+
+> **Automated path:** end users install via the one-liners in README —
+> `curl -fsSL .../install.sh | bash` (Linux/macOS) or `irm .../install.ps1 | iex`
+> (Windows). They do hybrid prereq handling (auto-install Python/Node, guide for
+> Docker), auto-detect GPU for the `llama-cpp-python` build, clone, venv, install
+> `pleiades[all]`, install Anamnesis, `camoufox fetch`, generate `.env`, and start
+> SearXNG. The manual steps below are the same sequence for development.
 
 1. Confirm `pyproject.toml` + this file present.
 2. `gh repo create Pleiades --private --source . --remote origin` (or add remote
