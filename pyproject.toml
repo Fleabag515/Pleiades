@@ -1,0 +1,37 @@
+[project]
+name = "pleiades"
+version = "0.1.0"
+description = "A self-contained inference workstation for LLM agents — Pleiades runs the model itself (in-process llama.cpp), with memory via Anamnesis and built-in web search, browser control, email, a password vault, and Discord hosting. One profile per Anamnesis character."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Fleabag515" }]
+
+dependencies = [
+    "llama-cpp-python[server]>=0.3",  # OUR inference engine: loads GGUF, serves an OpenAI-compatible endpoint in-process
+    "openai>=1.30",                   # client to the Anamnesis character proxy (OpenAI-compatible)
+    "httpx>=0.27",                    # Anamnesis control API + SearXNG
+    "click>=8.1",                     # CLI
+    "rich>=13.7",                     # pretty CLI / chat REPL
+    "cryptography>=42.0",             # vault encryption (Fernet)
+    "platformdirs>=4.2",              # cross-platform config paths
+]
+
+[project.optional-dependencies]
+browser = ["camoufox[geoip]>=0.4"]   # headed anti-fingerprint Firefox + Playwright
+discord = ["discord.py>=2.4"]
+all = ["camoufox[geoip]>=0.4", "discord.py>=2.4"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pleiades = "pleiades.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pleiades"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

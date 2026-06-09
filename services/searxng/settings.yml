@@ -1,0 +1,31 @@
+# SearXNG configuration for Pleiades.
+# CRITICAL: the `json` format MUST be enabled or the API returns 403 to Pleiades.
+
+use_default_settings: true
+
+general:
+  instance_name: "Pleiades Search"
+  debug: false
+
+server:
+  # Change this. Also settable via the SEARXNG_SECRET env var in docker-compose.yml.
+  secret_key: "change-me-please"
+  limiter: false          # disable the bot limiter for trusted local use
+  image_proxy: true
+  bind_address: "0.0.0.0"
+  port: 8080
+
+search:
+  # THIS is the line that lets Pleiades query the JSON API. Do not remove `json`.
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+
+ui:
+  static_use_hash: true
+
+# Tune which engines are queried as you like; defaults are inherited from
+# use_default_settings: true above.

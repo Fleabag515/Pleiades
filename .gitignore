@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Environment / secrets — NEVER commit
+.env
+*.key
+master.key
+
+# Pleiades + Anamnesis runtime state (profiles, vaults, browser data, model history)
+# These live under the user's home dir, but ignore any local copies too.
+.pleiades/
+.anamnesis/
+*.db
+*.sqlite
+*.sqlite3
+
+# Model weights
+*.gguf
+models/
+
+# OS
+.DS_Store
+Thumbs.db

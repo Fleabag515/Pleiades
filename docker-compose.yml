@@ -1,0 +1,27 @@
+name: pleiades
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: pleiades-searxng
+    ports:
+      # Host 8888 -> container 8080. Matches PLEIADES_SEARXNG_URL default.
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./services/searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
+      # Override the secret key here or in settings.yml. Change it before any real use.
+      - SEARXNG_SECRET=change-me-please
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
