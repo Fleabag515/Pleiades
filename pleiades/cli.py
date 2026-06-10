@@ -422,6 +422,46 @@ def serve() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# runtime — native llama.cpp server (unlocks MoE expert offload)
+# --------------------------------------------------------------------------- #
+@cli.group()
+def runtime() -> None:
+    """Manage the native llama.cpp runtime (faster; enables MoE CPU offload)."""
+
+
+@runtime.command("install")
+def runtime_install() -> None:
+    """Download the best official llama.cpp build for this machine."""
+    from . import runtime as rt
+    try:
+        path = rt.install(log=lambda m: console.print(f"[dim]{m}[/dim]"))
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Native runtime installed:[/green] {path}")
+    console.print("Models now launch through llama-server with MoE-aware autofit. "
+                  "Restart any running models to pick it up.")
+
+
+@runtime.command("status")
+def runtime_status() -> None:
+    """Show which inference runtime models will use."""
+    from . import runtime as rt
+    st = rt.status()
+    if st["native"]:
+        console.print(f"native llama-server: [green]{st['native']}[/green] "
+                      f"{st.get('version', '')}")
+        console.print("MoE expert offload: "
+                      + ("[green]supported[/green]" if st["moe_offload"]
+                         else "[yellow]not supported by this build[/yellow]"))
+    else:
+        console.print("native llama-server: [yellow]not installed[/yellow] "
+                      "(models use the python server)")
+        console.print("Install it for faster inference + MoE offload: "
+                      "[bold]pleiades runtime install[/bold]")
+
+
+# --------------------------------------------------------------------------- #
 # hw — what this machine has and how models will be placed on it
 # --------------------------------------------------------------------------- #
 @cli.command()
@@ -439,11 +479,18 @@ def hw(model_name: str | None) -> None:
     if s.model_path and not model_name:
         targets.insert(0, {"name": "(default engine)", "path": s.model_path,
                            "n_ctx": s.n_ctx})
+    from . import runtime as rt
+    from .autofit import place
+    cps = rt.caps()
     for m in targets:
         meta = hardware.read_gguf_meta(m["path"])
-        p = hardware.plan(meta, int(m.get("n_ctx", 8192)), det)
-        console.print(f"\n[bold]{m['name']}[/bold] → n_gpu_layers="
-                      f"{p.n_gpu_layers}\n  [dim]{p.reason}[/dim]")
+        p = place(meta, int(m.get("n_ctx", 8192)), det, cps)
+        moe = " · MoE" if meta.is_moe else ""
+        console.print(f"\n[bold]{m['name']}[/bold]{moe} → {p.strategy} "
+                      f"(~{p.est_tps} tok/s)\n  [dim]{p.reason}[/dim]")
+        if meta.is_moe and not cps.moe_offload:
+            console.print("  [yellow]tip: pleiades runtime install → "
+                          "expert-offload would speed this up a lot[/yellow]")
     if not targets:
         console.print("\n[dim]No models registered yet — try: "
                       "pleiades model fetch <hf-repo>[/dim]")

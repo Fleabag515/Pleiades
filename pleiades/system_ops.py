@@ -21,15 +21,23 @@ from .profiles import Profile, ProfileManager
 def hardware_report() -> str:
     """Detected hardware + the offload plan for every registered model."""
     try:
+        from . import runtime
+        from .autofit import place
         det = hardware.detect()
-        lines = [det.describe()]
+        cps = runtime.caps()
+        lines = [det.describe(),
+                 "runtime: " + ("native llama-server (MoE offload "
+                                + ("on" if cps.moe_offload else "off") + ")"
+                                if cps.native else
+                                "python llama_cpp.server — run `pleiades runtime "
+                                "install` for MoE offload + speed")]
         from .models import ModelManager
         for m in ModelManager().list():
             meta = hardware.read_gguf_meta(m["path"])
-            p = hardware.plan(meta, int(m.get("n_ctx", 8192)), det)
+            p = place(meta, int(m.get("n_ctx", 8192)), det, cps)
             running = " (running)" if m.get("running") else ""
-            lines.append(f"\nmodel '{m['name']}'{running}: n_gpu_layers={p.n_gpu_layers}"
-                         f" — {p.reason}")
+            lines.append(f"\nmodel '{m['name']}'{running}: {p.strategy} "
+                         f"~{p.est_tps} tok/s — {p.reason}")
         s = config.Settings.load()
         if s.model_path:
             meta = hardware.read_gguf_meta(s.model_path)

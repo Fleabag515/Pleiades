@@ -123,6 +123,10 @@ class ModelUpdate(BaseModel):
     chat_format: Optional[str] = None
 
 
+class AvatarBody(BaseModel):
+    data: str   # data URL (image/png or image/jpeg), max ~2 MB decoded
+
+
 class ChatCreate(BaseModel):
     character: str
 
@@ -618,6 +622,50 @@ def create_app() -> FastAPI:
             raise HTTPException(502, f"send failed: {e}")
         return {"ok": True}
 
+    # ----------------------------- avatar ----------------------------------- #
+    def _avatar_path(name: str):
+        return config.profile_dir(name) / "avatar.png"
+
+    @app.get("/api/profiles/{name}/avatar")
+    def avatar_get(name: str):
+        try:
+            p = _avatar_path(name)
+        except ValueError:
+            raise HTTPException(400, "bad name")
+        if not p.is_file():
+            raise HTTPException(404, "no avatar")
+        return FileResponse(str(p), media_type="image/png",
+                            headers={"Cache-Control": "no-cache"})
+
+    @app.post("/api/profiles/{name}/avatar")
+    def avatar_set(name: str, body: AvatarBody) -> dict:
+        import base64
+        try:
+            pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        m = re.match(r"data:image/(png|jpeg|jpg|webp);base64,(.+)", body.data, re.S)
+        if not m:
+            raise HTTPException(400, "Expected a data URL (png/jpeg/webp).")
+        try:
+            blob = base64.b64decode(m.group(2))
+        except Exception:
+            raise HTTPException(400, "Invalid base64 image data.")
+        if len(blob) > 2 * 1024 * 1024:
+            raise HTTPException(400, "Image too large (max 2 MB).")
+        _avatar_path(name).write_bytes(blob)
+        return {"ok": True}
+
+    @app.delete("/api/profiles/{name}/avatar")
+    def avatar_delete(name: str) -> dict:
+        try:
+            p = _avatar_path(name)
+        except ValueError:
+            raise HTTPException(400, "bad name")
+        if p.is_file():
+            p.unlink()
+        return {"ok": True}
+
     # ----------------------------- vault ----------------------------------- #
     @app.get("/api/profiles/{name}/vault")
     def vault_list(name: str) -> dict:
@@ -753,15 +801,21 @@ def create_app() -> FastAPI:
     # ----------------------------- hardware -------------------------------- #
     @app.get("/api/hardware")
     def hardware_info() -> dict:
-        from .. import hardware
+        from .. import hardware, runtime
+        from ..autofit import place
         det = hardware.detect()
+        cps = runtime.caps()
         plans = []
         for m in mm.list():
             meta = hardware.read_gguf_meta(m["path"])
-            p = hardware.plan(meta, int(m.get("n_ctx", 8192)), det)
-            plans.append({"model": m["name"], "n_gpu_layers": p.n_gpu_layers,
-                          "n_layers": p.n_layers, "reason": p.reason,
-                          "fits_fully": p.fits_fully})
+            p = place(meta, int(m.get("n_ctx", 8192)), det, cps)
+            plans.append({"model": m["name"],
+                          "n_gpu_layers": p.n_gpu_layers,
+                          "n_layers": meta.n_layers,
+                          "strategy": p.strategy, "est_tps": p.est_tps,
+                          "moe": meta.is_moe, "n_cpu_moe": p.n_cpu_moe,
+                          "reason": p.reason,
+                          "fits_fully": p.strategy == "full_gpu"})
         return {
             "gpus": [{"vendor": g.vendor, "name": g.name,
                       "vram_total": g.vram_total, "vram_free": g.vram_free}
@@ -769,7 +823,17 @@ def create_app() -> FastAPI:
             "ram_total": det.ram_total, "ram_available": det.ram_available,
             "cpu_threads": det.cpu_threads, "unified_memory": det.unified_memory,
             "summary": det.describe(), "plans": plans,
+            "runtime": runtime.status(),
         }
+
+    @app.post("/api/runtime/install")
+    def runtime_install_api() -> dict:
+        from .. import runtime
+        try:
+            path = runtime.install()
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return {"ok": True, "path": path}
 
     # ------------------------- fetch from Hugging Face ---------------------- #
     fetch_state: dict[str, Any] = {}

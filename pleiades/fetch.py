@@ -108,6 +108,42 @@ def _download(repo: str, filename: str, dest: Path,
             c.close()
 
 
+def remote_gguf_meta(repo: str, filename: str,
+                     *, client: Optional[httpx.Client] = None):
+    """Parse a GGUF header straight off Hugging Face via a ranged GET.
+
+    The header (incl. all metadata KVs) usually fits well inside 32 MB; the
+    tensor data never needs to be downloaded. Returns GGUFMeta (possibly
+    size-only on failure) — the caller fixes file_size itself.
+    """
+    import tempfile
+
+    from .hardware import read_gguf_meta
+    url = f"{HF_API}/{repo}/resolve/main/{filename}"
+    c = client or httpx.Client(timeout=60.0, follow_redirects=True)
+    try:
+        headers = {**_headers(), "Range": "bytes=0-33554431"}
+        with c.stream("GET", url, headers=headers) as r:
+            if r.status_code not in (200, 206):
+                raise FetchError(f"header probe got HTTP {r.status_code}")
+            with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as tmp:
+                budget = 32 * 1024 * 1024
+                for chunk in r.iter_bytes(1024 * 1024):
+                    tmp.write(chunk)
+                    budget -= len(chunk)
+                    if budget <= 0:
+                        break
+                path = tmp.name
+        meta = read_gguf_meta(path)
+        os.unlink(path)
+        return meta
+    except (httpx.HTTPError, OSError):
+        return None
+    finally:
+        if client is None:
+            c.close()
+
+
 def _default_name(repo: str) -> str:
     base = repo.split("/")[-1]
     base = re.sub(r"(?i)[-_.](gguf|gguf-imatrix)$", "", base)
@@ -139,9 +175,22 @@ def fetch_model(repo: str, *, name: str = "", quant: str = "", n_ctx: int = 8192
         chosen = min(matches, key=lambda g: g["size"])
         chosen["why"] = f"{quant.upper()}: requested explicitly"
     else:
-        chosen = hardware.pick_quant(files, hw or hardware.detect(), n_ctx=n_ctx)
-        if chosen is None:
+        from . import runtime
+        from .autofit import choose_quant
+        grouped = hardware.group_split_ggufs(files)
+        # Probe the smallest file's header so MoE structure informs the choice.
+        meta_hint = None
+        if grouped:
+            smallest = min(grouped, key=lambda g: g["size"])
+            meta_hint = remote_gguf_meta(repo, sorted(smallest["parts"])[0],
+                                         client=client)
+        pref = config.Settings.load().autofit_preference
+        choice = choose_quant(files, hw or hardware.detect(), n_ctx=n_ctx,
+                              preference=pref, caps=runtime.caps(),
+                              meta_hint=meta_hint)
+        if choice is None:
             raise FetchError(f"'{repo}' contains no usable .gguf files.")
+        chosen = choice.entry
 
     dest_dir = models_dir() / repo.replace("/", "__")
     dest_dir.mkdir(parents=True, exist_ok=True)

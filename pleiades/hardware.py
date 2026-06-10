@@ -207,6 +207,16 @@ class GGUFMeta:
     n_head_kv: int = 0
     quant: str = ""
     architecture: str = ""
+    # FFN / MoE structure (0 = absent/unknown)
+    ffn_len: int = 0                 # dense feed-forward width
+    expert_count: int = 0            # total experts (0 = dense model)
+    expert_used: int = 0             # experts active per token
+    expert_ffn_len: int = 0          # per-expert FFN width
+    shared_ffn_len: int = 0          # shared-expert FFN width
+
+    @property
+    def is_moe(self) -> bool:
+        return self.expert_count > 1
 
     @property
     def estimated(self) -> bool:
@@ -271,6 +281,11 @@ def read_gguf_meta(path: "str | Path") -> GGUFMeta:
         meta.n_embd = _i("embedding_length")
         meta.n_head = _i("attention.head_count")
         meta.n_head_kv = _i("attention.head_count_kv") or meta.n_head
+        meta.ffn_len = _i("feed_forward_length")
+        meta.expert_count = _i("expert_count")
+        meta.expert_used = _i("expert_used_count")
+        meta.expert_ffn_len = _i("expert_feed_forward_length")
+        meta.shared_ffn_len = _i("expert_shared_feed_forward_length")
         ftype = kvs.get("general.file_type")
         if isinstance(ftype, int):
             meta.quant = _FILE_TYPES.get(ftype, f"ftype-{ftype}")

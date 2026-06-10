@@ -39,6 +39,13 @@ const el = (tag, attrs = {}, ...kids) => {
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 const initials = (name) => (name || "?").slice(0, 2).toUpperCase();
+const avatarEl = (name, cls = "avatar") => {
+  const host = el("span", { class: cls }, initials(name));
+  const img = new Image();
+  img.onload = () => { host.textContent = ""; host.style.backgroundImage = `url(/api/profiles/${encodeURIComponent(name)}/avatar)`; host.classList.add("has-img"); };
+  img.src = `/api/profiles/${encodeURIComponent(name)}/avatar`;
+  return host;
+};
 const GiB = (b) => (b / 1073741824).toFixed(1);
 const ago = (ts) => {
   if (!ts) return "—";
@@ -308,7 +315,7 @@ async function renderChat() {
       onclick: () => { state.chatId = ch.id; renderChat(); } },
       el("div", { class: "chat-sess-title" }, ch.title),
       el("div", { class: "chat-sess-meta" },
-        el("span", { class: "avatar tiny" }, initials(ch.character)), ` ${ch.character} · ${ago(ch.updated)}`),
+        avatarEl(ch.character, "avatar tiny"), ` ${ch.character} · ${ago(ch.updated)}`),
       el("button", { class: "chat-sess-x", title: "Delete chat (memory is untouched)", onclick: async (e) => {
         e.stopPropagation();
         if (!confirm("Delete this chat? The character's memory is not affected.")) return;
@@ -336,9 +343,7 @@ async function renderChat() {
 
   const scroll = el("div", { class: "chat-scroll" });
   const addUser = (text) => {
-    scroll.append(el("div", { class: "msg user" },
-      el("span", { class: "avatar" }, "You"),
-      el("div", { class: "bubble" }, text)));
+    scroll.append(el("div", { class: "msg user" }, el("div", { class: "bubble" }, text)));
   };
   const addAssistantStored = (m) => {
     const bubble = el("div", { class: "bubble" });
@@ -348,7 +353,7 @@ async function renderChat() {
     });
     if (m.meta && m.meta.tps) bubble.append(el("div", { class: "tps-badge" }, `${m.meta.tokens} tok · ${m.meta.tps} tok/s`));
     scroll.append(el("div", { class: "msg assistant" },
-      el("span", { class: "avatar" }, initials(who)), bubble));
+      avatarEl(who), bubble));
   };
   if (!chat.messages.length) {
     scroll.append(el("div", { class: "empty", style: "margin:auto" },
@@ -375,7 +380,7 @@ async function renderChat() {
     addUser(text);
 
     const bubble = el("div", { class: "bubble" });
-    scroll.append(el("div", { class: "msg assistant" }, el("span", { class: "avatar" }, initials(who)), bubble));
+    scroll.append(el("div", { class: "msg assistant" }, avatarEl(who), bubble));
     const typing = el("span", { class: "typing" }, el("span"), el("span"), el("span"));
     bubble.append(typing);
 
@@ -446,7 +451,11 @@ async function renderChat() {
 
   main.append(
     el("div", { class: "chat-head" },
-      el("span", { class: "avatar" }, initials(who)),
+      el("button", { class: "btn sm ghost", title: "Toggle chat list", onclick: () => {
+        const w = $(".chat-wrap"); w.classList.toggle("rail-hidden");
+        localStorage.setItem("pl-rail", w.classList.contains("rail-hidden") ? "0" : "1");
+      } }, "☰"),
+      avatarEl(who),
       el("div", {},
         el("div", { class: "chat-head-name" }, who),
         el("div", { class: "chat-head-sub" }, `${active.model ? "model: " + active.model : "default engine"} · memory on · 60+ tools on standby`)),
@@ -731,7 +740,34 @@ async function renderCharacterDetail(name) {
 }
 
 function paneIdentity(p, models) {
+  const av = avatarEl(p.name, "avatar xl");
+  const file = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp", style: "display:none" });
+  file.addEventListener("change", () => {
+    const f = file.files[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) return toast("Image too large (max 2 MB)");
+    const rd = new FileReader();
+    rd.onload = async () => {
+      try {
+        await api.post(`/api/profiles/${p.name}/avatar`, { data: rd.result });
+        ok("Avatar updated"); go("characters", p.name);
+      } catch (e) { err(e); }
+    };
+    rd.readAsDataURL(f);
+  });
+  const avatarCard = el("div", { class: "card" },
+    el("div", { class: "card-head" }, el("h3", {}, "Profile picture")),
+    el("div", { class: "inline-actions", style: "gap:16px" },
+      av, file,
+      el("div", {},
+        el("button", { class: "btn sm primary", onclick: () => file.click() }, "Upload image"),
+        el("button", { class: "btn sm ghost", style: "margin-left:8px", onclick: async () => {
+          try { await api.del(`/api/profiles/${p.name}/avatar`); ok("Avatar removed"); go("characters", p.name); }
+          catch (e) { err(e); }
+        } }, "Remove"),
+        el("div", { class: "svc-note", style: "margin-top:8px" }, "Shown in chats and lists. PNG/JPEG/WebP, max 2 MB."))));
   return el("div", { class: "grid cols-2" },
+    avatarCard,
     el("div", { class: "card" },
       el("div", { class: "card-head" }, el("h3", {}, "Bindings")),
       el("div", { class: "list" },
@@ -1472,6 +1508,29 @@ async function renderHardware() {
     hw.unified_memory ? el("span", { class: "badge-soft" }, "unified memory") : null));
   c.append(sysCard);
 
+  c.append(el("div", { class: "section-label" }, "Inference runtime"));
+  const rtCard = el("div", { class: "card pad-lg" });
+  if (hw.runtime && hw.runtime.native) {
+    rtCard.append(el("div", { class: "inline-actions" },
+      el("span", { class: "pill up" }, "native llama-server"),
+      el("span", { class: "badge-soft" }, hw.runtime.version || ""),
+      el("span", { class: `pill ${hw.runtime.moe_offload ? "up" : "warn"}` },
+        hw.runtime.moe_offload ? "MoE expert offload: on" : "MoE offload unsupported by this build")));
+  } else {
+    const installBtn = el("button", { class: "btn primary sm", onclick: async (e) => {
+      e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span> downloading…`;
+      try { await api.post("/api/runtime/install"); ok("Native runtime installed", "restart running models to use it"); renderHardware(); }
+      catch (er) { e.target.disabled = false; e.target.textContent = "⇣ Install native runtime"; err(er); }
+    } }, "⇣ Install native runtime");
+    rtCard.append(el("div", { class: "inline-actions", style: "justify-content:space-between" },
+      el("div", {},
+        el("div", { class: "inline-actions" }, el("span", { class: "pill warn" }, "python server")),
+        el("div", { class: "svc-note", style: "margin-top:6px" },
+          "The official llama.cpp build is faster and unlocks MoE expert offload — keep attention on the GPU, park the expert pool in RAM.")),
+      installBtn));
+  }
+  c.append(rtCard);
+
   c.append(el("div", { class: "section-label" }, "Per-model offload plan"));
   if (!hw.plans.length) {
     c.append(el("div", { class: "card" }, el("div", { class: "empty", style: "padding:30px" },
@@ -1484,9 +1543,15 @@ async function renderHardware() {
       const onGpu = pl.n_gpu_layers === -1 ? pl.n_layers : pl.n_gpu_layers;
       const pct = pl.n_layers ? Math.round(100 * onGpu / pl.n_layers) : 0;
       grid.append(el("div", { class: "card" },
-        el("div", { class: "card-head" }, el("h3", {}, pl.model),
-          el("span", { class: `pill ${pl.fits_fully ? "up" : onGpu ? "warn" : "down"}` },
-            pl.fits_fully ? "fits fully on GPU" : onGpu ? "partial offload" : "CPU only")),
+        el("div", { class: "card-head" },
+          el("div", { class: "inline-actions" }, el("h3", {}, pl.model),
+            pl.moe ? el("span", { class: "pill violet" }, "MoE") : null),
+          el("span", { class: `pill ${pl.fits_fully ? "up" : (pl.strategy || "").startsWith("moe") ? "violet" : onGpu ? "warn" : "down"}` },
+            { full_gpu: "fits fully on GPU", moe_cpu: "experts → RAM, rest → GPU",
+              moe_partial: "MoE hybrid split", layers: "partial offload", cpu: "CPU only" }[pl.strategy] || "plan")),
+        el("div", { class: "inline-actions", style: "margin-bottom:8px" },
+          el("span", { class: "badge-soft" }, `~${pl.est_tps} tok/s estimated`),
+          pl.n_cpu_moe ? el("span", { class: "badge-soft" }, `experts on CPU: ${pl.n_cpu_moe}/${pl.n_layers} layers`) : null),
         el("div", { class: "meter-row" },
           el("div", { class: "meter-head" },
             el("span", { class: "list-key" }, "GPU layers"),
@@ -1674,6 +1739,24 @@ function waitForRestart(timer) {
     try { await api.get("/api/status"); clearInterval(probe); location.reload(); } catch {}
   }, 1200);
 }
+
+/* ───────────── collapsible panels ───────────── */
+(function initPanels() {
+  const sb = $("#sidebar");
+  const btn = el("button", { class: "sb-collapse", title: "Collapse sidebar",
+    onclick: () => {
+      sb.classList.toggle("collapsed");
+      localStorage.setItem("pl-sidebar", sb.classList.contains("collapsed") ? "0" : "1");
+    } }, "⟨⟩");
+  sb.append(btn);
+  if (localStorage.getItem("pl-sidebar") === "0") sb.classList.add("collapsed");
+  if (localStorage.getItem("pl-rail") === "0") {
+    const obs = new MutationObserver(() => {
+      const w = $(".chat-wrap"); if (w) w.classList.add("rail-hidden");
+    });
+    obs.observe($("#content"), { childList: true });
+  }
+})();
 
 /* ───────────── boot ───────────── */
 loadStatusMini();

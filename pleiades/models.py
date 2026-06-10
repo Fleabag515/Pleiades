@@ -193,6 +193,65 @@ class ModelManager:
             return ""
         return "\n".join(text.splitlines()[-lines:])
 
+    def _build_launch(self, m: dict) -> tuple[list, str]:
+        """Assemble the server command via autofit: MoE-aware on the native
+        llama-server runtime, layer-split on the python fallback."""
+        from . import runtime
+        from .autofit import RuntimeCaps, place
+        from .hardware import read_gguf_meta
+
+        n_ctx = int(m.get("n_ctx", 8192))
+        explicit = m.get("n_gpu_layers", "auto")
+        meta = read_gguf_meta(m["path"])
+        cps = runtime.caps()
+        native = runtime.find_native() if cps.native else None
+        threads = max((os.cpu_count() or 8) // 2, 4)   # physical cores beat SMT
+
+        pl = place(meta, n_ctx, caps=cps if native else RuntimeCaps())
+        forced = None
+        if not (isinstance(explicit, str) and str(explicit).strip().lower() in ("", "auto")):
+            try:
+                forced = int(explicit)
+            except (TypeError, ValueError):
+                forced = None
+
+        if native:
+            ngl = forced if forced is not None else (999 if pl.n_gpu_layers == -1
+                                                     else pl.n_gpu_layers)
+            cmd = [native, "-m", m["path"],
+                   "--host", m["host"], "--port", str(m["port"]),
+                   "-c", str(n_ctx), "-ngl", str(ngl), "-t", str(threads),
+                   "--jinja"]
+            if forced is None and pl.n_cpu_moe and cps.moe_offload:
+                cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
+            why = (f"runtime=llama-server strategy={pl.strategy} "
+                   f"ngl={ngl}" + (f" n_cpu_moe={pl.n_cpu_moe}" if pl.n_cpu_moe else "")
+                   + f" est={pl.est_tps} tok/s — {pl.reason}")
+            if forced is not None:
+                why = f"runtime=llama-server ngl={forced} (explicit override)"
+            return cmd, why
+
+        layers = forced if forced is not None else pl.n_gpu_layers
+        cmd = [
+            sys.executable, "-m", "llama_cpp.server",
+            "--model", m["path"],
+            "--host", m["host"], "--port", str(m["port"]),
+            "--n_ctx", str(n_ctx),
+            "--n_gpu_layers", str(layers),
+            "--n_threads", str(threads),
+            "--flash_attn", "true",
+        ]
+        if m.get("chat_format"):
+            cmd += ["--chat_format", m["chat_format"]]
+        why = (f"runtime=python strategy={pl.strategy} n_gpu_layers={layers} "
+               f"est={pl.est_tps} tok/s — {pl.reason}")
+        if forced is not None:
+            why = f"runtime=python n_gpu_layers={forced} (explicit override)"
+        if meta.is_moe and not cps.moe_offload:
+            why += (" · TIP: `pleiades runtime install` adds the native runtime "
+                    "with MoE expert offload — much faster for this model")
+        return cmd, why
+
     def start(self, name: str, *, wait: bool = True, timeout: float = 180.0) -> str:
         m = self.get(name)
         if not m:
@@ -216,25 +275,14 @@ class ModelManager:
             port_note = (f"[pleiades] port {old_port} is in use by another "
                          f"application — moved '{name}' to port {new_port}\n")
 
-        from .hardware import resolve_layers
-        layers, why = resolve_layers(m.get("n_gpu_layers", "auto"),
-                                     m["path"], int(m.get("n_ctx", 8192)))
-        cmd = [
-            sys.executable, "-m", "llama_cpp.server",
-            "--model", m["path"],
-            "--host", m["host"], "--port", str(m["port"]),
-            "--n_ctx", str(m["n_ctx"]),
-            "--n_gpu_layers", str(layers),
-        ]
-        if m.get("chat_format"):
-            cmd += ["--chat_format", m["chat_format"]]
+        cmd, why = self._build_launch(m)
 
         logdir = config.PLEIADES_HOME / "logs"
         logdir.mkdir(parents=True, exist_ok=True)
         logf = open(logdir / f"model-{name}.log", "ab")
         if port_note:
             logf.write(port_note.encode())
-        logf.write(f"[pleiades] n_gpu_layers={layers} — {why}\n".encode())
+        logf.write(f"[pleiades] {why}\n".encode())
         logf.flush()
 
         kwargs: dict = {}

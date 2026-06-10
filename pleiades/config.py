@@ -178,6 +178,9 @@ class Settings:
     n_gpu_layers: "int | str" = "auto"
     chat_format: str = ""  # blank = let llama.cpp auto-detect
 
+    # --- Autofit: speed/quality preference for quant choice (speed|balanced|quality) ---
+    autofit_preference: str = "balanced"
+
     # --- Web search ---
     searxng_url: str = "http://127.0.0.1:8888"
 
@@ -251,6 +254,7 @@ class Settings:
         s.n_gpu_layers = _layers("PLEIADES_N_GPU_LAYERS", s.n_gpu_layers)
         s.chat_format = os.environ.get("PLEIADES_CHAT_FORMAT", s.chat_format)
         s.searxng_url = os.environ.get("PLEIADES_SEARXNG_URL", s.searxng_url)
+        s.autofit_preference = os.environ.get("PLEIADES_AUTOFIT", s.autofit_preference)
         s.backend_base_url = os.environ.get("PLEIADES_BACKEND_BASE_URL", s.backend_base_url)
         s.backend_api_key = os.environ.get("PLEIADES_BACKEND_API_KEY", s.backend_api_key)
         s.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", s.anthropic_api_key)
