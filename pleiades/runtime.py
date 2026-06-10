@@ -106,7 +106,10 @@ def pick_asset(assets: list[dict]) -> Optional[dict]:
     """Choose the best release asset for this machine. Pure logic, testable."""
     os_tokens, arch = _platform_tokens()
     names = [(a, a.get("name", "").lower()) for a in assets
-             if a.get("name", "").lower().endswith(".zip")]
+             if a.get("name", "").lower().endswith((".zip", ".tar.gz"))
+             and not a.get("name", "").lower().startswith(("cudart-", "llama-ui"))
+             and "xcframework" not in a.get("name", "").lower()
+             and "-ui." not in a.get("name", "").lower()]
     plat = [(a, n) for a, n in names
             if any(t in n for t in os_tokens) and (arch in n or "x64" not in n and "arm64" not in n)]
     if not plat:
@@ -147,8 +150,13 @@ def install(log: Optional[Callable[[str], None]] = None) -> str:
     target = runtime_dir() / "llama.cpp"
     if target.exists():
         shutil.rmtree(target)
-    with zipfile.ZipFile(dest) as z:
-        z.extractall(target)
+    if dest.name.endswith(".tar.gz"):
+        import tarfile
+        with tarfile.open(dest, "r:gz") as t:
+            t.extractall(target, filter="data")
+    else:
+        with zipfile.ZipFile(dest) as z:
+            z.extractall(target)
     dest.unlink(missing_ok=True)
 
     exe = "llama-server.exe" if os.name == "nt" else "llama-server"
