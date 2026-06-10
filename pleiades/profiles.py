@@ -27,7 +27,11 @@ class Profile:
     smtp_host: str = ""
     smtp_port: int = 587
     discord_enabled: bool = False
-    persona_source: str = "auto"  # auto | file | inline | disabled
+    discord_require_mention: bool = True    # in servers: only respond when pinged (DMs always work)
+    discord_respond_to_bots: bool = False   # respond to other bots' messages?
+    discord_allowed_channels: str = ""      # comma-separated channel names/ids; blank = all
+    # Deprecated: persona handling lives in Anamnesis. Kept so old profiles load.
+    persona_source: str = "auto"
     model: str = ""  # name of the assigned model (see pleiades.models); blank = default engine
 
     @property
@@ -114,8 +118,6 @@ class ProfileManager:
 
         # 3. Vault + reserved secrets.
         with self.open_vault(name) as vault:
-            if email_address:
-                vault.set("email.address", email_address, meta={"reserved": True})
             if email_password:
                 vault.set("email.password", email_password, meta={"reserved": True})
             if discord_token:

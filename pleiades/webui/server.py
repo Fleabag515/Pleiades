@@ -74,6 +74,9 @@ class ProfileUpdate(BaseModel):
     smtp_port: Optional[int] = None
     persona_source: Optional[str] = None
     discord_enabled: Optional[bool] = None
+    discord_require_mention: Optional[bool] = None
+    discord_respond_to_bots: Optional[bool] = None
+    discord_allowed_channels: Optional[str] = None
 
 
 class EmailConfig(BaseModel):
@@ -88,6 +91,15 @@ class EmailConfig(BaseModel):
 class DiscordConfig(BaseModel):
     token: Optional[str] = None  # only written if provided
     enabled: bool = False
+    require_mention: Optional[bool] = None
+    respond_to_bots: Optional[bool] = None
+    allowed_channels: Optional[str] = None
+
+
+class EmailSend(BaseModel):
+    to: str
+    subject: str = ""
+    body: str = ""
 
 
 class VaultEntry(BaseModel):
@@ -382,7 +394,9 @@ def create_app() -> FastAPI:
         except FileNotFoundError:
             raise HTTPException(404, f"No profile '{name}'")
         for f in ("email_address", "imap_host", "imap_port", "smtp_host",
-                  "smtp_port", "persona_source", "discord_enabled"):
+                  "smtp_port", "persona_source", "discord_enabled",
+                  "discord_require_mention", "discord_respond_to_bots",
+                  "discord_allowed_channels"):
             val = getattr(body, f)
             if val is not None:
                 setattr(p, f, val)
@@ -425,10 +439,9 @@ def create_app() -> FastAPI:
         p.smtp_port = body.smtp_port
         pm._save(p)  # noqa: SLF001
         with pm.open_vault(name) as v:
-            if body.email_address:
-                v.set("email.address", body.email_address, meta={"reserved": True})
             if body.password:
                 v.set("email.password", body.password, meta={"reserved": True})
+            v.delete("email.address")  # legacy duplicate; profile.json owns the address
         return _profile_view(p)
 
     @app.post("/api/profiles/{name}/discord")
@@ -441,8 +454,101 @@ def create_app() -> FastAPI:
             if body.token:
                 v.set("discord.token", body.token, meta={"reserved": True})
         p.discord_enabled = body.enabled
+        if body.require_mention is not None:
+            p.discord_require_mention = body.require_mention
+        if body.respond_to_bots is not None:
+            p.discord_respond_to_bots = body.respond_to_bots
+        if body.allowed_channels is not None:
+            p.discord_allowed_channels = body.allowed_channels
         pm._save(p)  # noqa: SLF001
         return _profile_view(p)
+
+    @app.get("/api/profiles/{name}/discord/info")
+    def discord_info(name: str) -> dict:
+        """Validate the saved token and list the servers the bot is in."""
+        with pm.open_vault(name) as v:
+            token = v.get("discord.token")
+        if not token:
+            return {"configured": False}
+        if not httpx:
+            raise HTTPException(500, "httpx unavailable")
+        headers = {"Authorization": f"Bot {token}"}
+        try:
+            me = httpx.get("https://discord.com/api/v10/users/@me",
+                           headers=headers, timeout=8.0)
+            if me.status_code == 401:
+                return {"configured": True, "valid": False,
+                        "error": "Discord rejected the token (401)."}
+            me.raise_for_status()
+            guilds = httpx.get("https://discord.com/api/v10/users/@me/guilds",
+                               headers=headers, timeout=8.0)
+            guilds.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"Discord API error: {e}")
+        bot = me.json()
+        return {"configured": True, "valid": True,
+                "bot": {"username": bot.get("username", ""), "id": bot.get("id", "")},
+                "guilds": [{"id": g["id"], "name": g["name"]} for g in guilds.json()]}
+
+    # ----------------------------- email inbox ------------------------------ #
+    def _email_conn(name: str):
+        try:
+            p = pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        with pm.open_vault(name) as v:
+            password = v.get("email.password")
+        if not (p.has_email and password):
+            raise HTTPException(400, "Email is not fully configured for this character.")
+        from ..tools import email_box
+        try:
+            return p, password, email_box.imap_connect(p.imap_host, p.imap_port,
+                                                       p.email_address, password)
+        except Exception as e:
+            raise HTTPException(502, f"IMAP connection failed: {e}")
+
+    @app.get("/api/profiles/{name}/email/inbox")
+    def email_inbox(name: str, limit: int = 25, unread: bool = False) -> dict:
+        from ..tools import email_box
+        p, _pw, conn = _email_conn(name)
+        try:
+            msgs = email_box.list_messages(conn, "UNSEEN" if unread else "ALL",
+                                           limit=min(limit, 100))
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+        return {"address": p.email_address, "messages": msgs}
+
+    @app.get("/api/profiles/{name}/email/message/{mid}")
+    def email_message(name: str, mid: str) -> dict:
+        from ..tools import email_box
+        _p, _pw, conn = _email_conn(name)
+        try:
+            return email_box.read_message(conn, mid)
+        except RuntimeError as e:
+            raise HTTPException(404, str(e))
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
+    @app.post("/api/profiles/{name}/email/send")
+    def email_send(name: str, body: EmailSend) -> dict:
+        from ..tools import email_box
+        p, password, conn = _email_conn(name)
+        try:
+            conn.logout()
+        except Exception:
+            pass
+        try:
+            email_box.send_message(p.smtp_host, p.smtp_port, p.email_address,
+                                   password, body.to, body.subject, body.body)
+        except Exception as e:
+            raise HTTPException(502, f"send failed: {e}")
+        return {"ok": True}
 
     # ----------------------------- vault ----------------------------------- #
     @app.get("/api/profiles/{name}/vault")
@@ -554,10 +660,23 @@ def create_app() -> FastAPI:
     @app.post("/api/models/{name}/start")
     def models_start(name: str) -> dict:
         try:
-            url = mm.start(name, wait=True, timeout=180)
+            url = mm.start(name, wait=False)   # card shows 'loading' until healthy
         except ModelError as e:
             raise HTTPException(400, str(e))
-        return {"ok": True, "base_url": url}
+        return {"ok": True, "base_url": url, "state": mm.state(name)}
+
+    @app.get("/api/models/{name}/logs")
+    def models_logs(name: str, lines: int = 250) -> dict:
+        return {"name": name, "state": mm.state(name),
+                "log": mm.log_tail(name, lines=min(lines, 2000))}
+
+    @app.get("/api/models/hf-search")
+    def models_hf_search(q: str, limit: int = 8) -> dict:
+        from ..fetch import FetchError, search_gguf_repos
+        try:
+            return {"results": search_gguf_repos(q, limit=min(limit, 20))}
+        except FetchError as e:
+            raise HTTPException(502, str(e))
 
     @app.post("/api/models/{name}/stop")
     def models_stop(name: str) -> dict:

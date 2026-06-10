@@ -386,6 +386,10 @@ def resolve_layers(value: "int | str", model_path: str, n_ctx: int,
 _QUANT_PREFERENCE = ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q5_0", "Q4_K_M",
                      "Q4_K_S", "IQ4_XS", "Q4_0", "Q3_K_L", "Q3_K_M", "IQ3_S",
                      "Q3_K_S", "Q2_K", "IQ2_S"]
+# When layers won't fit on the GPU and the CPU does the work, Q4_K_M is the
+# sweet spot — Q8/Q6 are ~2x the bytes for marginal quality, i.e. ~2x slower.
+_CPU_PREFERENCE = ["Q4_K_M", "Q4_K_S", "IQ4_XS", "Q5_K_M", "Q4_0", "Q3_K_M",
+                   "Q3_K_S", "Q2_K"]
 _QUANT_RE = re.compile(r"(IQ\d_[A-Z]+|Q\d_K_[SML]|Q\d_K|Q\d_\d|BF16|F16|F32)",
                        re.IGNORECASE)
 _SPLIT_RE = re.compile(r"-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
@@ -442,20 +446,24 @@ def pick_quant(files: list[dict], hw: Optional[Hardware] = None,
     gpu = hw.gpu
     kv_margin = max(n_ctx, 2048) * 96 * 1024  # rough KV+overhead per ctx token
     if gpu:
-        budget = gpu.vram_free - _OVERHEAD - kv_margin
+        # Keep 10% headroom: "barely fits" becomes swap-thrash in practice.
+        budget = int((gpu.vram_free - _OVERHEAD - kv_margin) * 0.9)
         for q in _QUANT_PREFERENCE:
             c = by_quant.get(q)
             if c and c["size"] <= budget:
                 c["why"] = (f"{q}: largest quant that fully fits "
                             f"{_gb(gpu.vram_free)} free on {gpu.name}")
                 return c
-    # CPU / nothing fits VRAM: largest preferred quant within 80% of available RAM.
-    ram_budget = int(hw.ram_available * 0.8)
-    for q in _QUANT_PREFERENCE:
+    # Nothing fits VRAM, so layers spill to CPU. Bigger quants are NOT better
+    # here — CPU token speed scales with bytes read, so prefer the Q4 class
+    # (the standard speed/quality tradeoff) and never exceed half of free RAM.
+    ram_budget = int(hw.ram_available * 0.5)
+    for q in _CPU_PREFERENCE:
         c = by_quant.get(q)
         if c and c["size"] <= ram_budget:
-            where = "partial GPU offload + RAM" if gpu else "CPU"
-            c["why"] = f"{q}: fits {_gb(hw.ram_available)} available RAM ({where})"
+            where = (f"mostly on CPU ({gpu.name} lacks free VRAM)" if gpu else "CPU")
+            c["why"] = (f"{q}: best speed/quality for {where}; "
+                        f"larger quants would crawl and eat RAM")
             return c
     smallest = min(candidates, key=lambda c: c["size"])
     smallest["why"] = "smallest available quant (machine is tight on memory)"

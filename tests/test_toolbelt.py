@@ -67,3 +67,16 @@ def test_webui_has_update_and_hardware_routes():
     paths = {r.path for r in create_app().routes}
     assert {"/api/update/check", "/api/update", "/api/update/status",
             "/api/hardware", "/api/models/fetch"} <= paths
+
+
+def test_webui_has_email_discord_and_logs_routes():
+    __import__("pytest").importorskip("fastapi")
+    from pleiades.webui import create_app
+
+    paths = {r.path for r in create_app().routes}
+    assert {"/api/profiles/{name}/email/inbox",
+            "/api/profiles/{name}/email/message/{mid}",
+            "/api/profiles/{name}/email/send",
+            "/api/profiles/{name}/discord/info",
+            "/api/models/{name}/logs",
+            "/api/models/hf-search"} <= paths

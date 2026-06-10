@@ -74,6 +74,69 @@ def _strip_html(html: str) -> str:
     return html
 
 
+# --------------------------------------------------------------------------- #
+# Reusable IMAP/SMTP operations (used by the EmailTool AND the web UI)
+# --------------------------------------------------------------------------- #
+def imap_connect(imap_host: str, imap_port: int, address: str, password: str):
+    conn = imaplib.IMAP4_SSL(imap_host, imap_port)
+    conn.login(address, password)
+    return conn
+
+
+def list_messages(conn, criteria="ALL", limit: int = 20) -> list[dict]:
+    """Newest-first [{id, from, subject, date, unread}] from INBOX."""
+    conn.select("INBOX")
+    typ, unseen_data = conn.search(None, "UNSEEN")
+    unseen = set(unseen_data[0].split()) if typ == "OK" and unseen_data and unseen_data[0] else set()
+    if isinstance(criteria, tuple):
+        typ, data = conn.search(None, *criteria)
+    else:
+        typ, data = conn.search(None, criteria)
+    if typ != "OK":
+        return []
+    ids = data[0].split()
+    out = []
+    for mid in ids[-limit:][::-1]:
+        typ, msg_data = conn.fetch(mid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+        if typ != "OK" or not msg_data or not msg_data[0]:
+            continue
+        hdr = email.message_from_bytes(msg_data[0][1])
+        out.append({"id": mid.decode(), "from": _decode(hdr.get("From")),
+                    "subject": _decode(hdr.get("Subject")) or "(no subject)",
+                    "date": _decode(hdr.get("Date")), "unread": mid in unseen})
+    return out
+
+
+def read_message(conn, mid: str) -> dict:
+    """Full message {from, to, date, subject, body} (marks it as read)."""
+    conn.select("INBOX")
+    typ, msg_data = conn.fetch(str(mid).encode(), "(RFC822)")
+    if typ != "OK" or not msg_data or not msg_data[0]:
+        raise RuntimeError(f"could not read message {mid}")
+    msg = email.message_from_bytes(msg_data[0][1])
+    return {"id": str(mid), "from": _decode(msg.get("From")),
+            "to": _decode(msg.get("To")), "date": _decode(msg.get("Date")),
+            "subject": _decode(msg.get("Subject")) or "(no subject)",
+            "body": _body_text(msg)}
+
+
+def send_message(smtp_host: str, smtp_port: int, address: str, password: str,
+                 to: str, subject: str, body: str) -> None:
+    msg = EmailMessage()
+    msg["From"] = address
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
+    if smtp_port == 465:
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port)
+    else:
+        server = smtplib.SMTP(smtp_host, smtp_port)
+        server.starttls()
+    with server:
+        server.login(address, password)
+        server.send_message(msg)
+
+
 class EmailTool(Tool):
     name = "email"
     description = (

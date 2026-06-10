@@ -45,10 +45,10 @@ def models(action: str, name: str = "", repo: str = "", query: str = "",
 
 @tool(tags=("system",))
 def profile(action: str, field: str = "", value: str = "") -> str:
-    """Read or update your own character profile (email settings, persona_source, assigned model).
+    """Read or update your own character profile (email settings, assigned model).
 
     action: get | set.
-    field: field to set (email_address, imap_host, imap_port, smtp_host, smtp_port, persona_source, model).
+    field: field to set (email_address, imap_host, imap_port, smtp_host, smtp_port, model).
     value: new value (for set).
     """
     return profile_op(identity.active_profile(), action, field=field, value=value)

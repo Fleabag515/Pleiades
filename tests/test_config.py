@@ -59,3 +59,14 @@ def test_update_run_refuses_outside_git(tmp_path):
 
     with pytest.raises(RuntimeError):
         upd.run_update(tmp_path)
+
+
+def test_profile_discord_fields_roundtrip():
+    from pleiades.profiles import Profile
+
+    p = Profile(name="d", discord_require_mention=False,
+                discord_respond_to_bots=True, discord_allowed_channels="general")
+    q = Profile.from_json(p.to_json())
+    assert q.discord_require_mention is False
+    assert q.discord_respond_to_bots is True
+    assert q.discord_allowed_channels == "general"

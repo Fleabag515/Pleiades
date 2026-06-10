@@ -115,7 +115,8 @@ class ModelManager:
         out = []
         for name, m in self._load().items():
             m = dict(m)
-            m["running"] = self.is_running(name)
+            m["state"] = self.state(name)
+            m["running"] = m["state"] in ("running", "loading")
             out.append(m)
         return out
 
@@ -146,18 +147,38 @@ class ModelManager:
             raise ModelError(f"unknown model '{name}'")
         return f"http://{m['host']}:{m['port']}/v1"
 
-    def is_running(self, name: str) -> bool:
+    def state(self, name: str) -> str:
+        """'running' (HTTP healthy) | 'loading' (process up, API not yet) |
+        'crashed' (process died while registered) | 'stopped'."""
         run = self._load_running().get(name)
         if not run:
-            return False
-        pid = run.get("pid")
+            return "stopped"
         try:
             r = httpx.get(f"http://{run['host']}:{run['port']}/v1/models", timeout=1.5)
             if r.status_code == 200:
-                return True
+                return "running"
         except httpx.HTTPError:
             pass
-        return _pid_alive(pid)
+        if _pid_alive(run.get("pid")):
+            return "loading"
+        # Process died without a clean stop: clear the stale entry, report crash.
+        all_run = self._load_running()
+        all_run.pop(name, None)
+        self._save_running(all_run)
+        return "crashed"
+
+    def is_running(self, name: str) -> bool:
+        return self.state(name) in ("running", "loading")
+
+    def log_tail(self, name: str, lines: int = 200) -> str:
+        logf = config.PLEIADES_HOME / "logs" / f"model-{name}.log"
+        if not logf.is_file():
+            return ""
+        try:
+            text = logf.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return "\n".join(text.splitlines()[-lines:])
 
     def start(self, name: str, *, wait: bool = True, timeout: float = 180.0) -> str:
         m = self.get(name)

@@ -40,14 +40,30 @@ def run_discord_bot(name: str, *, engine: Optional[Engine] = None) -> None:
     async def on_ready():
         print(f"[pleiades] {name} connected to Discord as {client.user}.")
 
+    def _channel_allowed(message) -> bool:
+        allow = [c.strip().lower() for c in
+                 (profile.discord_allowed_channels or "").split(",") if c.strip()]
+        if not allow:
+            return True
+        ch = message.channel
+        candidates = {str(ch.id), getattr(ch, "name", "").lower()}
+        return bool(candidates & set(allow))
+
     @client.event
     async def on_message(message: "discord.Message"):
         if message.author == client.user:
             return
+        if getattr(message.author, "bot", False) and not profile.discord_respond_to_bots:
+            return
         is_dm = message.guild is None
         is_mention = client.user in getattr(message, "mentions", [])
-        if not (is_dm or is_mention):
-            return
+        if is_dm:
+            pass  # DMs always work
+        else:
+            if not _channel_allowed(message):
+                return
+            if profile.discord_require_mention and not is_mention:
+                return
 
         content = message.content
         if is_mention and client.user is not None:

@@ -84,3 +84,21 @@ def test_assign_model_persists(tmp_path):
     pm.assign_model("zoe", "mistral")
     assert pm.get("zoe").model == "mistral"
     ModelManager().remove("mistral")
+
+
+def test_state_cleans_up_dead_process(tmp_path):
+    g = tmp_path / "dead.gguf"
+    g.write_bytes(b"x")
+    mm = ModelManager()
+    mm.add("deadtest", str(g))
+    # forge a running entry pointing at a dead pid and an unused port
+    run = mm._load_running()
+    run["deadtest"] = {"pid": 99999999, "host": "127.0.0.1", "port": 1}
+    mm._save_running(run)
+    assert mm.state("deadtest") == "crashed"      # detected + cleaned
+    assert mm.state("deadtest") == "stopped"      # stale entry is gone
+    mm.remove("deadtest")
+
+
+def test_log_tail_missing_is_empty():
+    assert ModelManager().log_tail("no-such-model") == ""

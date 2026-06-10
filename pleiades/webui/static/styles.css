@@ -47,6 +47,7 @@ body {
     radial-gradient(1100px 600px at 80% -10%, rgba(139,156,255,0.09), transparent 60%),
     radial-gradient(900px 520px at 5% 110%, rgba(92,225,230,0.06), transparent 55%),
     var(--bg);
+  background-attachment: fixed;  /* gradients stay put while content scrolls */
   -webkit-font-smoothing: antialiased;
   font-size: 14px;
   line-height: 1.55;
@@ -519,3 +520,33 @@ a { color: var(--accent); text-decoration: none; }
   .field-row { flex-direction: column; gap: 0; }
   .msg { max-width: 92%; }
 }
+
+/* ── download dock (bottom-right, non-blocking) ── */
+.dl-dock {
+  position: fixed; right: 22px; bottom: 22px; z-index: 70; width: 330px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+}
+.dl-dock .d-title { font-weight: 600; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+.dl-dock .d-file { color: var(--text-dim); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-dock .d-bar { height: 6px; border-radius: 3px; background: var(--bg-2); margin-top: 10px; overflow: hidden; }
+.dl-dock .d-fill { height: 100%; background: linear-gradient(90deg, #6f82f5, #5ce1e6); transition: width .4s; }
+.dl-dock .d-x { background: none; border: none; color: var(--text-faint); font-size: 14px; padding: 0 2px; }
+.dl-dock.done { cursor: pointer; }
+.dl-dock.done:hover { border-color: #313856; background: var(--panel-hi); }
+
+/* ── model log viewer ── */
+.log-pre {
+  max-height: 52vh; overflow: auto; margin: 0; padding: 12px;
+  background: #0a0c16; border: 1px solid var(--line); border-radius: 8px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word; color: var(--text-dim);
+}
+
+/* ── email inbox ── */
+.mail-row { cursor: pointer; }
+.mail-row:hover { background: var(--panel-hi); }
+.mail-row .m-from { font-weight: 600; min-width: 180px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-row .m-subj { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.mail-row.unread .m-subj, .mail-row.unread .m-from { color: var(--text); }
+.mail-body { white-space: pre-wrap; max-height: 48vh; overflow: auto; font-size: 13px; line-height: 1.6; color: var(--text-dim); }

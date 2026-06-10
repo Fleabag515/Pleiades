@@ -63,8 +63,8 @@ class ProfileTool(Tool):
     name = "profile"
     description = (
         "Read or update your own configuration: email settings (address, "
-        "imap_host, imap_port, smtp_host, smtp_port), persona_source, and "
-        "your assigned model. Actions: 'get', 'set'."
+        "imap_host, imap_port, smtp_host, smtp_port) and your assigned model. "
+        "Actions: 'get', 'set'. (Persona/memory live in Anamnesis, not here.)"
     )
     parameters = {
         "type": "object",

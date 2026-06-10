@@ -590,17 +590,7 @@ async function renderCharacterDetail(name) {
 }
 
 function paneIdentity(p, models) {
-  const persona = el("select", { class: "select" },
-    ...["auto", "file", "inline", "disabled"].map(o => el("option", { value: o, selected: o === p.persona_source ? "selected" : null }, o)));
-  const grid = el("div", { class: "grid cols-2" },
-    el("div", { class: "card" },
-      el("div", { class: "card-head" }, el("h3", {}, "Profile")),
-      field("Persona source", persona, "How Anamnesis sources this character's persona."),
-      el("button", { class: "btn primary sm", onclick: async (e) => {
-        e.target.disabled = true;
-        try { await api.put(`/api/profiles/${p.name}`, { persona_source: persona.value }); ok("Saved"); }
-        catch (er) { err(er); } finally { e.target.disabled = false; }
-      } }, "Save")),
+  return el("div", { class: "grid cols-2" },
     el("div", { class: "card" },
       el("div", { class: "card-head" }, el("h3", {}, "Bindings")),
       el("div", { class: "list" },
@@ -608,8 +598,11 @@ function paneIdentity(p, models) {
         kvRow("Model", p.model || "default engine", p.model ? "run" : "down"),
         kvRow("Discord", p.discord_enabled ? "enabled" : "disabled", p.discord_enabled ? "violet" : "down"),
         kvRow("Vault entries", String((p.vault || []).length), "up"),
-        kvRow("Browser profile", "persistent", "up"))));
-  return grid;
+        kvRow("Browser profile", "persistent", "up"))),
+    el("div", { class: "card" },
+      el("div", { class: "card-head" }, el("h3", {}, "Memory & persona")),
+      el("div", { class: "callout" }, el("span", { class: "c-ico" }, "✶"),
+        el("div", { html: "Persona and long-term memory are handled entirely by <b>Anamnesis</b> in the background — every conversation flows through this character's memory proxy automatically. Nothing to configure here." }))));
 }
 function kvRow(k, v, pill) {
   return el("div", { class: "list-row" },
@@ -620,6 +613,89 @@ function kvRow(k, v, pill) {
 
 /* ── Email tab ── */
 function paneEmail(p) {
+  if (!p.has_email) return emailSetupCard(p);
+
+  const wrap = el("div", {});
+  const listCard = el("div", { class: "card" });
+  const unreadOnly = el("input", { type: "checkbox" });
+  let loadedOnce = false;
+
+  const load = async () => {
+    listCard.innerHTML = ""; listCard.append(el("div", { class: "skeleton" }, "Checking the inbox…"));
+    let r;
+    try { r = await api.get(`/api/profiles/${p.name}/email/inbox?limit=25&unread=${unreadOnly.checked ? 1 : 0}`); }
+    catch (e) { listCard.innerHTML = ""; listCard.append(el("div", { class: "svc-note", style: "padding:16px" }, String(e.message || e))); return; }
+    loadedOnce = true;
+    listCard.innerHTML = "";
+    if (!r.messages.length) {
+      listCard.append(el("div", { class: "empty", style: "padding:30px" }, el("div", { class: "empty-ico" }, "✉"),
+        el("h3", {}, unreadOnly.checked ? "No unread mail" : "Inbox is empty")));
+      return;
+    }
+    const list = el("div", { class: "list" });
+    r.messages.forEach(m => list.append(el("div", { class: `list-row mail-row ${m.unread ? "unread" : ""}`, onclick: () => openMessage(m.id) },
+      el("span", { class: `dot ${m.unread ? "up" : "idle"}`, title: m.unread ? "unread" : "read" }),
+      el("span", { class: "m-from" }, m.from),
+      el("span", { class: "m-subj" }, m.subject),
+      el("span", { class: "badge-soft" }, (m.date || "").replace(/\s[+-]\d{4}.*$/, "")))));
+    listCard.append(list);
+  };
+
+  const openMessage = async (mid) => {
+    let msg;
+    try { msg = await api.get(`/api/profiles/${p.name}/email/message/${encodeURIComponent(mid)}`); }
+    catch (e) { return err(e); }
+    modal.open({
+      title: msg.subject,
+      body: el("div", {},
+        el("div", { class: "list", style: "margin-bottom:12px" },
+          kvRow("From", msg.from, "down"), kvRow("To", msg.to, "down"), kvRow("Date", msg.date, "down")),
+        el("div", { class: "mail-body" }, msg.body || "(empty body)")),
+      footer: [
+        el("button", { class: "btn", onclick: () => { modal.close(); composeDialog(p, msg.from.replace(/^.*<|>.*$/g, ""), `Re: ${msg.subject}`); } }, "↩ Reply"),
+        el("button", { class: "btn ghost", onclick: () => { modal.close(); load(); } }, "Close"),
+      ],
+    });
+  };
+
+  unreadOnly.addEventListener("change", load);
+  wrap.append(el("div", { class: "inline-actions", style: "justify-content:space-between;margin-bottom:14px" },
+    el("div", { class: "inline-actions" },
+      el("span", { class: "pill up" }, p.email_address),
+      el("label", { class: "inline-actions", style: "gap:6px;color:var(--text-dim);font-size:13px" }, unreadOnly, "unread only")),
+    el("div", { class: "inline-actions" },
+      el("button", { class: "btn sm", onclick: load }, "⟳ Refresh"),
+      el("button", { class: "btn sm primary", onclick: () => composeDialog(p) }, "✎ Compose"),
+      el("button", { class: "btn sm", onclick: () => {
+        const pane2 = wrap.parentElement; pane2.innerHTML = ""; pane2.append(emailSetupCard(p));
+      } }, "⚙ Settings"))));
+  wrap.append(listCard);
+  load();
+  return wrap;
+}
+
+function composeDialog(p, to = "", subject = "") {
+  const toIn = textInput(to, { placeholder: "recipient@example.com", class: "input mono" });
+  const subjIn = textInput(subject, { placeholder: "subject" });
+  const bodyIn = el("textarea", { class: "input", rows: "8", placeholder: "write your message…" });
+  modal.open({
+    title: `New email · from ${p.email_address}`,
+    body: el("div", {}, field("To", toIn), field("Subject", subjIn), field("Body", bodyIn)),
+    footer: [
+      el("button", { class: "btn ghost", onclick: () => modal.close() }, "Cancel"),
+      el("button", { class: "btn primary", onclick: async (e) => {
+        if (!toIn.value.trim()) return toast("Recipient required");
+        e.target.disabled = true;
+        try {
+          await api.post(`/api/profiles/${p.name}/email/send`, { to: toIn.value.trim(), subject: subjIn.value, body: bodyIn.value });
+          modal.close(); ok("Sent", toIn.value.trim());
+        } catch (er) { e.target.disabled = false; err(er); }
+      } }, "Send"),
+    ],
+  });
+}
+
+function emailSetupCard(p) {
   const email = textInput(p.email_address, { placeholder: "alice@example.com" });
   const imapH = textInput(p.imap_host, { placeholder: "imap.example.com", class: "input mono" });
   const imapP = textInput(p.imap_port, { type: "number", class: "input mono" });
@@ -684,7 +760,7 @@ function paneCredentials(p) {
       const valSpan = el("span", { class: "secret-dots" }, "••••••••••");
       const note = en.meta && en.meta.note ? en.meta.note : "";
       list.append(el("div", { class: "list-row" },
-        el("span", { class: `pill ${isReserved ? "warn" : (isSite ? "violet" : "up")}` }, isReserved ? "reserved" : (isSite ? "site" : "custom")),
+        el("span", { class: `pill ${isReserved ? "warn" : (isSite ? "violet" : "up")}` }, isReserved ? "managed" : (isSite ? "site" : "custom")),
         el("div", {}, el("div", { class: "list-key mono" }, en.key),
           el("div", { class: "list-meta" }, (note ? note + " · " : "") + `updated ${ago(en.updated_at)}`)),
         el("span", { class: "list-spacer" }),
@@ -714,37 +790,82 @@ function paneCredentials(p) {
 
 function vaultEntryDialog(name, existing) {
   const isEdit = !!existing;
-  const RESERVED = ["email.password", "email.address", "discord.token"];
-  const keyInput = textInput(existing ? existing.key : "", { placeholder: "site:example.com", class: "input mono" });
-  if (isEdit) keyInput.setAttribute("readonly", "readonly");
-  const valInput = el("textarea", { class: "input mono", rows: "3", placeholder: "secret value" });
-  const noteInput = textInput(existing && existing.meta && existing.meta.note ? existing.meta.note : "", { placeholder: "optional label, e.g. GitHub login" });
+  const valInput = el("textarea", { class: "input mono", rows: "3", placeholder: isEdit ? "new secret value" : "secret value" });
+  const noteInput = textInput(existing && existing.meta && existing.meta.note ? existing.meta.note : "", { placeholder: "optional label" });
 
-  const quick = el("div", { class: "inline-actions", style: "flex-wrap:wrap;gap:6px;margin-bottom:8px" });
-  if (!isEdit) {
-    ["site:", ...RESERVED].forEach(k => quick.append(el("button", { class: "btn sm", onclick: () => { keyInput.value = k; keyInput.focus(); } }, k)));
+  if (isEdit) {
+    // Editing: the key is fixed; just take a new value/note.
+    modal.open({
+      title: `Edit ${existing.key}`,
+      body: el("div", {},
+        field("Value", valInput, "Encrypted with Fernet before it touches disk."),
+        field("Note (optional)", noteInput)),
+      footer: [
+        el("button", { class: "btn ghost", onclick: () => modal.close() }, "Cancel"),
+        el("button", { class: "btn primary", onclick: async (e) => {
+          if (!valInput.value) return toast("Value required");
+          e.target.disabled = true;
+          try {
+            await api.post(`/api/profiles/${name}/vault`, { key: existing.key, value: valInput.value, note: noteInput.value.trim() });
+            modal.close(); ok("Updated", existing.key); go("characters", name);
+          } catch (er) { e.target.disabled = false; err(er); }
+        } }, "Update"),
+      ],
+    });
+    return;
   }
 
-  modal.open({
-    title: isEdit ? `Edit ${existing.key}` : "Add vault entry",
-    body: el("div", {},
-      el("div", { class: "callout warn", style: "margin-bottom:16px" }, el("span", { class: "c-ico" }, "🔒"),
-        el("div", { html: "Reserved keys: <span class='kbd'>email.password</span>, <span class='kbd'>email.address</span>, <span class='kbd'>discord.token</span>. Site logins use the <span class='kbd'>site:&lt;domain&gt;</span> prefix." })),
-      isEdit ? null : field("Key", el("div", {}, quick, keyInput)),
-      isEdit ? field("Key", keyInput) : null,
-      field("Value", valInput, "Encrypted with Fernet before it touches disk."),
+  // New entry: pick a type, get the right fields for it.
+  const siteIn = textInput("", { placeholder: "example.com  or  https://example.com/login", class: "input mono" });
+  const userIn = textInput("", { placeholder: "username or email used to sign in" });
+  const passIn = textInput("", { type: "password", placeholder: "password", class: "input mono" });
+  const keyIn = textInput("", { placeholder: "my-api-key", class: "input mono" });
+  const formHost = el("div", {});
+
+  const forms = {
+    site: () => el("div", {},
+      field("Website", siteIn, "Stored under site:<domain> — the model finds it by domain."),
+      field("Username / email", userIn),
+      field("Password", passIn),
       field("Note (optional)", noteInput)),
+    custom: () => el("div", {},
+      field("Name", keyIn, "Any identifier, e.g. an API key name."),
+      field("Secret value", valInput),
+      field("Note (optional)", noteInput)),
+  };
+  const typeSel = el("select", { class: "select" },
+    el("option", { value: "site" }, "Website login (site + username + password)"),
+    el("option", { value: "custom" }, "Custom secret (name + value)"));
+  typeSel.addEventListener("change", () => { formHost.innerHTML = ""; formHost.append(forms[typeSel.value]()); });
+  formHost.append(forms.site());
+
+  modal.open({
+    title: "Add vault entry",
+    body: el("div", {},
+      el("div", { class: "callout", style: "margin-bottom:16px" }, el("span", { class: "c-ico" }, "🔒"),
+        el("div", { html: "Everything is encrypted at rest. Email password and Discord token are managed from their own tabs." })),
+      field("Type", typeSel), formHost),
     footer: [
       el("button", { class: "btn ghost", onclick: () => modal.close() }, "Cancel"),
       el("button", { class: "btn primary", onclick: async (e) => {
-        if (!keyInput.value.trim()) return toast("Key required");
-        if (!valInput.value) return toast("Value required");
+        let key, value, note = noteInput.value.trim();
+        if (typeSel.value === "site") {
+          const domain = siteIn.value.trim().replace(/^https?:\/\//, "").split("/")[0];
+          if (!domain) return toast("Website required");
+          if (!passIn.value) return toast("Password required");
+          key = `site:${domain.toLowerCase()}`; value = passIn.value;
+          if (userIn.value.trim()) note = note ? `${userIn.value.trim()} · ${note}` : userIn.value.trim();
+        } else {
+          if (!keyIn.value.trim()) return toast("Name required");
+          if (!valInput.value) return toast("Value required");
+          key = keyIn.value.trim(); value = valInput.value;
+        }
         e.target.disabled = true;
         try {
-          await api.post(`/api/profiles/${name}/vault`, { key: keyInput.value.trim(), value: valInput.value, note: noteInput.value.trim() });
-          modal.close(); ok(isEdit ? "Updated" : "Saved", keyInput.value.trim()); go("characters", name);
+          await api.post(`/api/profiles/${name}/vault`, { key, value, note });
+          modal.close(); ok("Saved", key); go("characters", name);
         } catch (er) { e.target.disabled = false; err(er); }
-      } }, isEdit ? "Update" : "Save"),
+      } }, "Save"),
     ],
   });
 }
@@ -752,21 +873,59 @@ function vaultEntryDialog(name, existing) {
 /* ── Discord tab ── */
 function paneDiscord(p) {
   const toggle = switchToggle(p.discord_enabled, "Host this character as a Discord bot");
+  const reqPing = switchToggle(p.discord_require_mention !== false, "In servers, only respond when pinged (DMs always work)");
+  const botsToo = switchToggle(!!p.discord_respond_to_bots, "Respond to other bots' messages");
+  const channels = textInput(p.discord_allowed_channels || "", { placeholder: "general, bot-chat, 123456789  (blank = all channels)", class: "input mono" });
   const token = textInput("", { type: "password", placeholder: "bot token (leave blank to keep current)", class: "input mono" });
-  return el("div", { class: "card pad-lg", style: "max-width:660px" },
+
+  const infoCard = el("div", { class: "card" },
+    el("div", { class: "card-head" }, el("h3", {}, "Bot status")),
+    el("div", { class: "skeleton" }, "Checking the token with Discord…"));
+  api.get(`/api/profiles/${p.name}/discord/info`).then(info => {
+    infoCard.innerHTML = "";
+    infoCard.append(el("div", { class: "card-head" }, el("h3", {}, "Bot status")));
+    if (!info.configured) {
+      infoCard.append(el("div", { class: "svc-note" }, "No token saved yet — add one below."));
+      return;
+    }
+    if (!info.valid) {
+      infoCard.append(el("div", { class: "list" }, kvRow("Token", info.error || "invalid", "down")));
+      return;
+    }
+    const list = el("div", { class: "list" },
+      kvRow("Bot account", info.bot.username, "violet"),
+      kvRow("Servers", String(info.guilds.length), info.guilds.length ? "up" : "down"));
+    info.guilds.forEach(g => list.append(el("div", { class: "list-row" },
+      el("span", { class: "dot up" }), el("span", { class: "list-key" }, g.name),
+      el("span", { class: "list-spacer" }), el("span", { class: "badge-soft" }, g.id))));
+    if (!info.guilds.length) list.append(el("div", { class: "svc-note", style: "padding:10px 0 0" },
+      "The bot isn't in any server yet — invite it from the Discord Developer Portal (OAuth2 → URL generator → bot scope)."));
+    infoCard.append(list);
+  }).catch(e => { infoCard.innerHTML = ""; infoCard.append(el("div", { class: "svc-note" }, String(e.message || e))); });
+
+  const settingsCard = el("div", { class: "card pad-lg" },
     el("div", { class: "card-head" }, el("h3", {}, "Discord bot"),
       el("span", { class: `pill ${p.discord_enabled ? "violet" : "down"}` }, p.discord_enabled ? "enabled" : "disabled")),
-    el("div", { class: "callout", style: "margin-bottom:20px" }, el("span", { class: "c-ico" }, "◈"),
-      el("div", { html: "Create a bot in the Discord Developer Portal and <b>enable the Message Content intent</b>. The token is stored encrypted as <span class='kbd'>discord.token</span>. Run it with <span class='kbd'>pleiades discord " + esc(p.name) + "</span>." })),
-    el("div", { style: "margin-bottom:18px" }, toggle),
+    el("div", { class: "callout", style: "margin-bottom:18px" }, el("span", { class: "c-ico" }, "◈"),
+      el("div", { html: "Create a bot in the Discord Developer Portal and <b>enable the Message Content intent</b>. Run it with <span class='kbd'>pleiades discord " + esc(p.name) + "</span>." })),
+    el("div", { style: "display:flex;flex-direction:column;gap:12px;margin-bottom:18px" }, toggle, reqPing, botsToo),
+    field("Allowed channels", channels, "Server channels (names or ids) the bot may speak in. Blank = everywhere it can see."),
     field("Bot token", token, "Stored encrypted in this character's vault."),
     el("button", { class: "btn primary", onclick: async (e) => {
       e.target.disabled = true;
       try {
-        await api.post(`/api/profiles/${p.name}/discord`, { token: token.value || null, enabled: $("input", toggle).checked });
+        await api.post(`/api/profiles/${p.name}/discord`, {
+          token: token.value || null,
+          enabled: $("input", toggle).checked,
+          require_mention: $("input", reqPing).checked,
+          respond_to_bots: $("input", botsToo).checked,
+          allowed_channels: channels.value.trim(),
+        });
         ok("Discord saved"); go("characters", p.name);
       } catch (er) { e.target.disabled = false; err(er); }
     } }, "Save Discord settings"));
+
+  return el("div", { class: "grid cols-2" }, settingsCard, infoCard);
 }
 
 /* ── Model assignment tab ── */
@@ -813,9 +972,31 @@ async function renderModels() {
   try { data = await api.get("/api/models"); } catch (e) { return err(e); }
   const c = $("#content"); c.innerHTML = "";
 
-  c.append(el("div", { class: "inline-actions", style: "justify-content:flex-end;margin-bottom:18px" },
-    el("button", { class: "btn", onclick: () => fetchDialog() }, "⇣ Fetch from Hugging Face"),
+  const q = textInput("", { placeholder: "Search Hugging Face for GGUF models… (e.g. llama 3.2 instruct)", class: "input mono", style: "flex:1" });
+  const results = el("div", { class: "card", style: "margin-bottom:18px", hidden: "hidden" });
+  const doSearch = async () => {
+    if (!q.value.trim()) return;
+    results.hidden = false; results.innerHTML = ""; results.append(el("div", { class: "skeleton" }, "Searching…"));
+    let r;
+    try { r = await api.get(`/api/models/hf-search?q=${encodeURIComponent(q.value.trim())}`); }
+    catch (e) { results.innerHTML = ""; results.append(el("div", { class: "svc-note", style: "padding:14px" }, String(e.message || e))); return; }
+    results.innerHTML = "";
+    if (!r.results.length) { results.append(el("div", { class: "svc-note", style: "padding:14px" }, "No GGUF repos found.")); return; }
+    const list = el("div", { class: "list" });
+    r.results.forEach(m => list.append(el("div", { class: "list-row" },
+      el("div", {}, el("div", { class: "list-key" }, m.id),
+        el("div", { class: "list-meta" }, `${(m.downloads || 0).toLocaleString()} downloads · ${m.likes || 0} likes`)),
+      el("span", { class: "list-spacer" }),
+      el("button", { class: "btn sm primary", onclick: (e) => { e.target.disabled = true; startFetch(m.id); } }, "⇣ Download best fit"))));
+    results.append(list);
+  };
+  q.addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+  c.append(el("div", { class: "inline-actions", style: "margin-bottom:14px" },
+    q,
+    el("button", { class: "btn", onclick: doSearch }, "Search"),
+    el("button", { class: "btn", title: "Fetch a repo you already know", onclick: () => fetchDialog() }, "⇣ By repo id"),
     el("button", { class: "btn primary", onclick: () => modelDialog() }, "＋ Add model")));
+  c.append(results);
 
   if (!data.models.length) {
     c.append(el("div", { class: "empty" }, el("div", { class: "empty-ico" }, "▤"),
@@ -833,7 +1014,8 @@ async function renderModels() {
     grid.append(el("div", { class: "card hoverable" },
       el("div", { class: "card-head" },
         el("div", { class: "inline-actions" }, el("span", { class: "card-title-ico" }, "▤"), el("h3", {}, m.name)),
-        el("span", { class: `pill ${m.running ? "run" : "down"}` }, m.running ? "● running" : "stopped")),
+        el("span", { class: `pill ${ {running:"up",loading:"warn",crashed:"down"}[m.state] || "down" }` },
+          { running: "● running", loading: "◌ loading…", crashed: "✕ crashed — see logs" }[m.state] || "stopped")),
       el("div", { class: "list" },
         kvRow("File", fname || "—", "down"),
         kvRow("Port", String(m.port), "up"),
@@ -845,6 +1027,7 @@ async function renderModels() {
         m.running
           ? el("button", { class: "btn sm", onclick: () => modelAction(m.name, "stop") }, "■ Stop")
           : el("button", { class: "btn sm primary", onclick: (e) => modelAction(m.name, "start", e.target) }, "▶ Start"),
+        el("button", { class: "btn sm", onclick: () => showLogs(m.name) }, "Logs"),
         el("button", { class: "btn sm", onclick: () => modelDialog(m) }, "Edit"),
         el("span", { class: "list-spacer" }),
         el("button", { class: "btn sm danger", onclick: async () => {
@@ -860,9 +1043,42 @@ async function modelAction(name, action, btn) {
   if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>`; }
   try {
     await api.post(`/api/models/${encodeURIComponent(name)}/${action}`);
-    ok(action === "start" ? "Model started" : "Model stopped", name);
+    ok(action === "start" ? "Model starting — watch its Logs" : "Model stopped", name);
   } catch (e) { err(e); }
   renderModels();
+  if (action === "start") {  // re-render when it settles into running/crashed
+    const probe = setInterval(async () => {
+      try {
+        const data = await api.get("/api/models");
+        const m = data.models.find(x => x.name === name);
+        if (!m || m.state !== "loading") { clearInterval(probe); if (state.view === "models") renderModels(); }
+      } catch { clearInterval(probe); }
+    }, 2500);
+    setTimeout(() => clearInterval(probe), 300000);
+  }
+}
+
+async function showLogs(name) {
+  const pre = el("pre", { class: "log-pre" }, "loading…");
+  const statusPill = el("span", { class: "pill down" }, "…");
+  const refresh = async () => {
+    try {
+      const r = await api.get(`/api/models/${encodeURIComponent(name)}/logs`);
+      pre.textContent = r.log || "(no log output yet)";
+      statusPill.className = `pill ${ {running:"up",loading:"warn",crashed:"down"}[r.state] || "down" }`;
+      statusPill.textContent = r.state;
+      pre.scrollTop = pre.scrollHeight;
+    } catch (e) { pre.textContent = String(e.message || e); }
+  };
+  modal.open({
+    title: `Logs · ${name}`,
+    body: el("div", {}, el("div", { style: "margin-bottom:10px" }, statusPill), pre),
+    footer: [
+      el("button", { class: "btn", onclick: refresh }, "⟳ Refresh"),
+      el("button", { class: "btn ghost", onclick: () => modal.close() }, "Close"),
+    ],
+  });
+  refresh();
 }
 
 function fetchDialog() {
@@ -880,25 +1096,10 @@ function fetchDialog() {
       prog),
     footer: [
       el("button", { class: "btn ghost", onclick: () => modal.close() }, "Cancel"),
-      el("button", { class: "btn primary", onclick: async (e) => {
+      el("button", { class: "btn primary", onclick: (e) => {
         if (!repo.value.trim()) return toast("Repo required");
-        e.target.disabled = true;
-        try { await api.post("/api/models/fetch", { repo: repo.value.trim(), name: name.value.trim(), quant: quant.value.trim() }); }
-        catch (er) { e.target.disabled = false; return err(er); }
-        const timer = setInterval(async () => {
-          let st;
-          try { st = await api.get("/api/models/fetch/status"); } catch { return; }
-          if (st.status === "downloading") {
-            const pct = st.total ? ` ${Math.round(100 * st.done / st.total)}%` : "";
-            prog.textContent = `Downloading ${st.file || "…"}${pct}`;
-          } else if (st.status === "done") {
-            clearInterval(timer); modal.close();
-            ok("Model fetched", `${st.result.name} — ${st.result.chosen}`); renderModels();
-          } else if (st.status === "error") {
-            clearInterval(timer); e.target.disabled = false;
-            prog.textContent = ""; err(new Error(st.error));
-          }
-        }, 700);
+        modal.close();
+        startFetch(repo.value.trim(), name.value.trim(), quant.value.trim());
       } }, "Fetch"),
     ],
   });
@@ -1102,6 +1303,53 @@ async function loadStatusMini() {
   } catch (_) {}
 }
 
+/* ───────────── download dock (bottom-right, non-blocking) ───────────── */
+let dockTimer = null;
+function dockHide() { const d = $("#dl-dock"); d.hidden = true; d.innerHTML = ""; d.classList.remove("done"); d.onclick = null; }
+function trackFetch() {
+  if (dockTimer) return;
+  const poll = async () => {
+    let st;
+    try { st = await api.get("/api/models/fetch/status"); } catch { return; }
+    const d = $("#dl-dock");
+    if (st.status === "downloading") {
+      const pct = st.total ? Math.round(100 * st.done / st.total) : 0;
+      d.hidden = false; d.classList.remove("done"); d.onclick = null;
+      d.innerHTML = "";
+      d.append(
+        el("div", { class: "d-title" }, el("span", {}, `⇣ Downloading ${esc(st.repo || "model")}`),
+          el("button", { class: "d-x", title: "Hide (download continues)", onclick: (e) => { e.stopPropagation(); dockHide(); } }, "✕")),
+        el("div", { class: "d-file" }, `${st.file || "…"}${st.total ? ` — ${pct}% of ${(st.total / 1073741824).toFixed(1)} GiB` : ""}`),
+        el("div", { class: "d-bar" }, el("div", { class: "d-fill", style: `width:${pct}%` })));
+    } else if (st.status === "done" && st.result) {
+      clearInterval(dockTimer); dockTimer = null;
+      d.hidden = false; d.classList.add("done");
+      d.innerHTML = "";
+      d.append(
+        el("div", { class: "d-title" }, el("span", {}, `✓ ${esc(st.result.name)} is ready`),
+          el("button", { class: "d-x", onclick: (e) => { e.stopPropagation(); dockHide(); } }, "✕")),
+        el("div", { class: "d-file" }, `${st.result.chosen} — click to open Models`));
+      d.onclick = () => { dockHide(); go("models"); };
+    } else if (st.status === "error") {
+      clearInterval(dockTimer); dockTimer = null;
+      d.hidden = false; d.classList.remove("done");
+      d.innerHTML = "";
+      d.append(
+        el("div", { class: "d-title" }, el("span", {}, "✕ Download failed"),
+          el("button", { class: "d-x", onclick: () => dockHide() }, "✕")),
+        el("div", { class: "d-file" }, st.error || "unknown error"));
+    }
+  };
+  poll();
+  dockTimer = setInterval(poll, 900);
+}
+async function startFetch(repo, name = "", quant = "") {
+  try { await api.post("/api/models/fetch", { repo, name, quant }); }
+  catch (e) { return err(e); }
+  toast("Download started", repo, "good");
+  trackFetch();
+}
+
 /* ───────────── self-update ───────────── */
 async function checkUpdate() {
   let c;
@@ -1144,3 +1392,4 @@ go("dashboard");
 setInterval(loadStatusMini, 20000);
 checkUpdate();
 setInterval(checkUpdate, 6 * 60 * 1000);
+api.get("/api/models/fetch/status").then(st => { if (st.status === "downloading") trackFetch(); }).catch(() => {});

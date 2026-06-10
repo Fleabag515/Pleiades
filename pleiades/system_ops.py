@@ -134,7 +134,7 @@ def models_op(action: str, *, name: str = "", repo: str = "", query: str = "",
 # profile (self-configuration)
 # --------------------------------------------------------------------------- #
 _PROFILE_FIELDS = ("email_address", "imap_host", "imap_port", "smtp_host",
-                   "smtp_port", "persona_source", "model")
+                   "smtp_port", "model")
 
 
 def profile_show(profile: Profile) -> str:

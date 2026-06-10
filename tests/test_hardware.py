@@ -137,9 +137,12 @@ def test_pick_quant_prefers_largest_that_fits_vram():
 
 
 def test_pick_quant_falls_back_to_ram():
+    # CPU path is capped at 50% of available RAM: Q4_K_M (20 GiB) needs 48 GiB free.
     files = _files(Q8_0=30, Q4_K_M=20, Q2_K=10)
-    c = pick_quant(files, _hw(vram_gb=8, ram_gb=28), n_ctx=4096)
+    c = pick_quant(files, _hw(vram_gb=8, ram_gb=48), n_ctx=4096)
     assert quant_of(c["name"]) == "Q4_K_M"
+    c2 = pick_quant(files, _hw(vram_gb=8, ram_gb=28), n_ctx=4096)
+    assert quant_of(c2["name"]) == "Q2_K"
 
 
 def test_pick_quant_smallest_when_everything_is_too_big():
@@ -147,3 +150,11 @@ def test_pick_quant_smallest_when_everything_is_too_big():
     c = pick_quant(files, _hw(vram_gb=8, ram_gb=16), n_ctx=4096)
     assert quant_of(c["name"]) == "Q2_K"
     assert "smallest" in c["why"]
+
+
+def test_pick_quant_cpu_fallback_prefers_q4_not_q8():
+    """A big Q8 must not be chosen when it would run mostly on CPU."""
+    files = _files(Q8_0=8, Q6_K=6, Q4_K_M=4, Q2_K=2)
+    c = pick_quant(files, _hw(vram_gb=2, ram_gb=32), n_ctx=4096)
+    assert quant_of(c["name"]) == "Q4_K_M"
+    assert "speed" in c["why"]
