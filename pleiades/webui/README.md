@@ -13,7 +13,10 @@ to `127.0.0.1` by default; nothing leaves the machine.
 
 | Area | What you can do |
 |---|---|
-| **Overview** | Live status of Anamnesis, the inference engine, and SearXNG; counts of characters/models; running model servers. |
+| **Overview** | Live status of Anamnesis, the inference engine, and SearXNG (with one-click start/stop); first-run onboarding checklist; counts of characters/models; running model servers. |
+| **Chat** | Talk to any character with **streamed replies** — memory injection, tool calls (search / email / browser / vault), per-character model routing. |
+| **Agent** | Run workspace-harness tasks (`pleiades work`) from the browser: live tool-call feed, **in-UI approval gate** for the `ask` policy, cancel, and job history. |
+| **Hardware** | Detected GPUs/VRAM/RAM/CPU with utilization meters and the planned GPU offload (layers + reasoning) for every registered model. |
 | **Characters** | Create characters, adopt existing Anamnesis characters, delete, and drill into a per-character detail view with tabs. |
 | **· Email** | Provider presets (Gmail / mail.com / Outlook / generic), IMAP/SMTP host+port, and an app password written **encrypted** to the vault (`email.password`). |
 | **· Credentials** | View every vault entry (metadata only by default), **reveal** a value on demand, add/edit/delete custom `site:<domain>` logins and reserved keys. |
@@ -98,4 +101,13 @@ GET    /models          POST /models    list / register
 PUT    /models/{n}      DELETE /models/{n}
 POST   /models/{n}/start  POST /models/{n}/stop
 GET    /email/presets                   provider presets
+
+POST   /profiles/{n}/chat               streamed chat turn (NDJSON: chunk/done/error)
+GET    /work            POST /work      list / start harness jobs
+GET    /work/{id}?since=N               job status + events (incremental)
+POST   /work/{id}/approve               answer a pending 'ask' approval
+POST   /work/{id}/cancel                stop a running job
+GET    /hardware                        GPUs, RAM, CPU + per-model offload plans
+POST   /search/{up|down}                SearXNG via docker compose
+GET    /search/status                   progress of the last search op
 ```
