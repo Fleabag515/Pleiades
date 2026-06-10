@@ -35,15 +35,25 @@ class Tier:
     max_tokens: int = 8192
 
 
-# Default tier table. "chat" is the main brain; the rest are subagent targets.
+# Default tier table. Pleiades is an inference ENGINE first: the default brain runs
+# on our own in-process llama.cpp server (OpenAI-compatible), reached via the "openai"
+# backend. Cloud tiers (Anthropic) and a separate Ollama instance are OPTIONAL — present
+# so the workspace *can* call hosted/other-local models, but local inference through this
+# project is the primary path.
+#
+# The "openai" backend posts to `{openai_host}/chat/completions`; openai_host defaults to
+# our inference server and can be repointed at a character's Anamnesis proxy (which adds
+# memory and upstreams to the same llama.cpp server).
 DEFAULT_TIERS: dict[str, dict] = {
-    # Big reasoning / planning / hard coding -> Claude Opus.
-    "chat":    {"backend": "anthropic", "model": OPUS,   "effort": "high",  "max_tokens": 8192},
-    "coder":   {"backend": "anthropic", "model": OPUS,   "effort": "high",  "max_tokens": 16000},
-    "research":{"backend": "anthropic", "model": SONNET, "effort": "medium","max_tokens": 8192},
-    # Cheap / fast / private -> local Ollama. Swap the model to whatever you pulled.
-    "fast":    {"backend": "ollama",    "model": "qwen2.5:7b",  "max_tokens": 4096},
-    "local":   {"backend": "ollama",    "model": "qwen2.5:7b",  "max_tokens": 4096},
+    # PRIMARY: our local llama.cpp inference engine (default brain + coder).
+    "local":   {"backend": "openai", "model": "local", "max_tokens": 4096},
+    "chat":    {"backend": "openai", "model": "local", "max_tokens": 8192},
+    "coder":   {"backend": "openai", "model": "local", "max_tokens": 16000},
+    # OPTIONAL cloud tiers — require the [workspace] extra (anthropic) + an API key.
+    "cloud":     {"backend": "anthropic", "model": OPUS,   "effort": "high",   "max_tokens": 8192},
+    "cloud-fast":{"backend": "anthropic", "model": SONNET, "effort": "medium", "max_tokens": 8192},
+    # OPTIONAL: a separate Ollama instance (distinct from our engine).
+    "ollama":  {"backend": "ollama", "model": "qwen2.5:7b", "max_tokens": 4096},
 }
 
 
@@ -51,12 +61,12 @@ DEFAULT_TIERS: dict[str, dict] = {
 class Config:
     # --- model routing ---
     tiers: dict[str, Tier] = field(default_factory=dict)
-    default_tier: str = "chat"
+    default_tier: str = "local"
 
     # --- credentials / endpoints ---
     anthropic_api_key: str | None = None
     ollama_host: str = "http://localhost:11434"
-    openai_host: str = "http://127.0.0.1:8084/v1"
+    openai_host: str = "http://127.0.0.1:8080/v1"  # our llama.cpp engine; or a character's Anamnesis proxy
 
     # --- execution policy ---
     # The PC is the agent's home, but unsandboxed is the WORST case, not the
