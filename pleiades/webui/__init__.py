@@ -22,10 +22,10 @@ rebinding or CSRF — see ``_guard.py``. The guard is wired here (not in the lar
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from . import server as _server
-from ._guard import LOOPBACK_HOSTS, allowlist, install_loopback_guard, is_wildcard
+from ._guard import allowlist, install_loopback_guard, is_wildcard
 
 __all__ = ["create_app", "run"]
 
