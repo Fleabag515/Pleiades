@@ -105,6 +105,19 @@ def _int(env: str, default: int) -> int:
         return default
 
 
+def _layers(env: str, default: "int | str") -> "int | str":
+    """n_gpu_layers from the environment: an int, or 'auto' (hardware-planned)."""
+    raw = os.environ.get(env, "").strip()
+    if not raw:
+        return default
+    if raw.lower() == "auto":
+        return "auto"
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 # --------------------------------------------------------------------------- #
 # Model tiers (agent harness)
 # --------------------------------------------------------------------------- #
@@ -155,7 +168,9 @@ class Settings:
     inference_host: str = "127.0.0.1"
     inference_port: int = 8080
     n_ctx: int = 8192
-    n_gpu_layers: int = 0
+    # "auto" (default) plans GPU offload from detected hardware at launch;
+    # an int (-1 all layers, 0 CPU-only) overrides. See pleiades.hardware.
+    n_gpu_layers: "int | str" = "auto"
     chat_format: str = ""  # blank = let llama.cpp auto-detect
 
     # --- Web search ---
@@ -228,7 +243,7 @@ class Settings:
         s.inference_host = os.environ.get("PLEIADES_INFERENCE_HOST", s.inference_host)
         s.inference_port = _int("PLEIADES_INFERENCE_PORT", s.inference_port)
         s.n_ctx = _int("PLEIADES_N_CTX", s.n_ctx)
-        s.n_gpu_layers = _int("PLEIADES_N_GPU_LAYERS", s.n_gpu_layers)
+        s.n_gpu_layers = _layers("PLEIADES_N_GPU_LAYERS", s.n_gpu_layers)
         s.chat_format = os.environ.get("PLEIADES_CHAT_FORMAT", s.chat_format)
         s.searxng_url = os.environ.get("PLEIADES_SEARXNG_URL", s.searxng_url)
         s.backend_base_url = os.environ.get("PLEIADES_BACKEND_BASE_URL", s.backend_base_url)

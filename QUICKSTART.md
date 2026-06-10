@@ -21,8 +21,12 @@ pleiades model add big    ~/models/llama-3.3-70b-q4.gguf       --gpu-layers -1 -
 pleiades model list
 ```
 
-- `--gpu-layers -1` offloads the whole model to the GPU; `0` is CPU-only; a number
-  offloads that many layers (useful to split a big model across limited VRAM).
+- `--gpu-layers auto` (the default) plans the GPU/CPU split from your detected
+  hardware at every launch; `-1` forces the whole model onto the GPU, `0` forces
+  CPU, and a number offloads exactly that many layers.
+- Don't have a GGUF yet? `pleiades model fetch <hf-repo>` downloads the best
+  quantization for your machine and registers it in one step
+  (`pleiades model search llama` to find repos).
 - `--ctx` sets the context window; `--chat-format` overrides the chat template if a
   model needs it (e.g. `chatml`, `llama-3`).
 

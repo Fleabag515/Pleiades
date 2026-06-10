@@ -98,15 +98,21 @@ class ModelCreate(BaseModel):
     name: str
     path: str
     n_ctx: int = 8192
-    n_gpu_layers: int = 0
+    n_gpu_layers: "int | str" = "auto"   # "auto" = planned from hardware at launch
     chat_format: str = ""
 
 
 class ModelUpdate(BaseModel):
     path: Optional[str] = None
     n_ctx: Optional[int] = None
-    n_gpu_layers: Optional[int] = None
+    n_gpu_layers: "Optional[int | str]" = None
     chat_format: Optional[str] = None
+
+
+class ModelFetch(BaseModel):
+    repo: str
+    name: str = ""
+    quant: str = ""   # blank = auto-pick for this machine
 
 
 class AssignModel(BaseModel):
@@ -119,7 +125,7 @@ class SettingsUpdate(BaseModel):
     inference_host: Optional[str] = None
     inference_port: Optional[int] = None
     n_ctx: Optional[int] = None
-    n_gpu_layers: Optional[int] = None
+    n_gpu_layers: "Optional[int | str]" = None
     chat_format: Optional[str] = None
     # services
     anamnesis_control_url: Optional[str] = None
@@ -440,6 +446,56 @@ def create_app() -> FastAPI:
         with pm.open_vault(name) as v:
             ok = v.delete(key)
         return {"ok": ok}
+
+    # ----------------------------- hardware -------------------------------- #
+    @app.get("/api/hardware")
+    def hardware_info() -> dict:
+        from .. import hardware
+        det = hardware.detect()
+        plans = []
+        for m in mm.list():
+            meta = hardware.read_gguf_meta(m["path"])
+            p = hardware.plan(meta, int(m.get("n_ctx", 8192)), det)
+            plans.append({"model": m["name"], "n_gpu_layers": p.n_gpu_layers,
+                          "n_layers": p.n_layers, "reason": p.reason,
+                          "fits_fully": p.fits_fully})
+        return {
+            "gpus": [{"vendor": g.vendor, "name": g.name,
+                      "vram_total": g.vram_total, "vram_free": g.vram_free}
+                     for g in det.gpus],
+            "ram_total": det.ram_total, "ram_available": det.ram_available,
+            "cpu_threads": det.cpu_threads, "unified_memory": det.unified_memory,
+            "summary": det.describe(), "plans": plans,
+        }
+
+    # ------------------------- fetch from Hugging Face ---------------------- #
+    fetch_state: dict[str, Any] = {}
+
+    @app.post("/api/models/fetch")
+    def models_fetch(body: ModelFetch) -> dict:
+        if fetch_state.get("status") == "downloading":
+            raise HTTPException(409, "A download is already in progress.")
+        from ..fetch import FetchError, fetch_model
+
+        def progress(fname: str, done: int, total: int) -> None:
+            fetch_state.update(file=fname, done=done, total=total)
+
+        def work() -> None:
+            fetch_state.update(status="downloading", repo=body.repo, error="",
+                               file="", done=0, total=0)
+            try:
+                entry = fetch_model(body.repo, name=body.name, quant=body.quant,
+                                    progress=progress)
+                fetch_state.update(status="done", result=entry)
+            except (FetchError, Exception) as e:  # surface anything to the UI
+                fetch_state.update(status="error", error=str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"ok": True}
+
+    @app.get("/api/models/fetch/status")
+    def models_fetch_status() -> dict:
+        return fetch_state or {"status": "idle"}
 
     # ----------------------------- models ---------------------------------- #
     @app.get("/api/models")

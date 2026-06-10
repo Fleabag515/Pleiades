@@ -156,6 +156,9 @@ resolve_gpu() {
     CMAKE_ARGS="-DGGML_CUDA=on"; GPU_DESC="NVIDIA CUDA (auto)"
   elif have rocminfo; then
     CMAKE_ARGS="-DGGML_HIPBLAS=on"; GPU_DESC="AMD ROCm (auto)"
+  elif ls /sys/class/drm/card*/device/vendor 2>/dev/null | xargs grep -l 0x1002 >/dev/null 2>&1 && have vulkaninfo; then
+    # AMD GPU present but no ROCm toolkit — Vulkan backend needs no ROCm install.
+    CMAKE_ARGS="-DGGML_VULKAN=on"; GPU_DESC="AMD via Vulkan (auto — install ROCm for best speed)"
   else
     CMAKE_ARGS=""; GPU_DESC="CPU (no GPU detected)"
   fi
@@ -180,9 +183,9 @@ clone_repo() {
 # ---- python package --------------------------------------------------------
 EXTRAS=""
 build_extras() {
-  local e=""
-  [ "$WITH_BROWSER" = "1" ] && e="${e:+$e,}browser"
-  [ "$WITH_DISCORD" = "1" ] && e="${e:+$e,}discord"
+  local e="ui"   # the control panel (pleiades ui) is always available
+  [ "$WITH_BROWSER" = "1" ] && e="$e,browser"
+  [ "$WITH_DISCORD" = "1" ] && e="$e,discord"
   EXTRAS="$e"
 }
 
@@ -235,20 +238,33 @@ start_searxng() {
   ( cd "$INSTALL_DIR" && { docker compose up -d searxng || docker-compose up -d searxng; } ) || warn "Could not start SearXNG."
 }
 
+link_cli() {
+  # Make `pleiades` work from anywhere, no venv activation needed.
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$INSTALL_DIR/.venv/bin/pleiades" "$HOME/.local/bin/pleiades"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) warn "$HOME/.local/bin is not on your PATH — add it to use 'pleiades' directly." ;;
+  esac
+}
+
 finish() {
   echo
   say "Pleiades installed at $INSTALL_DIR  ($GPU_DESC)"
+  HW_LINE="$("$INSTALL_DIR/.venv/bin/pleiades" hw 2>/dev/null | head -3 || true)"
+  [ -n "$HW_LINE" ] && printf '%s\n' "$HW_LINE" | sed 's/^/  /'
   cat <<EOT
 
-  Next steps:
-    cd "$INSTALL_DIR"
-    \$EDITOR .env                 # set PLEIADES_MODEL_PATH to a .gguf model file
-    source .venv/bin/activate
+  Everything is built. Next step — just use it:
+
+    pleiades ui                   # open the control panel in your browser
+
+  Or from the terminal:
+    pleiades model fetch bartowski/Llama-3.2-3B-Instruct-GGUF   # best quant for THIS machine
     pleiades new alice            # create a character (memory + email + vault + browser)
     pleiades chat alice           # talk to it
-    pleiades discord alice        # host it as a Discord bot
 
-  Docs: README.md   ·   Full build brief: CLAUDE.md
+  GPU offload is automatic (n_gpu_layers=auto). Docs: README.md
 EOT
 }
 
@@ -267,6 +283,7 @@ main() {
   fetch_browser
   make_env
   start_searxng
+  link_cli
   finish
 }
 main "$@"

@@ -44,7 +44,9 @@ class Model:
     name: str
     path: str
     n_ctx: int = 8192
-    n_gpu_layers: int = 0     # 0 = CPU, -1 = all layers on GPU (CUDA or ROCm build)
+    # "auto" plans offload from detected hardware at each launch; int overrides
+    # (0 = CPU, -1 = all layers on GPU — CUDA, ROCm, or Metal build).
+    n_gpu_layers: "int | str" = "auto"
     chat_format: str = ""     # blank = llama.cpp auto-detect
     host: str = "127.0.0.1"
     port: int = 0             # assigned on add()
@@ -83,7 +85,8 @@ class ModelManager:
     def _save(self, data: dict) -> None:
         _models_json().write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    def add(self, name: str, path: str, *, n_ctx: int = 8192, n_gpu_layers: int = 0,
+    def add(self, name: str, path: str, *, n_ctx: int = 8192,
+            n_gpu_layers: "int | str" = "auto",
             chat_format: str = "", port: int = 0) -> dict:
         p = Path(path).expanduser()
         if not p.is_file():
@@ -165,12 +168,15 @@ class ModelManager:
         if self.is_running(name):
             return self.base_url(name)
 
+        from .hardware import resolve_layers
+        layers, why = resolve_layers(m.get("n_gpu_layers", "auto"),
+                                     m["path"], int(m.get("n_ctx", 8192)))
         cmd = [
             sys.executable, "-m", "llama_cpp.server",
             "--model", m["path"],
             "--host", m["host"], "--port", str(m["port"]),
             "--n_ctx", str(m["n_ctx"]),
-            "--n_gpu_layers", str(m["n_gpu_layers"]),
+            "--n_gpu_layers", str(layers),
         ]
         if m.get("chat_format"):
             cmd += ["--chat_format", m["chat_format"]]
@@ -178,6 +184,8 @@ class ModelManager:
         logdir = config.PLEIADES_HOME / "logs"
         logdir.mkdir(parents=True, exist_ok=True)
         logf = open(logdir / f"model-{name}.log", "ab")
+        logf.write(f"[pleiades] n_gpu_layers={layers} — {why}\n".encode())
+        logf.flush()
 
         kwargs: dict = {}
         if os.name == "posix":

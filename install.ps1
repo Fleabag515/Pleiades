@@ -126,6 +126,7 @@ function Clone-Repo {
 
 function Get-Extras {
   $e = @()
+  $e += "ui"   # the control panel (pleiades ui) is always available
   if (-not $NoBrowser) { $e += "browser" }
   if (-not $NoDiscord) { $e += "discord" }
   if ($e.Count -eq 0) { return "" } else { return ($e -join ",") }

@@ -123,9 +123,12 @@ class ToolBelt:
 def build_default_belt(ctx: ToolContext) -> ToolBelt:
     """Assemble the standard tools for a character, gated by what's configured."""
     from .search import SearchTool
+    from .system_tools import (CharactersTool, HardwareTool, ModelsTool,
+                               ProfileTool)
     from .vault_tool import VaultTool
 
-    belt = ToolBelt([SearchTool(), VaultTool()])
+    belt = ToolBelt([SearchTool(), VaultTool(), HardwareTool(), ModelsTool(),
+                     ProfileTool(), CharactersTool()])
 
     if ctx.profile.has_email:
         from .email_box import EmailTool

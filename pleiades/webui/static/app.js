@@ -133,6 +133,29 @@ async function renderDashboard() {
     svc("Inference engine", s.services.inference, s.services.inference.model_path ? `default model: ${s.services.inference.model_path.split(/[\\/]/).pop()}` : "no default model set"),
     svc("SearXNG", s.services.searxng, "local web search")));
 
+  c.append(el("div", { class: "section-label" }, "Hardware"));
+  const hwCard = el("div", { class: "card" }, el("div", { class: "skeleton" }, "Detecting hardware…"));
+  c.append(hwCard);
+  api.get("/api/hardware").then(hw => {
+    hwCard.innerHTML = "";
+    const list = el("div", { class: "list" });
+    (hw.gpus.length ? hw.gpus : [null]).forEach(g => list.append(el("div", { class: "list-row" },
+      el("span", { class: `pill ${g ? "run" : "down"}` }, g ? "● GPU" : "no GPU"),
+      el("span", { class: "list-key" }, g ? `${g.name} (${g.vendor})` : "running on CPU"),
+      el("span", { class: "list-spacer" }),
+      g ? el("span", { class: "badge-soft" }, `${(g.vram_free / 1073741824).toFixed(1)} / ${(g.vram_total / 1073741824).toFixed(1)} GiB VRAM free`) : null)));
+    list.append(el("div", { class: "list-row" },
+      el("span", { class: "badge-soft" }, `RAM ${(hw.ram_available / 1073741824).toFixed(1)} / ${(hw.ram_total / 1073741824).toFixed(1)} GiB available${hw.unified_memory ? " (unified)" : ""}`),
+      el("span", { class: "badge-soft" }, `${hw.cpu_threads} CPU threads`)));
+    hw.plans.forEach(pl => list.append(el("div", { class: "list-row" },
+      el("span", { class: `pill ${pl.n_gpu_layers !== 0 ? "run" : "down"}` },
+        pl.n_gpu_layers === -1 ? "all on GPU" : pl.n_gpu_layers === 0 ? "CPU" : `${pl.n_gpu_layers}/${pl.n_layers} on GPU`),
+      el("span", { class: "list-key" }, pl.model),
+      el("span", { class: "list-spacer" }),
+      el("span", { class: "svc-note", title: pl.reason }, pl.reason))));
+    hwCard.append(list);
+  }).catch(() => { hwCard.innerHTML = ""; hwCard.append(el("div", { class: "svc-note" }, "hardware detection unavailable")); });
+
   c.append(el("div", { class: "section-label" }, "At a glance"));
   const stat = (val, label, sub) => el("div", { class: "card stat" },
     el("div", { class: "stat-row" }, el("span", { class: "stat-val" }, String(val)), sub ? el("span", { class: "stat-sub" }, sub) : null),
@@ -508,6 +531,7 @@ async function renderModels() {
   const c = $("#content"); c.innerHTML = "";
 
   c.append(el("div", { class: "inline-actions", style: "justify-content:flex-end;margin-bottom:18px" },
+    el("button", { class: "btn", onclick: () => fetchDialog() }, "⇣ Fetch from Hugging Face"),
     el("button", { class: "btn primary", onclick: () => modelDialog() }, "＋ Add model")));
 
   if (!data.models.length) {
@@ -556,13 +580,54 @@ async function modelAction(name, action, btn) {
   renderModels();
 }
 
+function fetchDialog() {
+  const repo = textInput("", { placeholder: "bartowski/Llama-3.2-3B-Instruct-GGUF", class: "input mono" });
+  const name = textInput("", { placeholder: "(optional — derived from repo)", class: "input mono" });
+  const quant = textInput("", { placeholder: "(optional — auto-picked for this machine)", class: "input mono" });
+  const prog = el("div", { class: "svc-note", style: "margin-top:10px" }, "");
+  modal.open({
+    title: "Fetch a model from Hugging Face",
+    body: el("div", {},
+      el("div", { class: "callout", style: "margin-bottom:16px" }, el("span", { class: "c-ico" }, "⇣"),
+        el("div", { html: "Pleiades picks the <b>best quantization that fits this machine</b> (checked against detected VRAM/RAM), downloads it, and registers it with auto GPU offload." })),
+      field("Hugging Face repo", repo),
+      el("div", { class: "field-row" }, field("Name", name), field("Force quant", quant)),
+      prog),
+    footer: [
+      el("button", { class: "btn ghost", onclick: () => modal.close() }, "Cancel"),
+      el("button", { class: "btn primary", onclick: async (e) => {
+        if (!repo.value.trim()) return toast("Repo required");
+        e.target.disabled = true;
+        try { await api.post("/api/models/fetch", { repo: repo.value.trim(), name: name.value.trim(), quant: quant.value.trim() }); }
+        catch (er) { e.target.disabled = false; return err(er); }
+        const timer = setInterval(async () => {
+          let st;
+          try { st = await api.get("/api/models/fetch/status"); } catch { return; }
+          if (st.status === "downloading") {
+            const pct = st.total ? ` ${Math.round(100 * st.done / st.total)}%` : "";
+            prog.textContent = `Downloading ${st.file || "…"}${pct}`;
+          } else if (st.status === "done") {
+            clearInterval(timer); modal.close();
+            ok("Model fetched", `${st.result.name} — ${st.result.chosen}`); renderModels();
+          } else if (st.status === "error") {
+            clearInterval(timer); e.target.disabled = false;
+            prog.textContent = ""; err(new Error(st.error));
+          }
+        }, 700);
+      } }, "Fetch"),
+    ],
+  });
+}
+
+const gpuVal = (v) => { const t = String(v).trim().toLowerCase(); return (t === "" || t === "auto") ? "auto" : (parseInt(t, 10) || 0); };
+
 function modelDialog(existing) {
   const isEdit = !!existing;
   const name = textInput(existing ? existing.name : "", { placeholder: "qwen", class: "input mono" });
   if (isEdit) name.setAttribute("readonly", "readonly");
   const path = textInput(existing ? existing.path : "", { placeholder: "~/models/qwen.gguf  or  C:\\models\\qwen.gguf", class: "input mono" });
   const nctx = textInput(existing ? existing.n_ctx : 8192, { type: "number", class: "input mono" });
-  const gpu  = textInput(existing ? existing.n_gpu_layers : 0, { type: "number", class: "input mono" });
+  const gpu  = textInput(existing ? String(existing.n_gpu_layers) : "auto", { class: "input mono", placeholder: "auto" });
   const fmt  = el("select", { class: "select" },
     ...["", "chatml", "llama-3", "qwen", "mistral-instruct", "gemma"].map(o =>
       el("option", { value: o, selected: existing && existing.chat_format === o ? "selected" : null }, o || "auto-detect")));
@@ -571,7 +636,7 @@ function modelDialog(existing) {
     title: isEdit ? `Edit model · ${existing.name}` : "Register a GGUF model",
     body: el("div", {},
       el("div", { class: "callout", style: "margin-bottom:16px" }, el("span", { class: "c-ico" }, "▤"),
-        el("div", { html: "Any GGUF llama.cpp supports works. Use an absolute path (Linux or Windows). <span class='kbd'>GPU layers = -1</span> offloads all layers; <span class='kbd'>0</span> is CPU-only." })),
+        el("div", { html: "Any GGUF llama.cpp supports works. Use an absolute path (Linux or Windows). <span class='kbd'>GPU layers = auto</span> plans the GPU/CPU split from your hardware at launch; <span class='kbd'>-1</span> forces all layers, <span class='kbd'>0</span> forces CPU." })),
       field("Name", name, isEdit ? "Rename by removing and re-adding." : "A short handle you'll assign to characters."),
       field("Path to .gguf", path),
       el("div", { class: "field-row" },
@@ -585,11 +650,11 @@ function modelDialog(existing) {
         try {
           if (isEdit) {
             await api.put(`/api/models/${encodeURIComponent(existing.name)}`, {
-              path: path.value.trim(), n_ctx: +nctx.value || 8192, n_gpu_layers: +gpu.value, chat_format: fmt.value });
+              path: path.value.trim(), n_ctx: +nctx.value || 8192, n_gpu_layers: gpuVal(gpu.value), chat_format: fmt.value });
           } else {
             await api.post("/api/models", {
               name: name.value.trim(), path: path.value.trim(), n_ctx: +nctx.value || 8192,
-              n_gpu_layers: +gpu.value, chat_format: fmt.value });
+              n_gpu_layers: gpuVal(gpu.value), chat_format: fmt.value });
           }
           modal.close(); ok(isEdit ? "Model updated" : "Model registered", name.value.trim()); renderModels();
         } catch (er) { e.target.disabled = false; err(er); }

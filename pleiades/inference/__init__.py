@@ -83,6 +83,11 @@ class InferenceServer:
             raise InferenceError(
                 "PLEIADES_MODEL_PATH is not set. Point it at a .gguf model file."
             )
+        from ..hardware import resolve_layers
+
+        layers, why = resolve_layers(self.settings.n_gpu_layers,
+                                     self.settings.model_path, self.settings.n_ctx)
+        print(f"[pleiades] inference: n_gpu_layers={layers} — {why}")
         cmd = [
             sys.executable,
             "-m",
@@ -96,7 +101,7 @@ class InferenceServer:
             "--n_ctx",
             str(self.settings.n_ctx),
             "--n_gpu_layers",
-            str(self.settings.n_gpu_layers),
+            str(layers),
         ]
         if self.settings.chat_format:
             cmd += ["--chat_format", self.settings.chat_format]

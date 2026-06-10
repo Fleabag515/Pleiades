@@ -334,6 +334,34 @@ def serve() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# hw — what this machine has and how models will be placed on it
+# --------------------------------------------------------------------------- #
+@cli.command()
+@click.option("--model", "model_name", default=None,
+              help="Also show the offload plan for a registered model.")
+def hw(model_name: str | None) -> None:
+    """Show detected hardware (GPU/VRAM/RAM) and how models map onto it."""
+    from . import hardware
+    det = hardware.detect()
+    console.print(det.describe())
+    from .models import ModelManager
+    mm = ModelManager()
+    targets = [m for m in mm.list() if not model_name or m["name"] == model_name]
+    s = config.Settings.load()
+    if s.model_path and not model_name:
+        targets.insert(0, {"name": "(default engine)", "path": s.model_path,
+                           "n_ctx": s.n_ctx})
+    for m in targets:
+        meta = hardware.read_gguf_meta(m["path"])
+        p = hardware.plan(meta, int(m.get("n_ctx", 8192)), det)
+        console.print(f"\n[bold]{m['name']}[/bold] → n_gpu_layers="
+                      f"{p.n_gpu_layers}\n  [dim]{p.reason}[/dim]")
+    if not targets:
+        console.print("\n[dim]No models registered yet — try: "
+                      "pleiades model fetch <hf-repo>[/dim]")
+
+
+# --------------------------------------------------------------------------- #
 # ui — local web control panel
 # --------------------------------------------------------------------------- #
 @cli.command()
@@ -425,11 +453,12 @@ def model() -> None:
 @click.argument("name")
 @click.argument("path")
 @click.option("--ctx", "n_ctx", default=8192, show_default=True, help="Context window.")
-@click.option("--gpu-layers", "n_gpu_layers", default=0, show_default=True,
-              help="Layers to offload to GPU (-1 = all). Works for NVIDIA/CUDA and AMD/ROCm builds.")
+@click.option("--gpu-layers", "n_gpu_layers", default="auto", show_default=True,
+              help="GPU offload: 'auto' (planned from detected hardware at launch), "
+                   "-1 = all layers, 0 = CPU. NVIDIA/CUDA, AMD/ROCm, Apple/Metal builds.")
 @click.option("--chat-format", default="", help="Override chat template (e.g. chatml, llama-3).")
 @click.option("--port", default=0, help="Fixed port (0 = auto-assign).")
-def model_add(name: str, path: str, n_ctx: int, n_gpu_layers: int,
+def model_add(name: str, path: str, n_ctx: int, n_gpu_layers: str,
               chat_format: str, port: int) -> None:
     """Register a GGUF model file under NAME."""
     from .models import ModelManager, ModelError
@@ -442,6 +471,59 @@ def model_add(name: str, path: str, n_ctx: int, n_gpu_layers: int,
     console.print(f"[green]Added model '{name}'[/green] → {m['path']} "
                   f"(port {m['port']}, gpu_layers {m['n_gpu_layers']}).")
     console.print(f"Start it: [bold]pleiades model start {name}[/bold]")
+
+
+@model.command("fetch")
+@click.argument("repo")
+@click.option("--name", default="", help="Registry name (default: derived from repo).")
+@click.option("--quant", default="", help="Force a quant (e.g. Q4_K_M); default: auto-pick for this machine.")
+@click.option("--ctx", "n_ctx", default=8192, show_default=True, help="Context window to plan for.")
+def model_fetch(repo: str, name: str, quant: str, n_ctx: int) -> None:
+    """Download the best GGUF quant for THIS machine from a Hugging Face REPO.
+
+    Example: pleiades model fetch bartowski/Llama-3.2-3B-Instruct-GGUF
+    """
+    from .fetch import FetchError, fetch_model
+    from rich.progress import (BarColumn, DownloadColumn, Progress, TextColumn,
+                               TransferSpeedColumn)
+    with Progress(TextColumn("[bold blue]{task.fields[fname]}"), BarColumn(),
+                  DownloadColumn(), TransferSpeedColumn(), console=console) as bar:
+        tasks: dict[str, object] = {}
+
+        def progress(fname: str, done: int, total: int) -> None:
+            if fname not in tasks:
+                tasks[fname] = bar.add_task("dl", fname=fname, total=total or None)
+            bar.update(tasks[fname], completed=done, total=total or None)
+
+        try:
+            entry = fetch_model(repo, name=name, quant=quant, n_ctx=n_ctx,
+                                progress=progress)
+        except FetchError as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+    console.print(f"[green]Registered '{entry['name']}'[/green] — {entry['chosen']}")
+    console.print(f"[dim]{entry['why']}[/dim]")
+    console.print(f"Chat with it: [bold]pleiades model use <character> {entry['name']}[/bold]")
+
+
+@model.command("search")
+@click.argument("query", nargs=-1, required=True)
+@click.option("--limit", default=8, show_default=True)
+def model_search(query: tuple[str, ...], limit: int) -> None:
+    """Search Hugging Face for GGUF model repos."""
+    from .fetch import FetchError, search_gguf_repos
+    try:
+        rows = search_gguf_repos(" ".join(query), limit=limit)
+    except FetchError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    if not rows:
+        console.print("No GGUF repos found.")
+        return
+    for r in rows:
+        console.print(f"- [bold]{r['id']}[/bold]  "
+                      f"[dim]{r['downloads']:,} downloads · {r['likes']} likes[/dim]")
+    console.print("\nFetch one: [bold]pleiades model fetch <repo-id>[/bold]")
 
 
 @model.command("list")

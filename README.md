@@ -78,14 +78,21 @@ pip install -e ".[all]"          # core + browser + discord
 # with dev/test tools: pip install -e ".[all,dev]"
 ```
 
-### GPU inference (optional but recommended for large models)
+### GPU inference
 
-`llama-cpp-python` ships CPU-only by default. To build with CUDA/Metal/etc., set the
-appropriate flag before install, e.g.:
+The one-line installer detects your GPU and builds the right backend automatically
+(NVIDIA CUDA, AMD ROCm — or Vulkan when ROCm isn't installed — and Apple Metal).
+At runtime, GPU offload is **automatic too**: `n_gpu_layers` defaults to `auto`,
+which reads each GGUF's real layer count, measures free VRAM/RAM, and plans the
+best GPU/CPU split at launch (`pleiades hw` shows the plan and the reasoning).
+Set an explicit number (`-1` all layers, `0` CPU) to override.
+
+For manual installs, set the backend flag before pip:
 
 ```bash
-CMAKE_ARGS="-DGGML_CUDA=on" pip install -e ".[all]"   # NVIDIA
-CMAKE_ARGS="-DGGML_METAL=on" pip install -e ".[all]"  # Apple Silicon
+CMAKE_ARGS="-DGGML_CUDA=on"   pip install -e ".[all]"  # NVIDIA
+CMAKE_ARGS="-DGGML_HIPBLAS=on" pip install -e ".[all]" # AMD ROCm
+CMAKE_ARGS="-DGGML_METAL=on"  pip install -e ".[all]"  # Apple Silicon
 ```
 
 ### One-time external setup
