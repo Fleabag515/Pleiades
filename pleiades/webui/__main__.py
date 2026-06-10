@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 
-from .server import run
+# Use the package-level run() (guarded), not server.run directly, so the
+# loopback guard is scoped to the chosen bind host on this path too.
+from . import run
 
 
 def main() -> None:
