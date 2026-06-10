@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable, get_type_hints
+from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 
 
 _PYTYPE_TO_JSON = {
@@ -126,13 +126,21 @@ def _build_schema(func: Callable) -> dict[str, Any]:
         if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
             continue
         ann = hints.get(pname, str)
-        origin = getattr(ann, "__origin__", None)
+        origin = get_origin(ann)
+        # Unwrap Optional[T] / Union[T, None] to the underlying type so the
+        # schema reports e.g. integer instead of falling back to string.
+        if origin is Union:
+            non_none = [a for a in get_args(ann) if a is not type(None)]
+            if non_none:
+                ann = non_none[0]
+                origin = get_origin(ann)
         jtype = _PYTYPE_TO_JSON.get(origin or ann, "string")
         prop: dict[str, Any] = {"type": jtype}
         if pname in param_docs:
             prop["description"] = param_docs[pname]
-        if origin in (list,) or ann in (list,):
-            prop["items"] = {"type": "string"}
+        if origin is list or ann is list:
+            elem = next(iter(get_args(ann)), str)
+            prop["items"] = {"type": _PYTYPE_TO_JSON.get(elem, "string")}
         props[pname] = prop
         if p.default is inspect._empty:
             required.append(pname)
