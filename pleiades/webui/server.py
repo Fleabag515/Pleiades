@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover
     httpx = None  # type: ignore
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -119,6 +119,22 @@ class ModelFetch(BaseModel):
 
 class AssignModel(BaseModel):
     model: str  # "" clears the assignment (back to default engine)
+
+
+class ChatBody(BaseModel):
+    message: str
+    system: Optional[str] = None
+
+
+class WorkStart(BaseModel):
+    task: str
+    character: str = ""
+    tier: str = ""
+    policy: str = ""
+
+
+class WorkApprove(BaseModel):
+    approve: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -211,7 +227,7 @@ def _profile_view(p: Profile) -> dict:
 # App factory
 # --------------------------------------------------------------------------- #
 def create_app() -> FastAPI:
-    app = FastAPI(title="Pleiades Control Panel", version="1.0.0")
+    app = FastAPI(title="Pleiades Control Panel", version="2.0.0")
 
     settings = config.Settings.load()
     pm = ProfileManager(settings)
@@ -550,6 +566,200 @@ def create_app() -> FastAPI:
     @app.get("/api/email/presets")
     def email_presets() -> dict:
         return config.EMAIL_PRESETS
+
+    # ----------------------------- chat ------------------------------------ #
+    @app.post("/api/profiles/{name}/chat")
+    def profile_chat(name: str, body: ChatBody) -> StreamingResponse:
+        """Stream a chat turn with a character as NDJSON lines.
+
+        Each line is one of:
+            {"type": "chunk", "text": "..."}   - assistant text
+            {"type": "done"}                    - turn complete
+            {"type": "error", "error": "..."}  - something went wrong
+        Memory injection/storage is Anamnesis's job; we send only the new turn.
+        """
+        try:
+            p = pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+
+        def gen():
+            import json as _json
+            try:
+                from ..engine import Engine
+                engine = Engine(settings=config.Settings.load(),
+                                manager=pm, anamnesis=an)
+                for chunk in engine.stream(p, body.message, system=body.system):
+                    if chunk:
+                        yield _json.dumps({"type": "chunk", "text": chunk}) + "\n"
+                yield _json.dumps({"type": "done"}) + "\n"
+            except Exception as e:  # surface anything to the UI, never log secrets
+                yield _json.dumps({"type": "error", "error": str(e)}) + "\n"
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    # ----------------------------- agent work ------------------------------- #
+    # Background jobs for the workspace harness ("pleiades work" in the UI).
+    work_jobs: dict[str, dict] = {}            # id -> serializable job state
+    work_ctl: dict[str, dict] = {}             # id -> {event, answer} (not serialized)
+
+    def _job_view(job: dict, since: int = 0) -> dict:
+        d = {k: v for k, v in job.items() if k != "events"}
+        d["events"] = job["events"][since:]
+        d["event_count"] = len(job["events"])
+        return d
+
+    @app.get("/api/work")
+    def work_list() -> dict:
+        return {"jobs": [
+            {"id": j["id"], "task": j["task"], "character": j["character"],
+             "status": j["status"], "started": j["started"],
+             "pending_approval": j["pending_approval"]}
+            for j in sorted(work_jobs.values(), key=lambda x: -x["started"])
+        ]}
+
+    @app.post("/api/work")
+    def work_start(body: WorkStart) -> dict:
+        import uuid
+        task_text = (body.task or "").strip()
+        if not task_text:
+            raise HTTPException(400, "Task must not be empty.")
+        job_id = uuid.uuid4().hex[:12]
+        job = {"id": job_id, "task": task_text, "character": body.character,
+               "tier": body.tier, "policy": body.policy, "status": "running",
+               "started": time.time(), "finished": None, "events": [],
+               "result": "", "error": "", "steps": 0,
+               "pending_approval": None, "cancel": False}
+        ctl = {"event": threading.Event(), "answer": {"ok": False}}
+        work_jobs[job_id] = job
+        work_ctl[job_id] = ctl
+
+        def emit(kind: str, payload: Any) -> None:
+            if job["cancel"]:
+                raise RuntimeError("cancelled by user")
+            if kind == "tool_call":
+                job["events"].append({"kind": "tool_call", "ts": time.time(),
+                                      "name": getattr(payload, "name", str(payload))})
+            elif kind == "tool_result":
+                _call, out, is_err = payload
+                job["events"].append({"kind": "tool_result", "ts": time.time(),
+                                      "name": getattr(_call, "name", ""),
+                                      "ok": not is_err,
+                                      "output": (out or "")[:2000]})
+            elif kind == "text":
+                job["events"].append({"kind": "text", "ts": time.time(),
+                                      "text": str(payload)})
+
+        def runner() -> None:
+            try:
+                from ..harness import Agent, Config as HarnessConfig
+                from ..harness import builtins as _builtins      # noqa: F401
+                from ..harness import identity as _identity      # noqa: F401
+                from ..harness.subagent import bind_context
+                from ..harness.builtins.memory import bind_memory
+                from ..harness.anamnesis import Anamnesis as WorkingMemory
+
+                cfg = HarnessConfig.load()
+                if body.policy:
+                    cfg.exec_policy = body.policy
+                if body.character:
+                    _identity.bind_character(body.character, cfg=cfg)
+                bind_memory(WorkingMemory.from_config(cfg))
+
+                def approve(tool, args) -> bool:
+                    """Permission gate; 'ask' surfaces an approval card in the UI."""
+                    policy = cfg.exec_policy
+                    if policy == "allow":
+                        return True
+                    if policy == "deny":
+                        return False
+                    import json as _json
+                    job["pending_approval"] = {
+                        "tool": getattr(tool, "name", str(tool)),
+                        "args": _json.dumps(args)[:300],
+                    }
+                    ctl["event"].clear()
+                    answered = ctl["event"].wait(timeout=600)   # 10 min, then deny
+                    job["pending_approval"] = None
+                    return bool(ctl["answer"]["ok"]) if answered else False
+
+                agent = Agent(cfg, tier_name=body.tier or None, approve=approve)
+                bind_context(cfg, depth=0, approve=agent.approve)
+                result = agent.run(task_text, on_event=emit)
+                job["result"] = getattr(result, "answer", str(result))
+                job["steps"] = getattr(result, "steps", 0)
+                job["status"] = "done"
+            except Exception as e:
+                job["status"] = "cancelled" if job["cancel"] else "error"
+                job["error"] = "" if job["cancel"] else str(e)
+            finally:
+                job["finished"] = time.time()
+
+        threading.Thread(target=runner, daemon=True).start()
+        return {"id": job_id}
+
+    @app.get("/api/work/{job_id}")
+    def work_get(job_id: str, since: int = 0) -> dict:
+        job = work_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "No such job.")
+        return _job_view(job, since)
+
+    @app.post("/api/work/{job_id}/approve")
+    def work_approve(job_id: str, body: WorkApprove) -> dict:
+        job, ctl = work_jobs.get(job_id), work_ctl.get(job_id)
+        if not job or not ctl:
+            raise HTTPException(404, "No such job.")
+        if not job["pending_approval"]:
+            raise HTTPException(409, "Nothing awaiting approval.")
+        ctl["answer"]["ok"] = bool(body.approve)
+        ctl["event"].set()
+        return {"ok": True}
+
+    @app.post("/api/work/{job_id}/cancel")
+    def work_cancel(job_id: str) -> dict:
+        job, ctl = work_jobs.get(job_id), work_ctl.get(job_id)
+        if not job:
+            raise HTTPException(404, "No such job.")
+        job["cancel"] = True
+        if ctl and job["pending_approval"]:        # unblock a waiting approval
+            ctl["answer"]["ok"] = False
+            ctl["event"].set()
+        return {"ok": True}
+
+    # ----------------------------- search service --------------------------- #
+    search_state: dict[str, Any] = {}
+
+    @app.post("/api/search/{direction}")
+    def search_ctl(direction: str) -> dict:
+        if direction not in ("up", "down"):
+            raise HTTPException(400, "Direction must be 'up' or 'down'.")
+        if search_state.get("status") == "working":
+            raise HTTPException(409, "A search-service operation is in progress.")
+        compose = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+        if not compose.is_file():
+            raise HTTPException(400, f"docker-compose.yml not found at {compose}")
+        args = ["docker", "compose", "-f", str(compose)]
+        args += ["up", "-d"] if direction == "up" else ["down"]
+
+        def runner() -> None:
+            search_state.update(status="working", direction=direction, error="")
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=600)
+                if r.returncode != 0:
+                    search_state.update(status="error",
+                                        error=(r.stderr or r.stdout or "")[-800:])
+                else:
+                    search_state.update(status="done")
+            except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+                search_state.update(status="error", error=str(e))
+
+        threading.Thread(target=runner, daemon=True).start()
+        return {"ok": True}
+
+    @app.get("/api/search/status")
+    def search_status() -> dict:
+        return search_state or {"status": "idle"}
 
     # ----------------------------- self-update ------------------------------ #
     update_state: dict[str, Any] = {}
