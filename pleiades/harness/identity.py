@@ -65,6 +65,12 @@ def bind_character(
     workspace.mkdir(parents=True, exist_ok=True)
     if cfg is not None:
         cfg.workspace_root = str(workspace)
+        # Scope the in-process working/long-term memory tier to this character, so a
+        # profile's memory IS the character's memory (the canonical cross-session
+        # context manager remains the Anamnesis daemon — see pleiades.anamnesis).
+        mem = repo_config.profile_dir(name) / "memory"
+        mem.mkdir(parents=True, exist_ok=True)
+        cfg.memory_dir = str(mem)
 
     # Route inference through the character's Anamnesis proxy (memory + llama.cpp).
     if cfg is not None and route_inference:

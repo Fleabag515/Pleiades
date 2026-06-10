@@ -47,3 +47,14 @@ def test_email_without_config_is_graceful():
     identity.bind_character(name, cfg=None, route_inference=False)
     out = registry.get("email").func(action="list_unread")
     assert "no email configured" in out.lower()
+
+
+def test_bind_scopes_memory_and_workspace_to_character():
+    from pleiades.harness import Config
+    from pleiades import config as repo_config
+    name = _make_profile("carol_t")
+    cfg = Config.load()
+    identity.bind_character(name, cfg=cfg, route_inference=False)
+    pdir = str(repo_config.profile_dir(name))
+    assert cfg.workspace_root.startswith(pdir)
+    assert cfg.memory_dir.startswith(pdir)

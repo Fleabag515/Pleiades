@@ -5,6 +5,8 @@ on 127.0.0.1:9000 and exposes each character as its own OpenAI-compatible proxy 
 an auto-assigned port. Pleiades never reimplements memory — it just talks to these.
 
 See CLAUDE.md §2 for the full contract.
+
+This is the CANONICAL Anamnesis: the context manager / memory proxy. The harness's in-process working-memory tier (pleiades.harness.anamnesis) augments it per-character; it does not replace it.
 """
 
 from __future__ import annotations

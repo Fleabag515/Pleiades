@@ -1,5 +1,16 @@
 """
-anamnesis.py — Pleiades's memory. Two tiers, one store.
+anamnesis.py — the harness's IN-PROCESS memory tier (working scratchpad + long-term
+notes + semantic recall). It AUGMENTS, and does not replace, the canonical Anamnesis
+context manager: the cross-session memory daemon/proxy lives in
+``pleiades.anamnesis`` (a thin client to the external Anamnesis service that injects
+and retrieves memory around every model turn). When a character is bound
+(``pleiades.harness.identity.bind_character``) this tier is scoped to that character's
+own ``~/.pleiades/profiles/<name>/memory`` dir, so a profile's working memory is part
+of its identity. The embedding/hybrid-recall logic here is the "improvement" folded
+into the Anamnesis subsystem.
+
+----
+Two tiers, one store.
 
   WORKING memory  (the agent's live scratchpad)
       A single rolling markdown doc the agent reads and writes *during* a task —
