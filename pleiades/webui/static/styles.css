@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════
    Pleiades — refined deep-space design system  ·  v2
    Consumer-grade dark UI. No build step, no dependencies.
-   ═══════════════════════════════════════════════════════════ */
+   ═════════════════════════════════════════════════════════ */
 :root {
   /* surfaces */
   --bg:          #07090f;
@@ -455,6 +455,7 @@ a { color: var(--accent); text-decoration: none; }
   backdrop-filter: blur(6px); z-index: 50;
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
+.modal-backdrop[hidden] { display: none; }
 .modal {
   width: 100%; max-width: 560px; max-height: 88vh; display: flex; flex-direction: column;
   background: linear-gradient(180deg, var(--panel-2), var(--panel));
