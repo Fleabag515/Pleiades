@@ -34,3 +34,9 @@ Thumbs.db
 # vendored/runtime
 __pycache__/
 *.pyc
+
+# runtime working-memory + model state
+memory/
+.pleiades/
+config.json
+models*.json
