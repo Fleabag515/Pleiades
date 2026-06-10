@@ -36,7 +36,8 @@ def notify(title: str, message: str) -> str:
     system = platform.system()
     try:
         if system == "Darwin":
-            esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+            def esc(s: str) -> str:
+                return s.replace("\\", "\\\\").replace('"', '\\"')
             script = (f'display notification "{esc(message)}" '
                       f'with title "{esc(title)}"')
             subprocess.run(["osascript", "-e", script], timeout=5)
