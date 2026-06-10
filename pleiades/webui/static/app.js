@@ -1,7 +1,8 @@
-/* ═══════════════════════════════════════════════════════════════
-   Pleiades control panel — frontend
+/* ═══════════════════════════════════════════════════════════
+   Pleiades — frontend v2
    Single-page app over the FastAPI backend. No build step, no deps.
-   ═══════════════════════════════════════════════════════════════ */
+   Views: Overview · Chat · Agent · Characters · Models · Hardware · Settings
+   ═══════════════════════════════════════════════════════════ */
 "use strict";
 
 /* ───────────── tiny API client ───────────── */
@@ -38,6 +39,7 @@ const el = (tag, attrs = {}, ...kids) => {
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 const initials = (name) => (name || "?").slice(0, 2).toUpperCase();
+const GiB = (b) => (b / 1073741824).toFixed(1);
 const ago = (ts) => {
   if (!ts) return "—";
   const d = Math.floor(Date.now() / 1000 - ts);
@@ -88,12 +90,20 @@ function switchToggle(checked, labelText) {
 }
 
 /* ───────────── global state + router ───────────── */
-const state = { view: "dashboard", detail: null, cache: {} };
+const state = {
+  view: "dashboard", detail: null, cache: {},
+  chats: {},            // character -> [{role, text}]
+  chatWith: null,       // active chat character
+  workJob: null,        // active job id being watched
+};
 
 const VIEWS = {
-  dashboard:  { title: "Overview",   sub: "Daemons, characters, and models at a glance.", render: renderDashboard },
-  characters: { title: "Characters", sub: "Each character is an Anamnesis profile with its own email, vault, browser, and model.", render: renderCharacters },
-  models:     { title: "Models",     sub: "Register GGUF models and run a local server for each.", render: renderModels },
+  dashboard:  { title: "Overview",   sub: "Services, characters, and models at a glance.", render: renderDashboard },
+  chat:       { title: "Chat",       sub: "Talk to a character — memory and tools wired in.", render: renderChat, full: true },
+  work:       { title: "Agent",      sub: "Give a character real machine work: files, git, shell, web, and 60+ tools.", render: renderWork },
+  characters: { title: "Characters", sub: "Each character binds memory, email, vault, browser, and a model to one identity.", render: renderCharacters },
+  models:     { title: "Models",     sub: "Register GGUF models and run a local OpenAI-compatible server for each.", render: renderModels },
+  hardware:   { title: "Hardware",   sub: "Detected GPU / RAM and the planned GPU offload for each model.", render: renderHardware },
   settings:   { title: "Settings",   sub: "Engine, services, and agent-harness configuration.", render: renderSettings },
 };
 
@@ -103,21 +113,42 @@ function go(view, detail = null) {
   const v = VIEWS[view];
   $("#view-title").textContent = v.title;
   $("#view-sub").textContent = v.sub;
+  $("#content").classList.toggle("full", !!v.full);
   v.render();
 }
 $$(".nav-item").forEach(b => b.addEventListener("click", () => go(b.dataset.view)));
 $("#refresh-btn").addEventListener("click", () => { loadStatusMini(); go(state.view, state.detail); });
 
-function loading() { $("#content").innerHTML = `<div class="skeleton"><span class="spinner"></span> Loading…</div>`; }
+function loading() { $("#content").innerHTML = `<div class="skeleton" style="padding:36px"><span class="spinner"></span> Loading…</div>`; }
 
-/* ═══════════════ DASHBOARD ═══════════════ */
+/* ═══════════════ OVERVIEW ═══════════════ */
 async function renderDashboard() {
   loading();
   let s;
   try { s = await api.get("/api/status"); } catch (e) { return err(e); }
   const c = $("#content"); c.innerHTML = "";
 
-  const svc = (name, info, extra) => {
+  /* first-run onboarding */
+  const needsModel = !s.counts.models && s.services.inference.state === "no_model";
+  const needsChar  = !s.counts.profiles;
+  if (needsModel || needsChar || !s.services.anamnesis.up) {
+    const step = (n, done, title, sub, action) => el("div", { class: `step ${done ? "done" : ""}` },
+      el("span", { class: "step-num" }, done ? "✓" : String(n)),
+      el("div", { class: "step-body" }, el("div", { class: "step-title" }, title), el("div", { class: "step-sub" }, sub)),
+      !done && action ? el("button", { class: "btn sm primary", onclick: action.fn }, action.label) : null);
+    c.append(el("div", { class: "card pad-lg onboard", style: "margin-bottom:24px" },
+      el("div", { class: "card-head" }, el("h3", {}, "Welcome to Pleiades"), el("span", { class: "pill run" }, "setup")),
+      el("div", { class: "muted", style: "margin-bottom:8px" }, "Three steps and your first character is alive — local model, persistent memory, and a full tool belt."),
+      el("div", { class: "steps" },
+        step(1, s.services.anamnesis.up, "Start the memory daemon", "Run `anamnesis status` in a terminal — it powers every character's persistent memory.", null),
+        step(2, !needsModel, "Get a model", "Fetch a GGUF from Hugging Face — Pleiades picks the best quantization for this machine.",
+          { label: "Fetch a model", fn: () => go("models") }),
+        step(3, !needsChar, "Create a character", "One name binds memory, email, vault, browser, and the model.",
+          { label: "New character", fn: () => go("characters") }))));
+  }
+
+  /* services */
+  const svc = (name, info, extra, actions) => {
     const up = info.up;
     let dot = up ? "up" : "down", pill = up ? "up" : "down", label = up ? "online" : "offline";
     if (!up && info.state === "on_demand") { dot = "idle"; pill = "warn"; label = "idle — starts on first chat"; }
@@ -127,47 +158,44 @@ async function renderDashboard() {
         el("div", { class: "inline-actions" }, el("span", { class: `dot ${dot}` }), el("span", { class: "svc-name" }, name)),
         el("span", { class: `pill ${pill}` }, label)),
       el("div", { class: "svc-url" }, info.url || "—"),
-      extra ? el("div", { class: "svc-note" }, extra) : null);
+      extra ? el("div", { class: "svc-note", title: extra }, extra) : null,
+      actions ? el("div", { class: "svc-actions" }, ...actions) : null);
   };
+
+  const searxBtn = el("button", { class: "btn sm", onclick: async (e) => {
+    const dir = s.services.searxng.up ? "down" : "up";
+    e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span>`;
+    try {
+      await api.post(`/api/search/${dir}`);
+      const timer = setInterval(async () => {
+        const st = await api.get("/api/search/status").catch(() => null);
+        if (!st || st.status === "working") return;
+        clearInterval(timer);
+        if (st.status === "error") { err(new Error(st.error)); renderDashboard(); }
+        else { ok(dir === "up" ? "Search service starting" : "Search service stopped"); setTimeout(renderDashboard, 1500); }
+      }, 1200);
+    } catch (er) { e.target.disabled = false; err(er); }
+  } }, s.services.searxng.up ? "Stop" : "Start");
 
   c.append(el("div", { class: "section-label" }, "Services"));
   c.append(el("div", { class: "svc-grid" },
-    svc("Anamnesis", s.services.anamnesis, `${s.services.anamnesis.characters} character(s) registered`),
-    svc("Inference engine", s.services.inference, s.services.inference.model_path ? `default model: ${s.services.inference.model_path.split(/[\\/]/).pop()}` : s.services.inference.state === "no_model" ? "fetch a model under Models — it starts automatically when a character chats" : "serves registered models on demand"),
-    svc("SearXNG", s.services.searxng, "local web search")));
+    svc("Memory · Anamnesis", s.services.anamnesis, `${s.services.anamnesis.characters} character(s) registered`),
+    svc("Inference engine", s.services.inference,
+      s.services.inference.model_path ? `default model: ${s.services.inference.model_path.split(/[\\/]/).pop()}`
+        : s.services.inference.state === "no_model" ? "fetch a model under Models" : "serves registered models on demand"),
+    svc("Web search · SearXNG", s.services.searxng, "private local search the characters use", [searxBtn])));
 
-  c.append(el("div", { class: "section-label" }, "Hardware"));
-  const hwCard = el("div", { class: "card" }, el("div", { class: "skeleton" }, "Detecting hardware…"));
-  c.append(hwCard);
-  api.get("/api/hardware").then(hw => {
-    hwCard.innerHTML = "";
-    const list = el("div", { class: "list" });
-    (hw.gpus.length ? hw.gpus : [null]).forEach(g => list.append(el("div", { class: "list-row" },
-      el("span", { class: `pill ${g ? "run" : "down"}` }, g ? "● GPU" : "no GPU"),
-      el("span", { class: "list-key" }, g ? `${g.name} (${g.vendor})` : "running on CPU"),
-      el("span", { class: "list-spacer" }),
-      g ? el("span", { class: "badge-soft" }, `${(g.vram_free / 1073741824).toFixed(1)} / ${(g.vram_total / 1073741824).toFixed(1)} GiB VRAM free`) : null)));
-    list.append(el("div", { class: "list-row" },
-      el("span", { class: "badge-soft" }, `RAM ${(hw.ram_available / 1073741824).toFixed(1)} / ${(hw.ram_total / 1073741824).toFixed(1)} GiB available${hw.unified_memory ? " (unified)" : ""}`),
-      el("span", { class: "badge-soft" }, `${hw.cpu_threads} CPU threads`)));
-    hw.plans.forEach(pl => list.append(el("div", { class: "list-row" },
-      el("span", { class: `pill ${pl.n_gpu_layers !== 0 ? "run" : "down"}` },
-        pl.n_gpu_layers === -1 ? "all on GPU" : pl.n_gpu_layers === 0 ? "CPU" : `${pl.n_gpu_layers}/${pl.n_layers} on GPU`),
-      el("span", { class: "list-key" }, pl.model),
-      el("span", { class: "list-spacer" }),
-      el("span", { class: "svc-note", title: pl.reason }, pl.reason))));
-    hwCard.append(list);
-  }).catch(() => { hwCard.innerHTML = ""; hwCard.append(el("div", { class: "svc-note" }, "hardware detection unavailable")); });
-
+  /* stats */
   c.append(el("div", { class: "section-label" }, "At a glance"));
-  const stat = (val, label, sub) => el("div", { class: "card stat" },
+  const stat = (val, label, sub, onclick) => el("div", { class: "card stat hoverable", style: onclick ? "cursor:pointer" : "", onclick },
     el("div", { class: "stat-row" }, el("span", { class: "stat-val" }, String(val)), sub ? el("span", { class: "stat-sub" }, sub) : null),
     el("div", { class: "stat-label" }, label));
   c.append(el("div", { class: "grid cols-3" },
-    stat(s.counts.profiles, "Characters", s.counts.orphans ? `${s.counts.orphans} adoptable` : ""),
-    stat(s.counts.models, "Models registered", `${s.counts.models_running} running`),
-    stat(s.counts.models_running, "Live model servers")));
+    stat(s.counts.profiles, "Characters", s.counts.orphans ? `${s.counts.orphans} adoptable` : "", () => go("characters")),
+    stat(s.counts.models, "Models registered", `${s.counts.models_running} running`, () => go("models")),
+    stat(s.counts.models_running, "Live model servers", "", () => go("models"))));
 
+  /* running models */
   if (s.running_models.length) {
     c.append(el("div", { class: "section-label" }, "Running models"));
     const list = el("div", { class: "list" });
@@ -180,10 +208,258 @@ async function renderDashboard() {
     c.append(el("div", { class: "card" }, list));
   }
 
-  c.append(el("div", { class: "section-label" }, "Quick start"));
-  c.append(el("div", { class: "card" },
-    el("div", { class: "callout" }, el("span", { class: "c-ico" }, "✶"),
-      el("div", { html: `Create a character under <b>Characters</b>, register a GGUF under <b>Models</b>, then assign the model to the character. Every tool — email, vault, browser, Discord — binds to that one character automatically.` }))));
+  /* shortcuts */
+  c.append(el("div", { class: "section-label" }, "Jump in"));
+  c.append(el("div", { class: "grid cols-2" },
+    el("div", { class: "card hoverable", style: "cursor:pointer", onclick: () => go("chat") },
+      el("div", { class: "card-head" }, el("h3", {}, "💬 Chat with a character"), el("span", { class: "pill run" }, "live")),
+      el("div", { class: "muted" }, "Streamed conversation with memory injection and the full per-character tool belt — search, email, browser, vault.")),
+    el("div", { class: "card hoverable", style: "cursor:pointer", onclick: () => go("work") },
+      el("div", { class: "card-head" }, el("h3", {}, "⚡ Run agent work"), el("span", { class: "pill violet" }, "harness")),
+      el("div", { class: "muted" }, "Give a task to the workspace harness — files, git, shell, subagents — with a live tool-call feed and approval gate."))));
+}
+
+/* ═══════════════ CHAT ═══════════════ */
+async function renderChat() {
+  const c = $("#content"); c.innerHTML = "";
+  let profiles = [];
+  try { profiles = (await api.get("/api/profiles")).profiles; } catch (e) { return err(e); }
+
+  if (!profiles.length) {
+    c.classList.remove("full");
+    c.append(el("div", { class: "empty" },
+      el("div", { class: "empty-ico" }, "💬"),
+      el("h3", {}, "No characters to chat with"),
+      el("div", {}, "Create a character first — it gets its own memory, tools, and model."),
+      el("div", { style: "margin-top:18px" }, el("button", { class: "btn primary", onclick: () => go("characters") }, "Create a character"))));
+    return;
+  }
+
+  if (!state.chatWith || !profiles.find(p => p.name === state.chatWith)) state.chatWith = profiles[0].name;
+  const active = profiles.find(p => p.name === state.chatWith);
+
+  /* layout */
+  const side = el("div", { class: "chat-side" }, el("div", { class: "chat-side-label" }, "Characters"));
+  profiles.forEach(p => side.append(el("button", {
+    class: `chat-char ${p.name === state.chatWith ? "active" : ""}`,
+    onclick: () => { state.chatWith = p.name; renderChat(); },
+  }, el("span", { class: "avatar" }, initials(p.name)), el("span", {}, p.name))));
+
+  const scroll = el("div", { class: "chat-scroll" });
+  const history = state.chats[state.chatWith] || [];
+  const addMsg = (role, text) => {
+    const m = el("div", { class: `msg ${role}` },
+      el("span", { class: "avatar" }, role === "user" ? "You" : initials(state.chatWith)),
+      el("div", { class: "bubble" }, text));
+    scroll.append(m);
+    scroll.scrollTop = scroll.scrollHeight;
+    return m.querySelector(".bubble");
+  };
+
+  if (!history.length) {
+    scroll.append(el("div", { class: "empty", style: "margin:auto" },
+      el("div", { class: "empty-ico" }, "✶"),
+      el("h3", {}, `Say hello to ${state.chatWith}`),
+      el("div", {}, "Every turn is stored in persistent memory. The character can search the web, read its inbox, drive its browser, and use its vault.")));
+  } else {
+    history.forEach(m => addMsg(m.role, m.text));
+  }
+
+  /* input */
+  const ta = el("textarea", { rows: "1", placeholder: `Message ${state.chatWith}…` });
+  ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; });
+  const sendBtn = el("button", { class: "send-btn", title: "Send (Enter)" },
+    el("span", { html: `<svg viewBox="0 0 24 24"><path d="M2 21 23 12 2 3v7l15 2-15 2v7z"/></svg>` }));
+
+  let busy = false;
+  async function send() {
+    const text = ta.value.trim();
+    if (!text || busy) return;
+    busy = true; sendBtn.disabled = true; ta.value = ""; ta.style.height = "auto";
+    if (!state.chats[state.chatWith]) state.chats[state.chatWith] = [];
+    const hist = state.chats[state.chatWith];
+    if (!hist.length) scroll.innerHTML = "";                     // clear empty state
+    hist.push({ role: "user", text });
+    addMsg("user", text);
+
+    const bubble = addMsg("assistant", "");
+    bubble.append(el("span", { class: "typing" }, el("span"), el("span"), el("span")));
+    let acc = "";
+
+    try {
+      const r = await fetch(`/api/profiles/${encodeURIComponent(state.chatWith)}/chat`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+      if (!r.ok || !r.body) throw new Error(`${r.status} ${r.statusText}`);
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let evt; try { evt = JSON.parse(line); } catch { continue; }
+          if (evt.type === "chunk") {
+            acc += evt.text;
+            bubble.textContent = acc;
+            scroll.scrollTop = scroll.scrollHeight;
+          } else if (evt.type === "error") {
+            throw new Error(evt.error);
+          }
+        }
+      }
+      if (!acc) { acc = "(no reply)"; bubble.textContent = acc; }
+      hist.push({ role: "assistant", text: acc });
+    } catch (e) {
+      bubble.closest(".msg").classList.add("error");
+      bubble.textContent = `Couldn't reach ${state.chatWith}: ${e.message}. Check that the model and the Anamnesis daemon are running (see Overview).`;
+      hist.push({ role: "error", text: bubble.textContent });
+    } finally {
+      busy = false; sendBtn.disabled = false; ta.focus();
+    }
+  }
+  sendBtn.addEventListener("click", send);
+  ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+
+  const main = el("div", { class: "chat-main" },
+    el("div", { class: "chat-head" },
+      el("span", { class: "avatar" }, initials(state.chatWith)),
+      el("div", {},
+        el("div", { class: "chat-head-name" }, state.chatWith),
+        el("div", { class: "chat-head-sub" }, `${active.model ? "model: " + active.model : "default engine"} · memory on · tools on`)),
+      el("span", { class: "list-spacer" }),
+      el("button", { class: "btn sm ghost", onclick: () => { state.chats[state.chatWith] = []; renderChat(); } }, "Clear view"),
+      el("button", { class: "btn sm", onclick: () => go("characters", state.chatWith) }, "Profile")),
+    scroll,
+    el("div", { class: "chat-input-bar" },
+      el("div", { class: "chat-input-box" }, ta, sendBtn),
+      el("div", { class: "chat-note" }, "Conversation history lives in the character's Anamnesis memory — clearing this view forgets nothing.")));
+
+  c.append(el("div", { class: "chat-wrap" }, side, main));
+  ta.focus();
+}
+
+/* ═══════════════ AGENT (work) ═══════════════ */
+let workTimer = null;
+
+async function renderWork() {
+  if (workTimer) { clearInterval(workTimer); workTimer = null; }
+  loading();
+  let profiles = [], settings = {};
+  try {
+    profiles = (await api.get("/api/profiles")).profiles;
+    settings = (await api.get("/api/settings")).settings;
+  } catch (e) { return err(e); }
+  const c = $("#content"); c.innerHTML = "";
+
+  /* composer */
+  const ta = el("textarea", { class: "input mono", rows: "3", placeholder: `find the largest .py file in this repo and summarize it` });
+  const charSel = el("select", { class: "select" }, el("option", { value: "" }, "No character (plain workspace)"));
+  profiles.forEach(p => charSel.append(el("option", { value: p.name }, `as ${p.name} — its memory, vault & inbox`)));
+  const tierSel = el("select", { class: "select" }, el("option", { value: "" }, `default (${settings.default_tier || "local"})`));
+  Object.keys(settings.tiers || {}).forEach(t => tierSel.append(el("option", { value: t }, t)));
+  const policySel = el("select", { class: "select" },
+    ...["", "ask", "allow", "deny"].map(o => el("option", { value: o, selected: o === "" ? "selected" : null },
+      o === "" ? `default (${settings.exec_policy || "ask"})` : o)));
+
+  const runBtn = el("button", { class: "btn primary", onclick: async (e) => {
+    const task = ta.value.trim();
+    if (!task) return toast("Describe a task first");
+    e.target.disabled = true;
+    try {
+      const r = await api.post("/api/work", { task, character: charSel.value, tier: tierSel.value, policy: policySel.value });
+      state.workJob = r.id;
+      renderWork();
+    } catch (er) { e.target.disabled = false; err(er); }
+  } }, "▶ Run task");
+
+  c.append(el("div", { class: "card pad-lg", style: "margin-bottom:22px" },
+    el("div", { class: "card-head" }, el("h3", {}, "New task"),
+      el("span", { class: "pill violet" }, "60+ tools · permission gated")),
+    field("Task", ta, "Plain language. The agent plans, calls tools, and reports back."),
+    el("div", { class: "field-row tri" },
+      field("Identity", charSel), field("Tier", tierSel), field("Policy", policySel,
+        "ask = approve each gated tool call here in the UI")),
+    el("div", { class: "inline-actions", style: "justify-content:flex-end" }, runBtn)));
+
+  /* job list + live feed */
+  const feedHost = el("div", {});
+  c.append(feedHost);
+
+  async function refresh() {
+    let jobs;
+    try { jobs = (await api.get("/api/work")).jobs; } catch { return; }
+    feedHost.innerHTML = "";
+
+    if (state.workJob) {
+      let job;
+      try { job = await api.get(`/api/work/${state.workJob}`); } catch { state.workJob = null; return; }
+      feedHost.append(renderJob(job));
+    }
+
+    const others = jobs.filter(j => j.id !== state.workJob);
+    if (others.length) {
+      feedHost.append(el("div", { class: "section-label" }, "History"));
+      const list = el("div", { class: "list" });
+      others.forEach(j => list.append(el("div", { class: "list-row job-row", onclick: () => { state.workJob = j.id; refresh(); } },
+        el("span", { class: `pill ${j.status === "running" ? "run" : j.status === "done" ? "up" : j.status === "error" ? "bad" : "down"}` }, j.status),
+        el("div", {}, el("div", { class: "list-key" }, j.task.length > 90 ? j.task.slice(0, 90) + "…" : j.task),
+          el("div", { class: "list-meta" }, `${j.character ? "as " + j.character + " · " : ""}${ago(j.started)}`)),
+        el("span", { class: "list-spacer" }))));
+      feedHost.append(el("div", { class: "card" }, list));
+    } else if (!state.workJob) {
+      feedHost.append(el("div", { class: "empty" },
+        el("div", { class: "empty-ico" }, "⚡"),
+        el("h3", {}, "No agent runs yet"),
+        el("div", {}, "Describe a task above — the live tool-call feed appears here.")));
+    }
+  }
+
+  function renderJob(job) {
+    const statusPill = el("span", { class: `pill ${job.status === "running" ? "run" : job.status === "done" ? "up" : job.status === "error" ? "bad" : "down"}` }, job.status);
+    const card = el("div", { class: "card pad-lg" },
+      el("div", { class: "card-head" },
+        el("div", { class: "inline-actions" }, statusPill, el("h3", {}, job.task.length > 80 ? job.task.slice(0, 80) + "…" : job.task)),
+        el("div", { class: "inline-actions" },
+          job.character ? el("span", { class: "badge-soft" }, `as ${job.character}`) : null,
+          job.status === "running" ? el("button", { class: "btn sm danger", onclick: async () => {
+            try { await api.post(`/api/work/${job.id}/cancel`); ok("Cancelling…"); } catch (e) { err(e); }
+          } }, "■ Stop") : el("button", { class: "btn sm ghost", onclick: () => { state.workJob = null; refresh(); } }, "Dismiss"))));
+
+    if (job.pending_approval) {
+      card.append(el("div", { class: "approval" },
+        el("span", {}, "⚠️"),
+        el("div", { style: "flex:1;min-width:200px" },
+          el("div", {}, "The agent wants to run ", el("span", { class: "tool" }, job.pending_approval.tool)),
+          el("div", { class: "args" }, job.pending_approval.args)),
+        el("button", { class: "btn sm good", onclick: () => api.post(`/api/work/${job.id}/approve`, { approve: true }).catch(err) }, "✓ Approve"),
+        el("button", { class: "btn sm danger", onclick: () => api.post(`/api/work/${job.id}/approve`, { approve: false }).catch(err) }, "✕ Deny")));
+    }
+
+    const feed = el("div", { class: "work-feed" });
+    (job.events || []).forEach(ev => {
+      if (ev.kind === "tool_call") feed.append(el("div", { class: "evt" },
+        el("span", { class: "evt-ico" }, "→"), el("span", { class: "name" }, ev.name)));
+      else if (ev.kind === "tool_result") feed.append(el("div", { class: "evt" },
+        el("span", { class: "evt-ico" }, ev.ok ? "✓" : "✕"),
+        el("div", {}, el("span", { class: "name" }, ev.name || ""), el("div", { class: "out" }, (ev.output || "").split("\n").slice(0, 3).join("\n")))));
+      else if (ev.kind === "text") feed.append(el("div", { class: "evt text" }, ev.text));
+    });
+    if (job.status === "running" && !job.pending_approval)
+      feed.append(el("div", { class: "evt" }, el("span", { class: "spinner" }), el("span", { class: "muted" }, "working…")));
+    card.append(feed);
+
+    if (job.result) card.append(el("div", { class: "result-block" }, job.result));
+    if (job.error) card.append(el("div", { class: "result-block", style: "color:var(--bad)" }, job.error));
+    return card;
+  }
+
+  await refresh();
+  workTimer = setInterval(() => { if (state.view === "work") refresh(); else { clearInterval(workTimer); workTimer = null; } }, 1500);
 }
 
 /* ═══════════════ CHARACTERS ═══════════════ */
@@ -217,9 +493,12 @@ async function renderCharacters() {
     grid.append(el("div", { class: "char-card", onclick: () => go("characters", p.name) },
       el("div", { class: "char-top" },
         el("div", { class: "avatar" }, initials(p.name)),
-        el("div", {}, el("div", { class: "char-name" }, p.name),
+        el("div", { style: "min-width:0" }, el("div", { class: "char-name" }, p.name),
           el("div", { class: "char-id" }, p.email_address || "no email configured"))),
-      el("div", { class: "char-caps" }, ...caps)));
+      el("div", { class: "char-caps" }, ...caps),
+      el("div", { class: "char-foot" },
+        el("button", { class: "btn sm", onclick: (e) => { e.stopPropagation(); state.chatWith = p.name; go("chat"); } }, "💬 Chat"),
+        el("button", { class: "btn sm ghost", onclick: (e) => { e.stopPropagation(); go("characters", p.name); } }, "Configure →"))));
   });
   c.append(grid);
 }
@@ -280,11 +559,12 @@ async function renderCharacterDetail(name) {
   const c = $("#content"); c.innerHTML = "";
   c.append(el("button", { class: "back-link", onclick: () => go("characters") }, "← All characters"));
   c.append(el("div", { class: "detail-head" },
-    el("div", { class: "avatar" }, initials(p.name)),
+    el("div", { class: "avatar lg" }, initials(p.name)),
     el("div", {},
       el("h2", { style: "font-size:20px" }, p.name),
       el("div", { class: "muted mono", style: "font-size:12.5px" }, p.email_address || "no email configured")),
     el("div", { class: "list-spacer" }),
+    el("button", { class: "btn sm", onclick: () => { state.chatWith = p.name; go("chat"); } }, "💬 Chat"),
     el("button", { class: "btn danger sm", onclick: () => deleteCharacter(p.name) }, "Delete")));
 
   const tabBar = el("div", { class: "tabs" });
@@ -349,7 +629,7 @@ function paneEmail(p) {
 
   const preset = el("select", { class: "select" }, el("option", { value: "" }, "Choose a provider preset…"));
   api.get("/api/email/presets").then(presets => {
-    Object.entries(presets).forEach(([k, v]) => preset.append(el("option", { value: k }, k)));
+    Object.entries(presets).forEach(([k]) => preset.append(el("option", { value: k }, k)));
     preset.addEventListener("change", async () => {
       if (!preset.value) return;
       const ps = (await api.get("/api/email/presets"))[preset.value];
@@ -405,7 +685,7 @@ function paneCredentials(p) {
       const note = en.meta && en.meta.note ? en.meta.note : "";
       list.append(el("div", { class: "list-row" },
         el("span", { class: `pill ${isReserved ? "warn" : (isSite ? "violet" : "up")}` }, isReserved ? "reserved" : (isSite ? "site" : "custom")),
-        el("div", {}, el("div", { class: "list-key" }, en.key),
+        el("div", {}, el("div", { class: "list-key mono" }, en.key),
           el("div", { class: "list-meta" }, (note ? note + " · " : "") + `updated ${ago(en.updated_at)}`)),
         el("span", { class: "list-spacer" }),
         valSpan,
@@ -540,15 +820,17 @@ async function renderModels() {
   if (!data.models.length) {
     c.append(el("div", { class: "empty" }, el("div", { class: "empty-ico" }, "▤"),
       el("h3", {}, "No models registered"),
-      el("div", {}, "Register a GGUF file to run it as a local OpenAI-compatible server."),
-      el("div", { style: "margin-top:18px" }, el("button", { class: "btn primary", onclick: () => modelDialog() }, "＋ Add model"))));
+      el("div", {}, "Fetch a GGUF from Hugging Face — Pleiades picks the best quantization for this machine — or register a local file."),
+      el("div", { style: "margin-top:18px", class: "inline-actions", },
+        el("button", { class: "btn primary", onclick: () => fetchDialog() }, "⇣ Fetch from Hugging Face"),
+        el("button", { class: "btn", onclick: () => modelDialog() }, "Register local GGUF"))));
     return;
   }
 
   const grid = el("div", { class: "grid cols-2" });
   data.models.forEach(m => {
     const fname = (m.path || "").split(/[\\/]/).pop();
-    grid.append(el("div", { class: "card" },
+    grid.append(el("div", { class: "card hoverable" },
       el("div", { class: "card-head" },
         el("div", { class: "inline-actions" }, el("span", { class: "card-title-ico" }, "▤"), el("h3", {}, m.name)),
         el("span", { class: `pill ${m.running ? "run" : "down"}` }, m.running ? "● running" : "stopped")),
@@ -556,7 +838,7 @@ async function renderModels() {
         kvRow("File", fname || "—", "down"),
         kvRow("Port", String(m.port), "up"),
         kvRow("Context", `${m.n_ctx} tok`, "up"),
-        kvRow("GPU layers", m.n_gpu_layers === -1 ? "all" : String(m.n_gpu_layers), m.n_gpu_layers !== 0 ? "run" : "down"),
+        kvRow("GPU layers", String(m.n_gpu_layers) === "-1" ? "all" : String(m.n_gpu_layers), String(m.n_gpu_layers) !== "0" ? "run" : "down"),
         kvRow("Chat format", m.chat_format || "auto-detect", "down")),
       el("div", { class: "divider" }),
       el("div", { class: "inline-actions" },
@@ -666,6 +948,66 @@ function modelDialog(existing) {
   });
 }
 
+/* ═══════════════ HARDWARE ═══════════════ */
+async function renderHardware() {
+  loading();
+  let hw;
+  try { hw = await api.get("/api/hardware"); } catch (e) { return err(e); }
+  const c = $("#content"); c.innerHTML = "";
+
+  const meter = (label, used, total, unit = "GiB") => {
+    const pct = total ? Math.min(100, Math.round(100 * used / total)) : 0;
+    return el("div", { class: "meter-row" },
+      el("div", { class: "meter-head" },
+        el("span", { class: "list-key" }, label),
+        el("span", { class: "val" }, `${GiB(used)} / ${GiB(total)} ${unit} · ${pct}%`)),
+      el("div", { class: `meter ${pct > 85 ? "warn" : ""}` }, el("span", { style: `width:${pct}%` })));
+  };
+
+  c.append(el("div", { class: "section-label" }, "This machine"));
+  const sysCard = el("div", { class: "card pad-lg" });
+  if (hw.gpus.length) {
+    hw.gpus.forEach(g => {
+      sysCard.append(el("div", { class: "inline-actions", style: "margin-bottom:6px" },
+        el("span", { class: "pill run" }, g.vendor), el("span", { class: "list-key" }, g.name)));
+      sysCard.append(meter("VRAM in use", g.vram_total - g.vram_free, g.vram_total));
+    });
+  } else {
+    sysCard.append(el("div", { class: "callout warn", style: "margin-bottom:16px" }, el("span", { class: "c-ico" }, "▦"),
+      el("div", {}, "No GPU detected — models run on CPU. The installer can rebuild llama.cpp with CUDA/ROCm/Metal if a GPU appears.")));
+  }
+  sysCard.append(meter("RAM in use", hw.ram_total - hw.ram_available, hw.ram_total));
+  sysCard.append(el("div", { class: "inline-actions", style: "margin-top:14px" },
+    el("span", { class: "badge-soft" }, `${hw.cpu_threads} CPU threads`),
+    hw.unified_memory ? el("span", { class: "badge-soft" }, "unified memory") : null));
+  c.append(sysCard);
+
+  c.append(el("div", { class: "section-label" }, "Per-model offload plan"));
+  if (!hw.plans.length) {
+    c.append(el("div", { class: "card" }, el("div", { class: "empty", style: "padding:30px" },
+      el("div", { class: "empty-ico" }, "▤"), el("h3", {}, "No models registered"),
+      el("div", {}, "Register a model to see how its layers would be split between GPU and CPU."),
+      el("div", { style: "margin-top:14px" }, el("button", { class: "btn primary sm", onclick: () => go("models") }, "Go to Models")))));
+  } else {
+    const grid = el("div", { class: "grid cols-2" });
+    hw.plans.forEach(pl => {
+      const onGpu = pl.n_gpu_layers === -1 ? pl.n_layers : pl.n_gpu_layers;
+      const pct = pl.n_layers ? Math.round(100 * onGpu / pl.n_layers) : 0;
+      grid.append(el("div", { class: "card" },
+        el("div", { class: "card-head" }, el("h3", {}, pl.model),
+          el("span", { class: `pill ${pl.fits_fully ? "up" : onGpu ? "warn" : "down"}` },
+            pl.fits_fully ? "fits fully on GPU" : onGpu ? "partial offload" : "CPU only")),
+        el("div", { class: "meter-row" },
+          el("div", { class: "meter-head" },
+            el("span", { class: "list-key" }, "GPU layers"),
+            el("span", { class: "val" }, `${onGpu} / ${pl.n_layers} · ${pct}%`)),
+          el("div", { class: "meter" }, el("span", { style: `width:${pct}%` }))),
+        el("div", { class: "svc-note", style: "white-space:normal", title: pl.reason }, pl.reason)));
+    });
+    c.append(grid);
+  }
+}
+
 /* ═══════════════ SETTINGS ═══════════════ */
 async function renderSettings() {
   loading();
@@ -679,7 +1021,7 @@ async function renderSettings() {
   const infHost = textInput(s.inference_host, { class: "input mono" });
   const infPort = textInput(s.inference_port, { type: "number", class: "input mono" });
   const nctx = textInput(s.n_ctx, { type: "number", class: "input mono" });
-  const gpu = textInput(s.n_gpu_layers, { type: "number", class: "input mono" });
+  const gpu = textInput(s.n_gpu_layers, { class: "input mono", placeholder: "auto" });
   const fmt = textInput(s.chat_format, { placeholder: "auto-detect", class: "input mono" });
 
   // services
@@ -719,10 +1061,10 @@ async function renderSettings() {
     field("Default model path", modelPath, "GGUF served when a character has no model assigned."),
     el("div", { class: "field-row" }, field("Inference host", infHost), field("Inference port", infPort)),
     el("div", { class: "field-row tri" },
-      field("Context window", nctx), field("GPU layers", gpu), field("Chat format", fmt)),
+      field("Context window", nctx), field("GPU layers", gpu, "auto = plan from hardware at launch"), field("Chat format", fmt)),
     el("div", { class: "inline-actions", style: "justify-content:flex-end" },
       saveBtn(() => ({ model_path: modelPath.value.trim(), inference_host: infHost.value.trim(), inference_port: +infPort.value || 8080,
-        n_ctx: +nctx.value || 8192, n_gpu_layers: +gpu.value, chat_format: fmt.value.trim() })))));
+        n_ctx: +nctx.value || 8192, n_gpu_layers: gpuVal(gpu.value), chat_format: fmt.value.trim() })))));
 
   c.append(el("div", { class: "section-label" }, "Services"));
   c.append(el("div", { class: "card pad-lg" },
@@ -733,8 +1075,8 @@ async function renderSettings() {
 
   c.append(el("div", { class: "section-label" }, "Agent harness"));
   c.append(el("div", { class: "card pad-lg" },
-    el("div", { class: "callout", style: "margin-bottom:18px" }, el("span", { class: "c-ico" }, "⚙"),
-      el("div", { html: "Controls the Claude-Code-style workspace harness (<span class='kbd'>pleiades work</span>)." })),
+    el("div", { class: "callout", style: "margin-bottom:18px" }, el("span", { class: "c-ico" }, "⚡"),
+      el("div", { html: "Controls the workspace harness (the <b>Agent</b> view and <span class='kbd'>pleiades work</span>)." })),
     el("div", { class: "field-row tri" },
       field("Default tier", tierSel), field("Exec policy", policy), field("Max steps", steps)),
     el("div", { class: "inline-actions", style: "justify-content:flex-end" },
@@ -754,9 +1096,9 @@ async function loadStatusMini() {
     const host = $("#svc-mini"); host.innerHTML = "";
     const row = (label, up) => el("div", { class: "row" }, el("span", { class: `dot ${up ? "up" : "down"}` }), el("span", {}, label));
     host.append(
-      row("Anamnesis", s.services.anamnesis.up),
+      row("Memory", s.services.anamnesis.up),
       row("Inference", s.services.inference.up),
-      row("SearXNG", s.services.searxng.up));
+      row("Search", s.services.searxng.up));
   } catch (_) {}
 }
 
