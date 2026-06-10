@@ -37,12 +37,31 @@ class Engine:
         self.manager = manager or ProfileManager(self.settings, self.anamnesis)
 
     # -- wiring ------------------------------------------------------------- #
+    def _upstream_for(self, profile: Profile) -> str:
+        """The OpenAI-compatible URL to use for this character.
+
+        If the character has an assigned model (profile.model), run/return that model's
+        dedicated server; otherwise use the default in-process engine (PLEIADES_MODEL_PATH).
+        """
+        model = getattr(profile, "model", "") or ""
+        if model:
+            from .models import ModelManager, ModelError
+            mm = ModelManager()
+            if mm.get(model):
+                try:
+                    if not mm.is_running(model):
+                        mm.start(model)        # auto-start the assigned model
+                    return mm.base_url(model)
+                except ModelError:
+                    pass  # fall back to the default engine below
+        return ensure_inference(self.settings)
+
     def _client_for(self, profile: Profile):
         """Bring up inference + the character proxy and return an OpenAI client + ctx."""
         from openai import OpenAI
 
-        # 1. Our inference server, and make Anamnesis point its upstream at it.
-        upstream = ensure_inference(self.settings)
+        # 1. Resolve the upstream the character should use, and point Anamnesis at it.
+        upstream = self._upstream_for(profile)
         try:
             self.anamnesis.update_character(profile.name, upstream={"baseUrl": upstream})
         except Exception:

@@ -118,6 +118,26 @@ pleiades vault alice list       # manage the character's secrets
 | Password vault | `vault` | Encrypted SQLite; secrets reach the model only on explicit `vault.get`. |
 | Discord | (connector) | Host the character as a bot. |
 
+## Models, characters & updates
+
+New to Pleiades? See **[QUICKSTART.md](QUICKSTART.md)**. The essentials:
+
+```bash
+pleiades model add qwen ~/models/qwen.gguf --gpu-layers -1   # register a GGUF
+pleiades model start qwen        # run it (or it auto-starts on chat)
+pleiades new alice               # create a character
+pleiades adopt Mark              # OR adopt a pre-existing Anamnesis character (keeps its memory)
+pleiades model use alice qwen    # pick which model a character uses
+pleiades chat alice              # talk to it
+pleiades update                  # pull the latest from GitHub + reinstall
+```
+
+GPU: the build backend (NVIDIA/CUDA, AMD/ROCm, or CPU) is auto-detected by the
+installer; at runtime use `--gpu-layers` (`-1` = all layers on GPU). Models run as
+independent background servers, so different characters can use different models at
+once. Pre-existing Anamnesis characters are never overwritten — adopt them to reuse
+their memory.
+
 ## Workspace harness (Claude-Code-style)
 
 Beyond chatting, a character can *operate the machine*. The agent harness

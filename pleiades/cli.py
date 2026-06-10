@@ -98,6 +98,12 @@ def list_cmd() -> None:
             "enabled" if p.discord_enabled else "—",
         )
     console.print(table)
+    orphans = mgr.orphan_characters()
+    if orphans:
+        console.print(f"\n[dim]Existing Anamnesis characters not yet adopted: "
+                      f"{', '.join(orphans)}[/dim]")
+        console.print("[dim]Adopt one (keeps its memory) with "
+                      "[bold]pleiades adopt <name>[/bold].[/dim]")
 
 
 # --------------------------------------------------------------------------- #
@@ -321,6 +327,179 @@ def serve() -> None:
         pass
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------- #
+# adopt — wrap a pre-existing Anamnesis character as a Pleiades profile
+# --------------------------------------------------------------------------- #
+@cli.command()
+@click.argument("name")
+def adopt(name: str) -> None:
+    """Adopt an EXISTING Anamnesis character (keeps its memory) as a Pleiades profile."""
+    mgr = _manager()
+    try:
+        mgr.adopt(name)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Adopted '{name}'.[/green] Its Anamnesis memory is preserved. "
+                  f"Try: [bold]pleiades chat {name}[/bold]")
+
+
+# --------------------------------------------------------------------------- #
+# update — pull the latest Pleiades from GitHub and reinstall
+# --------------------------------------------------------------------------- #
+def _git(root: Path, *args: str) -> str:
+    out = subprocess.run(["git", "-C", str(root), *args],
+                         capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+@cli.command()
+@click.option("--no-reinstall", is_flag=True, help="Pull only; skip pip reinstall.")
+def update(no_reinstall: bool) -> None:
+    """Update Pleiades to the latest version on GitHub (git pull + reinstall)."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / ".git").is_dir():
+        console.print("[yellow]Not a git checkout. Re-run the one-line installer to update.[/yellow]")
+        return
+    before = _git(root, "rev-parse", "--short", "HEAD")
+    console.print(f"Updating [bold]{root}[/bold] (at {before}) …")
+    try:
+        subprocess.run(["git", "-C", str(root), "pull", "--ff-only"], check=True)
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]git pull failed: {e}. "
+                      "Commit/stash local changes and retry.[/red]")
+        sys.exit(1)
+    after = _git(root, "rev-parse", "--short", "HEAD")
+    if before == after:
+        console.print("[green]Already up to date.[/green]")
+        return
+    console.print(f"[green]Updated {before} → {after}.[/green]")
+    if not no_reinstall:
+        console.print("Reinstalling dependencies …")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-e", f"{root}[all]"],
+                       check=False)
+    console.print("[green]Done.[/green]")
+
+
+# --------------------------------------------------------------------------- #
+# model — register, run, stop, and assign local GGUF models
+# --------------------------------------------------------------------------- #
+@cli.group()
+def model() -> None:
+    """Manage the local models (GGUFs) Pleiades runs."""
+
+
+@model.command("add")
+@click.argument("name")
+@click.argument("path")
+@click.option("--ctx", "n_ctx", default=8192, show_default=True, help="Context window.")
+@click.option("--gpu-layers", "n_gpu_layers", default=0, show_default=True,
+              help="Layers to offload to GPU (-1 = all). Works for NVIDIA/CUDA and AMD/ROCm builds.")
+@click.option("--chat-format", default="", help="Override chat template (e.g. chatml, llama-3).")
+@click.option("--port", default=0, help="Fixed port (0 = auto-assign).")
+def model_add(name: str, path: str, n_ctx: int, n_gpu_layers: int,
+              chat_format: str, port: int) -> None:
+    """Register a GGUF model file under NAME."""
+    from .models import ModelManager, ModelError
+    try:
+        m = ModelManager().add(name, path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers,
+                               chat_format=chat_format, port=port)
+    except ModelError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Added model '{name}'[/green] → {m['path']} "
+                  f"(port {m['port']}, gpu_layers {m['n_gpu_layers']}).")
+    console.print(f"Start it: [bold]pleiades model start {name}[/bold]")
+
+
+@model.command("list")
+def model_list() -> None:
+    """List registered models and whether each is running."""
+    from .models import ModelManager
+    models = ModelManager().list()
+    if not models:
+        console.print("No models yet. Add one: [bold]pleiades model add <name> <path.gguf>[/bold]")
+        return
+    table = Table(title="Models")
+    table.add_column("name", style="bold")
+    table.add_column("status")
+    table.add_column("port")
+    table.add_column("gpu_layers")
+    table.add_column("path")
+    for m in models:
+        table.add_row(
+            m["name"],
+            "[green]running[/green]" if m["running"] else "stopped",
+            str(m["port"]), str(m["n_gpu_layers"]), m["path"],
+        )
+    console.print(table)
+
+
+@model.command("rm")
+@click.argument("name")
+def model_rm(name: str) -> None:
+    """Stop (if running) and unregister a model."""
+    from .models import ModelManager
+    ok = ModelManager().remove(name)
+    console.print(f"[green]Removed '{name}'.[/green]" if ok else f"[yellow]No model '{name}'.[/yellow]")
+
+
+@model.command("start")
+@click.argument("name")
+@click.option("--no-wait", is_flag=True, help="Return immediately; don't wait for readiness.")
+def model_start(name: str, no_wait: bool) -> None:
+    """Start a model's inference server (background)."""
+    from .models import ModelManager, ModelError
+    try:
+        url = ModelManager().start(name, wait=not no_wait)
+    except ModelError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Model '{name}' serving at {url}[/green]")
+
+
+@model.command("stop")
+@click.argument("name")
+def model_stop(name: str) -> None:
+    """Stop a model's inference server."""
+    from .models import ModelManager
+    ok = ModelManager().stop(name)
+    console.print(f"[green]Stopped '{name}'.[/green]" if ok else f"[yellow]'{name}' was not running.[/yellow]")
+
+
+@model.command("running")
+def model_running() -> None:
+    """Show currently running model servers."""
+    from .models import ModelManager
+    rows = ModelManager().running()
+    if not rows:
+        console.print("No models running.")
+        return
+    for r in rows:
+        mark = "[green]alive[/green]" if r["alive"] else "[red]dead[/red]"
+        console.print(f"- {r['name']}  (pid {r['pid']}, port {r['port']})  {mark}")
+
+
+@model.command("use")
+@click.argument("profile")
+@click.argument("model_name")
+def model_use(profile: str, model_name: str) -> None:
+    """Assign MODEL_NAME to a character PROFILE (it'll use that model when chatting)."""
+    from .models import ModelManager
+    mgr = _manager()
+    try:
+        mgr.get(profile)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    if ModelManager().get(model_name) is None:
+        console.print(f"[red]No model '{model_name}'. Add it: pleiades model add {model_name} <path>[/red]")
+        sys.exit(1)
+    mgr.assign_model(profile, model_name)
+    console.print(f"[green]{profile} now uses model '{model_name}'.[/green] "
+                  f"It starts automatically on next chat (or: pleiades model start {model_name}).")
 
 
 if __name__ == "__main__":

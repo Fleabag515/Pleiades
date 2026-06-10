@@ -28,6 +28,7 @@ class Profile:
     smtp_port: int = 587
     discord_enabled: bool = False
     persona_source: str = "auto"  # auto | file | inline | disabled
+    model: str = ""  # name of the assigned model (see pleiades.models); blank = default engine
 
     @property
     def browser_dir(self) -> str:
@@ -145,6 +146,50 @@ class ProfileManager:
         pdir = config.profile_dir(name)
         if pdir.is_dir():
             shutil.rmtree(pdir)
+
+    def adopt(self, name: str) -> Profile:
+        """Wrap an EXISTING Anamnesis character as a Pleiades profile (no recreate).
+
+        Use this for characters that already existed before Pleiades was installed —
+        their memory/history under ~/.anamnesis is preserved and reused as-is.
+        """
+        if config.profile_json_path(name).is_file():
+            raise ValueError(f"Profile '{name}' already exists.")
+        if not self.anamnesis.exists(name):
+            raise ValueError(
+                f"No Anamnesis character '{name}' to adopt. "
+                f"Create one with `pleiades new {name}`."
+            )
+        profile = Profile(name=name)
+        self._save(profile)
+        config.browser_dir(name).mkdir(parents=True, exist_ok=True)
+        with self.open_vault(name):  # create the empty encrypted vault
+            pass
+        return profile
+
+    def orphan_characters(self) -> list[str]:
+        """Anamnesis characters that have no Pleiades profile yet (adoptable)."""
+        try:
+            chars = [c.get("name") for c in self.anamnesis.list_characters()]
+        except Exception:
+            return []
+        have = {p.name for p in self.list()}
+        return [c for c in chars if c and c not in have]
+
+    def assign_model(self, name: str, model: str) -> Profile:
+        """Set which model a character uses, and (if running) repoint its proxy upstream."""
+        profile = self._load(name)
+        profile.model = model
+        self._save(profile)
+        # If the model server is already up, update the character's upstream now.
+        try:
+            from .models import ModelManager
+            mm = ModelManager()
+            if mm.get(model) and mm.is_running(model):
+                self.anamnesis.update_character(name, upstream={"baseUrl": mm.base_url(model)})
+        except Exception:
+            pass
+        return profile
 
     def open_vault(self, name: str) -> Vault:
         return Vault(config.vault_path(name))
