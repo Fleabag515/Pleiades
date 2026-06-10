@@ -5,27 +5,34 @@
     irm https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.ps1 | iex
 
   With options, run the downloaded scriptblock yourself:
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.ps1))) -Gpu gpu -Dir C:\Pleiades
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.ps1))) -Gpu vulkan -Dir C:\Pleiades
 
   Parameters:
     -Dir DIR        install location          (default: $HOME\Pleiades)
     -Branch NAME    git branch               (default: main)
-    -Gpu auto|cpu|gpu   llama-cpp-python build (default: auto)
+    -Gpu auto|cpu|gpu|cuda|vulkan   llama-cpp-python build (default: auto)
+                    auto   detect: NVIDIA -> CUDA build; AMD/Intel -> CPU python
+                           build + native Vulkan llama-server runtime (no SDK needed)
+                    cuda   force the CUDA build ("gpu" is a legacy alias)
+                    vulkan force a Vulkan build of llama-cpp-python (requires the
+                           Vulkan SDK to compile; most AMD users want "auto" instead)
     -Core           core only (skip browser, SearXNG, Discord)
     -NoBrowser      skip Camoufox
     -NoSearxng      skip SearXNG (Docker)
     -NoDiscord      skip the Discord extra
+    -NoNativeRuntime  skip 'pleiades runtime install' (native llama-server)
 #>
 [CmdletBinding()]
 param(
   [string]$Dir    = "$HOME\Pleiades",
   [string]$Branch = "main",
   [string]$Repo   = "https://github.com/Fleabag515/Pleiades.git",
-  [ValidateSet("auto","cpu","gpu")][string]$Gpu = "auto",
+  [ValidateSet("auto","cpu","gpu","cuda","vulkan")][string]$Gpu = "auto",
   [switch]$Core,
   [switch]$NoBrowser,
   [switch]$NoSearxng,
-  [switch]$NoDiscord
+  [switch]$NoDiscord,
+  [switch]$NoNativeRuntime
 )
 $ErrorActionPreference = "Stop"
 
@@ -96,15 +103,55 @@ function Check-Docker {
 }
 
 # ---- GPU detection ---------------------------------------------------------
+function Get-GpuVendor {
+  # WMI sees every display adapter; nvidia-smi only exists for NVIDIA.
+  try {
+    $names = (Get-CimInstance Win32_VideoController -ErrorAction Stop |
+              Select-Object -ExpandProperty Name) -join "; "
+  } catch { $names = "" }
+  if (Have nvidia-smi) {
+    try { nvidia-smi -L *> $null; if ($LASTEXITCODE -eq 0) { return @{ Vendor = "nvidia"; Names = $names } } } catch {}
+  }
+  if ($names -match "NVIDIA|GeForce|Quadro")        { return @{ Vendor = "nvidia"; Names = $names } }
+  if ($names -match "AMD|Radeon|ATI")               { return @{ Vendor = "amd";    Names = $names } }
+  if ($names -match "Intel.*(Arc|Iris|Graphics)")   { return @{ Vendor = "intel";  Names = $names } }
+  return @{ Vendor = "none"; Names = $names }
+}
+
 function Resolve-Gpu {
+  # Returns @{ Args; Desc; NativeFirst } — Args drives the llama-cpp-python
+  # (CMAKE) build; NativeFirst additionally installs the prebuilt native
+  # llama-server runtime ('pleiades runtime install'), which is how AMD/Intel
+  # GPUs get acceleration on Windows: the official Vulkan binaries need no
+  # SDK and no ROCm — they just use the GPU driver. Autofit prefers the
+  # native runtime automatically once it is installed.
   switch ($Gpu) {
-    "cpu" { return @{ Args = "";                 Desc = "CPU (forced)" } }
-    "gpu" { return @{ Args = "-DGGML_CUDA=on";   Desc = "CUDA (forced)" } }
-    default {
-      if (Have nvidia-smi) {
-        try { nvidia-smi -L *> $null; if ($LASTEXITCODE -eq 0) { return @{ Args = "-DGGML_CUDA=on"; Desc = "NVIDIA CUDA (auto)" } } } catch {}
+    "cpu"    { return @{ Args = "";                Desc = "CPU (forced)";   NativeFirst = $false } }
+    "gpu"    { return @{ Args = "-DGGML_CUDA=on";  Desc = "CUDA (forced)";  NativeFirst = $false } }
+    "cuda"   { return @{ Args = "-DGGML_CUDA=on";  Desc = "CUDA (forced)";  NativeFirst = $false } }
+    "vulkan" {
+      if (-not $env:VULKAN_SDK) {
+        Warn "-Gpu vulkan compiles llama-cpp-python against the Vulkan SDK, which wasn't found (VULKAN_SDK unset)."
+        Info "Most AMD/Intel users should use -Gpu auto instead: it installs the prebuilt native"
+        Info "Vulkan llama-server runtime, which needs only your normal GPU driver."
       }
-      return @{ Args = ""; Desc = "CPU (no GPU detected)" }
+      return @{ Args = "-DGGML_VULKAN=on"; Desc = "Vulkan (forced)"; NativeFirst = $true }
+    }
+    default {
+      $det = Get-GpuVendor
+      switch ($det.Vendor) {
+        "nvidia" { return @{ Args = "-DGGML_CUDA=on"; Desc = "NVIDIA CUDA (auto)"; NativeFirst = $false } }
+        "amd"    {
+          Info "AMD GPU detected: $($det.Names)"
+          Info "ROCm on Windows isn't a practical llama.cpp target — using the native Vulkan runtime instead."
+          return @{ Args = ""; Desc = "AMD via native Vulkan runtime (python engine on CPU)"; NativeFirst = $true }
+        }
+        "intel"  {
+          Info "Intel GPU detected: $($det.Names)"
+          return @{ Args = ""; Desc = "Intel via native Vulkan runtime (python engine on CPU)"; NativeFirst = $true }
+        }
+        default  { return @{ Args = ""; Desc = "CPU (no GPU detected)"; NativeFirst = $false } }
+      }
     }
   }
 }
@@ -147,20 +194,55 @@ function Install-Pkg($py, $plan) {
     & $venvPy -m pip install -e $spec
     if ($LASTEXITCODE -ne 0) {
       if ($plan.Args) {
-        Warn "GPU build failed (missing CUDA toolkit?). Retrying with a CPU build."
+        Warn "GPU build failed (missing toolkit/SDK?). Retrying with a CPU build."
         $env:CMAKE_ARGS = ""
         & $venvPy -m pip install -e $spec
         if ($LASTEXITCODE -ne 0) { Die "pip install failed." }
-        $plan.Desc = "CPU (GPU build failed)"
+        $plan.Desc = "CPU python engine (GPU build failed)"
+        # The prebuilt native runtime can still give this machine GPU speed.
+        $plan.NativeFirst = $true
       } else { Die "pip install failed." }
     }
   } finally { Pop-Location; $env:CMAKE_ARGS = "" }
 }
 
+function Install-NativeRuntime($plan) {
+  if ($NoNativeRuntime -or -not $plan.NativeFirst) { return }
+  Say "Installing the native llama-server runtime (prebuilt, GPU via Vulkan/CUDA — no SDK needed)"
+  $venvPleiades = Join-Path $Dir ".venv\Scripts\pleiades.exe"
+  $venvPy = Join-Path $Dir ".venv\Scripts\python.exe"
+  try {
+    if (Test-Path $venvPleiades) { & $venvPleiades runtime install }
+    else { & $venvPy -m pleiades.cli runtime install }
+    if ($LASTEXITCODE -ne 0) { throw "runtime install exited $LASTEXITCODE" }
+    Info "Models will run on the native runtime automatically (pleiades hw shows the plan)."
+  } catch {
+    Warn "Native runtime install failed: $($_.Exception.Message)"
+    Info "Run it later from the venv:  pleiades runtime install"
+  }
+}
+
 function Install-Anamnesis {
   if (-not (Have npm)) { Warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g anamnesis'."; return }
-  Say "Installing Anamnesis (memory proxy)"
-  npm install -g anamnesis 2>$null
+  $installed = ""
+  $latest = ""
+  try {
+    $out = (npm ls -g anamnesis --depth=0 2>$null | Out-String)
+    if ($out -match "anamnesis@([0-9][^\s]*)") { $installed = $Matches[1] }
+  } catch {}
+  try { $latest = (npm view anamnesis version 2>$null | Out-String).Trim() } catch {}
+
+  if ($installed -and $latest -and ($installed -eq $latest)) {
+    Say "Anamnesis $installed already installed and current — skipping"
+    return
+  }
+  if ($installed) {
+    Say "Updating Anamnesis $installed -> $(if ($latest) { $latest } else { 'latest' })"
+  } else {
+    Say "Installing Anamnesis (memory proxy)"
+  }
+  Info "npm pulls large native deps here (node-llama-cpp, transformers) — a few minutes of progress output is normal."
+  npm install -g anamnesis --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { Warn "Could not install anamnesis globally; run 'npm i -g anamnesis' yourself." }
 }
 
@@ -196,13 +278,14 @@ $py = Ensure-Python
 Ensure-Node
 $dockerOk = Check-Docker
 # NOTE: deliberately NOT named $gpu — PowerShell variable names are case-
-# insensitive, so $gpu IS the [ValidateSet("auto","cpu","gpu")]$Gpu parameter.
-# Validation attributes stay bound to the variable for the whole scope, so
-# assigning Resolve-Gpu's hashtable to it re-triggers ValidateSet and aborts
-# the install ("System.Collections.Hashtable is not a valid value for Gpu").
+# insensitive, so $gpu IS the [ValidateSet(...)]$Gpu parameter. Validation
+# attributes stay bound to the variable for the whole scope, so assigning
+# Resolve-Gpu's hashtable to it re-triggers ValidateSet and aborts the install
+# ("System.Collections.Hashtable is not a valid value for Gpu").
 $gpuPlan = Resolve-Gpu
 Clone-Repo
 Install-Pkg $py $gpuPlan
+Install-NativeRuntime $gpuPlan
 Install-Anamnesis
 Fetch-Browser $py
 Make-Env

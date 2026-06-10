@@ -213,8 +213,19 @@ install_python_pkg() {
 # ---- external services -----------------------------------------------------
 install_anamnesis() {
   if ! have npm; then warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g anamnesis'."; return; fi
-  say "Installing Anamnesis (memory proxy)"
-  npm install -g anamnesis >/dev/null 2>&1 || $SUDO npm install -g anamnesis >/dev/null 2>&1 || { warn "Could not install anamnesis globally; run 'npm i -g anamnesis' yourself."; return; }
+  installed="$(npm ls -g --depth=0 anamnesis 2>/dev/null | grep -o 'anamnesis@[0-9][^ ]*' | head -n1 | cut -d@ -f2 || true)"
+  latest="$(npm view anamnesis version 2>/dev/null || true)"
+  if [ -n "$installed" ] && [ -n "$latest" ] && [ "$installed" = "$latest" ]; then
+    say "Anamnesis $installed already installed and current — skipping"
+    return
+  fi
+  if [ -n "$installed" ]; then
+    say "Updating Anamnesis $installed -> ${latest:-latest}"
+  else
+    say "Installing Anamnesis (memory proxy)"
+  fi
+  info "npm pulls large native deps here (node-llama-cpp, transformers) — a few minutes of output is normal."
+  npm install -g anamnesis --no-audit --no-fund || $SUDO npm install -g anamnesis --no-audit --no-fund || { warn "Could not install anamnesis globally; run 'npm i -g anamnesis' yourself."; return; }
   have anamnesis && anamnesis status >/dev/null 2>&1 || true
 }
 
