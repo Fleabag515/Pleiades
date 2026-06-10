@@ -43,7 +43,7 @@ pip install -e ".[ui]"      # or: pip install fastapi uvicorn
 ```
 
 Wire the CLI command: paste the block in `cli_command.py` into `pleiades/cli.py`
-(it adds a `pleiades ui` command). The `webui/` package directory drops straight
+(the `pleiades ui` command is built in). The `webui/` package directory drops straight
 into `pleiades/`.
 
 > Hatchling note: since the build targets `packages = ["pleiades"]`, the
@@ -72,7 +72,6 @@ pleiades/webui/
 ├── __init__.py        # create_app / run exports
 ├── __main__.py        # python -m pleiades.webui
 ├── server.py          # FastAPI app: REST over the managers + static host
-├── cli_command.py     # paste-in `pleiades ui` command for cli.py
 ├── README.md          # this file
 └── static/
     ├── index.html     # app shell
