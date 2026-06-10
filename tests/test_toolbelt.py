@@ -80,3 +80,12 @@ def test_webui_has_email_discord_and_logs_routes():
             "/api/profiles/{name}/discord/info",
             "/api/models/{name}/logs",
             "/api/models/hf-search"} <= paths
+
+
+def test_webui_has_chat_session_routes():
+    __import__("pytest").importorskip("fastapi")
+    from pleiades.webui import create_app
+
+    paths = {r.path for r in create_app().routes}
+    assert {"/api/chats", "/api/chats/{chat_id}",
+            "/api/chats/{chat_id}/message"} <= paths

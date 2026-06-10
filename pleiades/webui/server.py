@@ -123,6 +123,15 @@ class ModelUpdate(BaseModel):
     chat_format: Optional[str] = None
 
 
+class ChatCreate(BaseModel):
+    character: str
+
+
+class ChatMessage(BaseModel):
+    message: str
+    system: Optional[str] = None
+
+
 class ModelFetch(BaseModel):
     repo: str
     name: str = ""
@@ -846,6 +855,94 @@ def create_app() -> FastAPI:
     @app.get("/api/email/presets")
     def email_presets() -> dict:
         return config.EMAIL_PRESETS
+
+    # ----------------------------- chat sessions ---------------------------- #
+    @app.get("/api/chats")
+    def chats_list() -> dict:
+        from .. import chats
+        return {"chats": chats.list_chats()}
+
+    @app.post("/api/chats")
+    def chats_create(body: ChatCreate) -> dict:
+        from .. import chats
+        try:
+            pm.get(body.character)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{body.character}'")
+        return chats.create(body.character)
+
+    @app.get("/api/chats/{chat_id}")
+    def chats_get(chat_id: str) -> dict:
+        from .. import chats
+        try:
+            return chats.load(chat_id)
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(404, "No such chat.")
+
+    @app.delete("/api/chats/{chat_id}")
+    def chats_delete(chat_id: str) -> dict:
+        from .. import chats
+        try:
+            return {"ok": chats.delete(chat_id)}
+        except ValueError:
+            raise HTTPException(400, "Bad chat id.")
+
+    @app.post("/api/chats/{chat_id}/message")
+    def chats_message(chat_id: str, body: ChatMessage) -> StreamingResponse:
+        """One unified chat/agent turn, streamed as NDJSON events.
+
+        Lines: {"type":"token","text"} | {"type":"tool_call","name","args"} |
+               {"type":"tool_result","name","output","ok"} |
+               {"type":"done","tokens","seconds","tps"} | {"type":"error","error"}
+        The model has the FULL tool belt (chat + harness) and uses tools only
+        when the prompt needs them. The turn is persisted to the chat file.
+        """
+        from .. import chats
+        try:
+            chat = chats.load(chat_id)
+            p = pm.get(chat["character"])
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(404, "No such chat (or its character is gone).")
+
+        def gen():
+            import json as _json
+            items: list[dict] = []
+            text_acc = ""
+            meta: dict = {}
+            try:
+                from ..engine import Engine
+                engine = Engine(settings=config.Settings.load(),
+                                manager=pm, anamnesis=an)
+                for evt in engine.stream_events(p, body.message, system=body.system):
+                    if evt["type"] == "token":
+                        text_acc += evt["text"]
+                    elif evt["type"] in ("tool_call", "tool_result"):
+                        if text_acc:
+                            items.append({"t": "text", "text": text_acc})
+                            text_acc = ""
+                        if evt["type"] == "tool_call":
+                            items.append({"t": "tool", "name": evt["name"],
+                                          "args": evt["args"], "output": None,
+                                          "ok": None})
+                        else:
+                            for it in reversed(items):
+                                if it["t"] == "tool" and it["output"] is None:
+                                    it["output"] = evt["output"][:4000]
+                                    it["ok"] = evt["ok"]
+                                    break
+                    elif evt["type"] == "done":
+                        meta = {k: evt[k] for k in ("tokens", "seconds", "tps")}
+                    yield _json.dumps(evt, ensure_ascii=False) + "\n"
+                if text_acc:
+                    items.append({"t": "text", "text": text_acc})
+                try:
+                    chats.append_turn(chat_id, body.message, items, meta)
+                except Exception:
+                    pass  # persistence must never kill the stream
+            except Exception as e:
+                yield _json.dumps({"type": "error", "error": str(e)}) + "\n"
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
 
     # ----------------------------- chat ------------------------------------ #
     @app.post("/api/profiles/{name}/chat")

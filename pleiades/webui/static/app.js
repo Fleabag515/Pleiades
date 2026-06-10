@@ -94,13 +94,13 @@ const state = {
   view: "dashboard", detail: null, cache: {},
   chats: {},            // character -> [{role, text}]
   chatWith: null,       // active chat character
-  workJob: null,        // active job id being watched
+  workJob: null,        // active job id being watched (legacy agent API)
+  chatId: null,         // active chat session id
 };
 
 const VIEWS = {
   dashboard:  { title: "Overview",   sub: "Services, characters, and models at a glance.", render: renderDashboard },
-  chat:       { title: "Chat",       sub: "Talk to a character — memory and tools wired in.", render: renderChat, full: true },
-  work:       { title: "Agent",      sub: "Give a character real machine work: files, git, shell, web, and 60+ tools.", render: renderWork },
+  chat:       { title: "Chat",       sub: "Talk to a character — memory wired in, 60+ tools used when the prompt needs them.", render: renderChat, full: true },
   characters: { title: "Characters", sub: "Each character binds memory, email, vault, browser, and a model to one identity.", render: renderCharacters },
   models:     { title: "Models",     sub: "Register GGUF models and run a local OpenAI-compatible server for each.", render: renderModels },
   hardware:   { title: "Hardware",   sub: "Detected GPU / RAM and the planned GPU offload for each model.", render: renderHardware },
@@ -212,61 +212,156 @@ async function renderDashboard() {
   c.append(el("div", { class: "section-label" }, "Jump in"));
   c.append(el("div", { class: "grid cols-2" },
     el("div", { class: "card hoverable", style: "cursor:pointer", onclick: () => go("chat") },
-      el("div", { class: "card-head" }, el("h3", {}, "💬 Chat with a character"), el("span", { class: "pill run" }, "live")),
-      el("div", { class: "muted" }, "Streamed conversation with memory injection and the full per-character tool belt — search, email, browser, vault.")),
-    el("div", { class: "card hoverable", style: "cursor:pointer", onclick: () => go("work") },
-      el("div", { class: "card-head" }, el("h3", {}, "⚡ Run agent work"), el("span", { class: "pill violet" }, "harness")),
-      el("div", { class: "muted" }, "Give a task to the workspace harness — files, git, shell, subagents — with a live tool-call feed and approval gate."))));
+      el("div", { class: "card-head" }, el("h3", {}, "💬 Chat"), el("span", { class: "pill run" }, "live")),
+      el("div", { class: "muted" }, "Streamed conversation with memory injection — and the character reaches for its 60+ tools (files, git, shell, web, email, browser, vault) only when the prompt needs them.")),
+    el("div", { class: "card hoverable", style: "cursor:pointer", onclick: () => go("hardware") },
+      el("div", { class: "card-head" }, el("h3", {}, "⚙ Hardware"), el("span", { class: "pill violet" }, "auto-offload")),
+      el("div", { class: "muted" }, "What the machine has and how each model is split across GPU and CPU."))));
 }
 
-/* ═══════════════ CHAT ═══════════════ */
+/* ═══════════════ CHAT (unified chat + agent) ═══════════════ */
+
+/* Split raw assistant text into ordered think/text segments.
+   Handles Qwen-style output where the opening <think> tag is consumed by the
+   chat template: a closing </think> with no opener means everything before it
+   was thinking. */
+function parseThink(raw) {
+  const segs = [];
+  let rest = raw;
+  if (!rest.includes("<think>") && rest.includes("</think>")) {
+    const i = rest.indexOf("</think>");
+    segs.push({ kind: "think", text: rest.slice(0, i) });
+    rest = rest.slice(i + 8);
+  }
+  for (;;) {
+    const a = rest.indexOf("<think>");
+    if (a === -1) break;
+    if (a > 0) segs.push({ kind: "text", text: rest.slice(0, a) });
+    const b = rest.indexOf("</think>", a);
+    if (b === -1) { segs.push({ kind: "think", text: rest.slice(a + 7), live: true }); rest = ""; break; }
+    segs.push({ kind: "think", text: rest.slice(a + 7, b) });
+    rest = rest.slice(b + 8);
+  }
+  if (rest) segs.push({ kind: "text", text: rest });
+  return segs;
+}
+
+function renderSegments(raw, streaming = false) {
+  const host = el("div", { class: "seg-host" });
+  parseThink(raw).forEach(seg => {
+    const text = seg.text.replace(/^\n+|\n+$/g, "");
+    if (!text) return;
+    if (seg.kind === "think") {
+      const d = el("details", { class: "think-block" },
+        el("summary", {}, `✦ thinking${seg.live && streaming ? "…" : ""}`),
+        el("div", { class: "think-body" }, text));
+      if (seg.live && streaming) d.open = true;
+      host.append(d);
+    } else {
+      host.append(el("div", { class: "seg-text" }, text));
+    }
+  });
+  return host;
+}
+
+function toolBlock(item) {
+  const pending = item.output === null || item.output === undefined;
+  const d = el("details", { class: `tool-blk ${pending ? "pending" : item.ok === false ? "fail" : "okay"}` },
+    el("summary", {},
+      el("span", { class: "tool-ic" }, pending ? "◌" : item.ok === false ? "✕" : "✓"),
+      ` ${item.name}`,
+      el("span", { class: "tool-tag" }, pending ? "running…" : item.ok === false ? "error" : "done")),
+    el("div", { class: "tool-body" },
+      item.args ? el("div", { class: "tool-args" }, item.args) : null,
+      el("pre", { class: "tool-out" }, pending ? "…" : (item.output || "(no output)"))));
+  return d;
+}
+
 async function renderChat() {
   const c = $("#content"); c.innerHTML = "";
-  let profiles = [];
-  try { profiles = (await api.get("/api/profiles")).profiles; } catch (e) { return err(e); }
+  let chatsL = [], profiles = [];
+  try {
+    [chatsL, profiles] = await Promise.all([
+      api.get("/api/chats").then(r => r.chats),
+      api.get("/api/profiles").then(r => r.profiles),
+    ]);
+  } catch (e) { return err(e); }
 
   if (!profiles.length) {
     c.classList.remove("full");
     c.append(el("div", { class: "empty" },
       el("div", { class: "empty-ico" }, "💬"),
-      el("h3", {}, "No characters to chat with"),
+      el("h3", {}, "No characters yet"),
       el("div", {}, "Create a character first — it gets its own memory, tools, and model."),
       el("div", { style: "margin-top:18px" }, el("button", { class: "btn primary", onclick: () => go("characters") }, "Create a character"))));
     return;
   }
+  if (state.chatId && !chatsL.find(x => x.id === state.chatId)) state.chatId = null;
 
-  if (!state.chatWith || !profiles.find(p => p.name === state.chatWith)) state.chatWith = profiles[0].name;
-  const active = profiles.find(p => p.name === state.chatWith);
+  /* ── sessions rail ── */
+  const side = el("div", { class: "chat-side" },
+    el("button", { class: "btn primary", style: "width:100%;margin-bottom:12px", onclick: () => newChatDialog(profiles) }, "＋ New chat"),
+    el("div", { class: "chat-side-label" }, "Chats"));
+  if (!chatsL.length) side.append(el("div", { class: "svc-note", style: "padding:0 8px" }, "No chats yet."));
+  chatsL.forEach(ch => {
+    side.append(el("div", { class: `chat-sess ${ch.id === state.chatId ? "active" : ""}`,
+      onclick: () => { state.chatId = ch.id; renderChat(); } },
+      el("div", { class: "chat-sess-title" }, ch.title),
+      el("div", { class: "chat-sess-meta" },
+        el("span", { class: "avatar tiny" }, initials(ch.character)), ` ${ch.character} · ${ago(ch.updated)}`),
+      el("button", { class: "chat-sess-x", title: "Delete chat (memory is untouched)", onclick: async (e) => {
+        e.stopPropagation();
+        if (!confirm("Delete this chat? The character's memory is not affected.")) return;
+        try { await api.del(`/api/chats/${ch.id}`); if (state.chatId === ch.id) state.chatId = null; renderChat(); }
+        catch (er) { err(er); }
+      } }, "✕")));
+  });
 
-  /* layout */
-  const side = el("div", { class: "chat-side" }, el("div", { class: "chat-side-label" }, "Characters"));
-  profiles.forEach(p => side.append(el("button", {
-    class: `chat-char ${p.name === state.chatWith ? "active" : ""}`,
-    onclick: () => { state.chatWith = p.name; renderChat(); },
-  }, el("span", { class: "avatar" }, initials(p.name)), el("span", {}, p.name))));
-
-  const scroll = el("div", { class: "chat-scroll" });
-  const history = state.chats[state.chatWith] || [];
-  const addMsg = (role, text) => {
-    const m = el("div", { class: `msg ${role}` },
-      el("span", { class: "avatar" }, role === "user" ? "You" : initials(state.chatWith)),
-      el("div", { class: "bubble" }, text));
-    scroll.append(m);
-    scroll.scrollTop = scroll.scrollHeight;
-    return m.querySelector(".bubble");
-  };
-
-  if (!history.length) {
-    scroll.append(el("div", { class: "empty", style: "margin:auto" },
+  /* ── main column ── */
+  const main = el("div", { class: "chat-main" });
+  if (!state.chatId) {
+    main.append(el("div", { class: "empty", style: "margin:auto" },
       el("div", { class: "empty-ico" }, "✶"),
-      el("h3", {}, `Say hello to ${state.chatWith}`),
-      el("div", {}, "Every turn is stored in persistent memory. The character can search the web, read its inbox, drive its browser, and use its vault.")));
-  } else {
-    history.forEach(m => addMsg(m.role, m.text));
+      el("h3", {}, "Pick a chat or start a new one"),
+      el("div", {}, "Each chat is bound to one character. It chats normally and reaches for its tools — files, shell, web, email, browser — only when the task calls for it."),
+      el("div", { style: "margin-top:18px" }, el("button", { class: "btn primary", onclick: () => newChatDialog(profiles) }, "＋ New chat"))));
+    c.append(el("div", { class: "chat-wrap" }, side, main));
+    return;
   }
 
-  /* input */
-  const ta = el("textarea", { rows: "1", placeholder: `Message ${state.chatWith}…` });
+  let chat;
+  try { chat = await api.get(`/api/chats/${state.chatId}`); } catch (e) { return err(e); }
+  const who = chat.character;
+  const active = profiles.find(p => p.name === who) || {};
+
+  const scroll = el("div", { class: "chat-scroll" });
+  const addUser = (text) => {
+    scroll.append(el("div", { class: "msg user" },
+      el("span", { class: "avatar" }, "You"),
+      el("div", { class: "bubble" }, text)));
+  };
+  const addAssistantStored = (m) => {
+    const bubble = el("div", { class: "bubble" });
+    (m.items || []).forEach(it => {
+      if (it.t === "text") bubble.append(renderSegments(it.text));
+      else if (it.t === "tool") bubble.append(toolBlock(it));
+    });
+    if (m.meta && m.meta.tps) bubble.append(el("div", { class: "tps-badge" }, `${m.meta.tokens} tok · ${m.meta.tps} tok/s`));
+    scroll.append(el("div", { class: "msg assistant" },
+      el("span", { class: "avatar" }, initials(who)), bubble));
+  };
+  if (!chat.messages.length) {
+    scroll.append(el("div", { class: "empty", style: "margin:auto" },
+      el("div", { class: "empty-ico" }, "✶"),
+      el("h3", {}, `Say hello to ${who}`),
+      el("div", {}, "Persistent memory via Anamnesis. Tools on standby — used only when needed.")));
+  } else {
+    chat.messages.forEach(m => m.role === "user" ? addUser(m.content) : m.role === "assistant" ? addAssistantStored(m) : null);
+  }
+  requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+
+  /* ── composer ── */
+  const ta = el("textarea", { rows: "1", placeholder: `Message ${who}…` });
   ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; });
   const sendBtn = el("button", { class: "send-btn", title: "Send (Enter)" },
     el("span", { html: `<svg viewBox="0 0 24 24"><path d="M2 21 23 12 2 3v7l15 2-15 2v7z"/></svg>` }));
@@ -276,25 +371,36 @@ async function renderChat() {
     const text = ta.value.trim();
     if (!text || busy) return;
     busy = true; sendBtn.disabled = true; ta.value = ""; ta.style.height = "auto";
-    if (!state.chats[state.chatWith]) state.chats[state.chatWith] = [];
-    const hist = state.chats[state.chatWith];
-    if (!hist.length) scroll.innerHTML = "";                     // clear empty state
-    hist.push({ role: "user", text });
-    addMsg("user", text);
+    if (!chat.messages.length) scroll.innerHTML = "";
+    addUser(text);
 
-    const bubble = addMsg("assistant", "");
-    bubble.append(el("span", { class: "typing" }, el("span"), el("span"), el("span")));
-    let acc = "";
+    const bubble = el("div", { class: "bubble" });
+    scroll.append(el("div", { class: "msg assistant" }, el("span", { class: "avatar" }, initials(who)), bubble));
+    const typing = el("span", { class: "typing" }, el("span"), el("span"), el("span"));
+    bubble.append(typing);
+
+    /* streaming render state: committed blocks + a live segment area */
+    let raw = "";
+    let liveHost = null;
+    const follow = () => { scroll.scrollTop = scroll.scrollHeight; };
+    const renderLive = (streaming) => {
+      if (!liveHost) { liveHost = el("div", {}); bubble.append(liveHost); }
+      liveHost.innerHTML = ""; liveHost.append(renderSegments(raw, streaming));
+    };
+    const commitLive = () => {
+      if (raw && liveHost) { liveHost.innerHTML = ""; liveHost.append(renderSegments(raw, false)); }
+      raw = ""; liveHost = null;
+    };
 
     try {
-      const r = await fetch(`/api/profiles/${encodeURIComponent(state.chatWith)}/chat`, {
+      const r = await fetch(`/api/chats/${chat.id}/message`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
       });
       if (!r.ok || !r.body) throw new Error(`${r.status} ${r.statusText}`);
       const reader = r.body.getReader();
       const dec = new TextDecoder();
-      let buf = "";
+      let buf = "", gotAny = false, openTool = null;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -303,44 +409,78 @@ async function renderChat() {
         for (const line of lines) {
           if (!line.trim()) continue;
           let evt; try { evt = JSON.parse(line); } catch { continue; }
-          if (evt.type === "chunk") {
-            acc += evt.text;
-            bubble.textContent = acc;
-            scroll.scrollTop = scroll.scrollHeight;
+          if (!gotAny && evt.type !== "error") { gotAny = true; typing.remove(); }
+          if (evt.type === "token") {
+            raw += evt.text; renderLive(true); follow();
+          } else if (evt.type === "tool_call") {
+            commitLive();
+            openTool = toolBlock({ name: evt.name, args: evt.args, output: null });
+            bubble.append(openTool); follow();
+          } else if (evt.type === "tool_result") {
+            if (openTool) openTool.replaceWith(toolBlock({ name: evt.name, args: "", output: evt.output, ok: evt.ok }));
+            openTool = null; follow();
+          } else if (evt.type === "done") {
+            commitLive();
+            if (evt.tps) bubble.append(el("div", { class: "tps-badge" }, `${evt.tokens} tok · ${evt.tps} tok/s`));
+            follow();
           } else if (evt.type === "error") {
             throw new Error(evt.error);
           }
         }
       }
-      if (!acc) { acc = "(no reply)"; bubble.textContent = acc; }
-      hist.push({ role: "assistant", text: acc });
+      if (!gotAny) { typing.remove(); bubble.append(el("div", { class: "seg-text" }, "(no reply)")); }
+      chat.messages.push({ role: "user", content: text });
+      const sideItem = $$(".chat-sess.active .chat-sess-title")[0];
+      if (sideItem && sideItem.textContent === "(new chat)") sideItem.textContent = text.slice(0, 60);
     } catch (e) {
+      typing.remove();
       bubble.closest(".msg").classList.add("error");
-      bubble.textContent = `Couldn't reach ${state.chatWith}: ${e.message}. Check that the model and the Anamnesis daemon are running (see Overview).`;
-      hist.push({ role: "error", text: bubble.textContent });
+      bubble.append(el("div", { class: "seg-text" },
+        `Couldn't reach ${who}: ${e.message}. Check that the model and the Anamnesis daemon are running (see Overview).`));
     } finally {
-      busy = false; sendBtn.disabled = false; ta.focus();
+      busy = false; sendBtn.disabled = false; ta.focus(); follow();
     }
   }
   sendBtn.addEventListener("click", send);
   ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 
-  const main = el("div", { class: "chat-main" },
+  main.append(
     el("div", { class: "chat-head" },
-      el("span", { class: "avatar" }, initials(state.chatWith)),
+      el("span", { class: "avatar" }, initials(who)),
       el("div", {},
-        el("div", { class: "chat-head-name" }, state.chatWith),
-        el("div", { class: "chat-head-sub" }, `${active.model ? "model: " + active.model : "default engine"} · memory on · tools on`)),
+        el("div", { class: "chat-head-name" }, who),
+        el("div", { class: "chat-head-sub" }, `${active.model ? "model: " + active.model : "default engine"} · memory on · 60+ tools on standby`)),
       el("span", { class: "list-spacer" }),
-      el("button", { class: "btn sm ghost", onclick: () => { state.chats[state.chatWith] = []; renderChat(); } }, "Clear view"),
-      el("button", { class: "btn sm", onclick: () => go("characters", state.chatWith) }, "Profile")),
+      el("button", { class: "btn sm", onclick: () => go("characters", who) }, "Profile")),
     scroll,
     el("div", { class: "chat-input-bar" },
       el("div", { class: "chat-input-box" }, ta, sendBtn),
-      el("div", { class: "chat-note" }, "Conversation history lives in the character's Anamnesis memory — clearing this view forgets nothing.")));
+      el("div", { class: "chat-note" }, "Long-term memory lives in Anamnesis — deleting a chat here forgets nothing.")));
 
   c.append(el("div", { class: "chat-wrap" }, side, main));
   ta.focus();
+}
+
+function newChatDialog(profiles) {
+  const sel = el("select", { class: "select" },
+    ...profiles.map(p => el("option", { value: p.name }, `${p.name}${p.model ? " · " + p.model : ""}`)));
+  modal.open({
+    title: "New chat",
+    body: el("div", {},
+      el("div", { class: "callout", style: "margin-bottom:16px" }, el("span", { class: "c-ico" }, "💬"),
+        el("div", { html: "Pick which character this chat uses. The character keeps one continuous memory across all its chats." })),
+      field("Character", sel)),
+    footer: [
+      el("button", { class: "btn ghost", onclick: () => modal.close() }, "Cancel"),
+      el("button", { class: "btn primary", onclick: async (e) => {
+        e.target.disabled = true;
+        try {
+          const ch = await api.post("/api/chats", { character: sel.value });
+          state.chatId = ch.id; modal.close(); renderChat();
+        } catch (er) { e.target.disabled = false; err(er); }
+      } }, "Start chat"),
+    ],
+  });
 }
 
 /* ═══════════════ AGENT (work) ═══════════════ */
