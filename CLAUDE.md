@@ -13,6 +13,14 @@ the human must supply, and build order. Read it top to bottom before touching co
 > quant kernels/architectures (which would forfeit "any GGUF" and large-model support).
 > Email defaults: provider-agnostic IMAP with app-password presets for Gmail / mail.com.
 
+> **Update — workspace harness merged (co-owner: ionizedd).** Pleiades now also
+> ships a Claude-Code-style agent harness in `pleiades/harness/` (60+ tools, agent
+> loop, tool-search, MCP client, subagents). The repo's identity + local-inference
+> model is the base; the harness lets characters *do machine work*. Local llama.cpp
+> stays the primary backend; cloud/Ollama are optional tiers. Anamnesis remains the
+> canonical context manager (his in-process memory is an augmenting per-character
+> tier). CLI: `pleiades work [--as <char>]`. Details in `INTEGRATION.md`.
+
 ---
 
 ## 1. What Pleiades is

@@ -102,6 +102,7 @@ cp .env.example .env            # set PLEIADES_MODEL_PATH to your .gguf, fill se
 pleiades new alice              # creates the Anamnesis character + Pleiades profile (prompts for email creds, etc.)
 pleiades search up              # bring SearXNG online via docker compose
 pleiades chat alice             # talk to the character (memory + tools wired in)
+pleiades work alice ...         # NEW: have the character DO machine work (see below)
 pleiades discord alice          # host it as a Discord bot
 pleiades vault alice list       # manage the character's secrets
 ```
@@ -116,6 +117,29 @@ pleiades vault alice list       # manage the character's secrets
 | Browser | `browser` | Headed Camoufox, persistent per-character profile. |
 | Password vault | `vault` | Encrypted SQLite; secrets reach the model only on explicit `vault.get`. |
 | Discord | (connector) | Host the character as a bot. |
+
+## Workspace harness (Claude-Code-style)
+
+Beyond chatting, a character can *operate the machine*. The agent harness
+(`pleiades.harness`) gives every character a 60+ tool belt — files, git, shell,
+processes, code formatting/linting/tests, document readers, webhooks, subagents,
+tool-search, and an MCP client — driven by an autonomous loop with a permission
+gate (`ask` / `allow` / `deny`).
+
+```bash
+pleiades work "find the largest .py file and summarize it"          # plain workspace
+pleiades work --as alice "read my inbox, save any login codes to my vault"
+pleiades work --tier coder --policy allow "add a test for vault.delete and run it"
+```
+
+Local llama.cpp inference is the default brain; `--tier cloud` (needs the
+`[workspace]` extra + an API key) or `--tier ollama` switch backends. With
+`--as <character>` the agent runs inside that character's workspace, memory,
+vault, and inbox, routing inference through its Anamnesis proxy.
+
+The harness was contributed by **ionizedd**; see `INTEGRATION.md` for the merge
+and `GOLDEN_BASELINE.md` for the native-layer roadmap (LSP bridge, sandboxed
+executor, streaming tools, multi-agent fabric).
 
 ## Security & responsible use
 

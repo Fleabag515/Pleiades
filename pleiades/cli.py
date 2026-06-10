@@ -157,6 +157,74 @@ def discord(name: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# work — the Claude-Code-style agent harness (optionally as a character)
+# --------------------------------------------------------------------------- #
+@cli.command()
+@click.argument("task", nargs=-1)
+@click.option("--as", "character", default=None,
+              help="Run as a character: binds its identity, memory, vault, and email.")
+@click.option("--tier", default=None,
+              help="Model tier: local (default, our llama.cpp), coder, cloud, ollama, ...")
+@click.option("--policy", default=None, type=click.Choice(["ask", "allow", "deny"]),
+              help="Permission policy for side-effecting tools.")
+def work(task: tuple[str, ...], character: str | None, tier: str | None,
+         policy: str | None) -> None:
+    """Run the agent harness on a TASK (files, git, shell, web, browser, +more).
+
+    Local llama.cpp inference is the default brain. With --as <character> the agent
+    operates inside that character's workspace, memory, vault, and inbox, routing
+    inference through its Anamnesis proxy.
+    """
+    from .harness import Agent, Config
+    from .harness import builtins as _builtins      # noqa: F401  registers tools
+    from .harness import identity as _identity      # noqa: F401  registers vault/email
+    from .harness.subagent import bind_context
+    from .harness.builtins.memory import bind_memory
+    from .harness.anamnesis import Anamnesis as WorkingMemory
+
+    if not task:
+        console.print('[yellow]Give a task, e.g. pleiades work "summarize README.md"[/yellow]')
+        sys.exit(1)
+
+    cfg = Config.load()
+    if policy:
+        cfg.exec_policy = policy
+
+    if character:
+        try:
+            _identity.bind_character(character, cfg=cfg)
+        except FileNotFoundError as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+        console.print(f"[dim]bound character: {character}[/dim]")
+
+    # In-process working/long-term memory tier (scoped to the character if bound).
+    bind_memory(WorkingMemory.from_config(cfg))
+
+    def on_event(kind, payload):
+        if kind == "tool_call":
+            console.print(f"[cyan]→ {payload.name}[/cyan]")
+        elif kind == "tool_result":
+            _call, out, err = payload
+            mark = "[red]x[/red]" if err else "[green]ok[/green]"
+            first = out.splitlines()[0][:100] if out else ""
+            console.print(f"  {mark} {first}")
+        elif kind == "text":
+            console.print(f"\n{payload}")
+
+    agent = Agent(cfg, tier_name=tier)
+    bind_context(cfg, depth=0, approve=agent.approve)
+    console.print(f"[dim]policy={cfg.exec_policy} · tier={tier or cfg.default_tier} · "
+                  f"backend={cfg.tier(tier or cfg.default_tier).backend}[/dim]\n")
+    try:
+        result = agent.run(" ".join(task), on_event=on_event)
+    except Exception as e:
+        console.print(f"[red]error: {e}[/red]")
+        sys.exit(1)
+    console.print(f"\n[dim]- done in {getattr(result, 'steps', '?')} steps -[/dim]")
+
+
+# --------------------------------------------------------------------------- #
 # vault
 # --------------------------------------------------------------------------- #
 @cli.group()
