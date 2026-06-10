@@ -165,12 +165,15 @@ resolve_gpu() {
 clone_repo() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     say "Updating existing checkout at $INSTALL_DIR"
-    git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" >/dev/null 2>&1 || true
-    git -C "$INSTALL_DIR" checkout "$BRANCH" >/dev/null 2>&1 || true
-    git -C "$INSTALL_DIR" pull --ff-only    >/dev/null 2>&1 || warn "Could not fast-forward; using existing checkout."
+    git -C "$INSTALL_DIR" fetch origin "$BRANCH" >/dev/null 2>&1 || warn "fetch failed; using existing checkout."
+    # Hard-reset to the remote branch so shallow clones / minor divergence update
+    # cleanly. Untracked files (e.g. your .env) are preserved by reset.
+    if ! git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" >/dev/null 2>&1; then
+      git -C "$INSTALL_DIR" pull --ff-only >/dev/null 2>&1 || warn "Could not update; using existing checkout."
+    fi
   else
     say "Cloning Pleiades into $INSTALL_DIR"
-    git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
   fi
 }
 
