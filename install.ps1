@@ -132,7 +132,7 @@ function Get-Extras {
   if ($e.Count -eq 0) { return "" } else { return ($e -join ",") }
 }
 
-function Install-Pkg($py, $gpu) {
+function Install-Pkg($py, $plan) {
   Say "Creating virtual environment (.venv)"
   & $py -m venv (Join-Path $Dir ".venv")
   $venvPy = Join-Path $Dir ".venv\Scripts\python.exe"
@@ -140,18 +140,18 @@ function Install-Pkg($py, $gpu) {
 
   $extras = Get-Extras
   $spec = if ($extras) { ".[$extras]" } else { "." }
-  Say "Installing Pleiades — $($gpu.Desc) build of llama-cpp-python (this can take several minutes)"
+  Say "Installing Pleiades — $($plan.Desc) build of llama-cpp-python (this can take several minutes)"
   Push-Location $Dir
   try {
-    $env:CMAKE_ARGS = $gpu.Args
+    $env:CMAKE_ARGS = $plan.Args
     & $venvPy -m pip install -e $spec
     if ($LASTEXITCODE -ne 0) {
-      if ($gpu.Args) {
+      if ($plan.Args) {
         Warn "GPU build failed (missing CUDA toolkit?). Retrying with a CPU build."
         $env:CMAKE_ARGS = ""
         & $venvPy -m pip install -e $spec
         if ($LASTEXITCODE -ne 0) { Die "pip install failed." }
-        $gpu.Desc = "CPU (GPU build failed)"
+        $plan.Desc = "CPU (GPU build failed)"
       } else { Die "pip install failed." }
     }
   } finally { Pop-Location; $env:CMAKE_ARGS = "" }
@@ -195,16 +195,21 @@ Ensure-Git
 $py = Ensure-Python
 Ensure-Node
 $dockerOk = Check-Docker
-$gpu = Resolve-Gpu
+# NOTE: deliberately NOT named $gpu — PowerShell variable names are case-
+# insensitive, so $gpu IS the [ValidateSet("auto","cpu","gpu")]$Gpu parameter.
+# Validation attributes stay bound to the variable for the whole scope, so
+# assigning Resolve-Gpu's hashtable to it re-triggers ValidateSet and aborts
+# the install ("System.Collections.Hashtable is not a valid value for Gpu").
+$gpuPlan = Resolve-Gpu
 Clone-Repo
-Install-Pkg $py $gpu
+Install-Pkg $py $gpuPlan
 Install-Anamnesis
 Fetch-Browser $py
 Make-Env
 Start-Searxng $dockerOk
 
 Write-Host ""
-Say "Pleiades installed at $Dir  ($($gpu.Desc))"
+Say "Pleiades installed at $Dir  ($($gpuPlan.Desc))"
 @"
 
   Next steps:
