@@ -212,8 +212,11 @@ class Agent:
         big = len(non_search) > self.cfg.tool_search_threshold
         if mode == "search" or (mode == "auto" and big):
             from . import toolsearch
-            toolsearch.bind_dispatch(self.approve)
-            return registry.select(tags=["search", "meta"])
+            allowed = {t.name for t in self.tools}
+            toolsearch.bind_dispatch(self.approve, allowed)
+            # expose discovery/meta tools that are within this agent's set
+            sm = registry.select(tags=["search", "meta"])
+            return [t for t in sm if t.name in allowed] or sm
         return non_search
 
     def _dispatch(self, call: ToolCall,
@@ -258,6 +261,9 @@ class Agent:
                 for c, out, err in results
             ]
             return [{"role": "user", "content": blocks}]
-        # ollama / openai: one role:"tool" message per result
-        return [{"role": "tool", "name": c.name, "content": out}
+        # ollama / openai: one role:"tool" message per result. The
+        # tool_call_id is REQUIRED by the OpenAI spec (and llama.cpp / the
+        # Anamnesis proxy) to bind a result to the call that produced it.
+        return [{"role": "tool", "tool_call_id": c.id, "name": c.name,
+                 "content": out}
                 for c, out, _ in results]
