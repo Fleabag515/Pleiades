@@ -155,8 +155,31 @@ def chat(name: str, no_stream: bool) -> None:
 # --------------------------------------------------------------------------- #
 @cli.command()
 @click.argument("name")
-def discord(name: str) -> None:
-    """Run the character as a Discord bot (blocks)."""
+@click.option(
+    "--service",
+    "service_action",
+    type=click.Choice(["install", "uninstall", "status"]),
+    default=None,
+    help="Manage a persistent systemd user service instead of running in the foreground.",
+)
+def discord(name: str, service_action: "str | None") -> None:
+    """Run the character as a Discord bot (blocks), or manage its systemd service.
+
+    \b
+    Run in foreground (manual):
+        pleiades discord Mark
+
+    Install as a background service (auto-starts on login):
+        pleiades discord Mark --service install
+
+    Check service status / remove:
+        pleiades discord Mark --service status
+        pleiades discord Mark --service uninstall
+    """
+    if service_action:
+        _discord_service(name, service_action)
+        return
+
     from .connectors.discord_bot import run_discord_bot
 
     try:
@@ -164,6 +187,71 @@ def discord(name: str) -> None:
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
+
+
+def _discord_service(name: str, action: str) -> None:
+    """Create/remove/query the systemd user unit for a character's Discord bot."""
+    import os
+    import shutil
+
+    # Ensure systemctl --user can reach the session D-Bus even when called
+    # from a non-login shell (e.g. a script or MCP tool).
+    uid = os.getuid()
+    os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+
+    unit_name = f"pleiades-discord-{name.lower()}.service"
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_path = unit_dir / unit_name
+    pleiades_bin = shutil.which("pleiades") or str(
+        Path(sys.executable).parent / "pleiades"
+    )
+
+    if action == "install":
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        unit_path.write_text(
+            "[Unit]\n"
+            f"Description=Pleiades Discord bot – {name}\n"
+            "After=network-online.target\n"
+            "Wants=network-online.target\n"
+            "\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"ExecStart={pleiades_bin} discord {name}\n"
+            "Restart=on-failure\n"
+            "RestartSec=10\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "enable", "--now", unit_name], check=True
+            )
+        except subprocess.CalledProcessError as e:
+            console.print(f"[red]systemctl failed: {e}[/red]")
+            sys.exit(1)
+        console.print(f"[green]Service '[bold]{unit_name}[/bold]' installed and started.[/green]")
+        console.print(f"Logs:   [bold]journalctl --user -u {unit_name} -f[/bold]")
+        console.print(f"Stop:   [bold]pleiades discord {name} --service uninstall[/bold]")
+
+    elif action == "uninstall":
+        if not unit_path.exists():
+            console.print(f"[yellow]No service '[bold]{unit_name}[/bold]' found.[/yellow]")
+            return
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", unit_name], check=False
+        )
+        unit_path.unlink()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        console.print(f"[green]Service '[bold]{unit_name}[/bold]' stopped and removed.[/green]")
+
+    elif action == "status":
+        result = subprocess.run(
+            ["systemctl", "--user", "status", unit_name]
+        )
+        sys.exit(result.returncode)
 
 
 # --------------------------------------------------------------------------- #
