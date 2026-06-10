@@ -30,3 +30,7 @@ models/
 # OS
 .DS_Store
 Thumbs.db
+
+# vendored/runtime
+__pycache__/
+*.pyc
