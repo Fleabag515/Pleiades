@@ -22,17 +22,27 @@ import re
 from .tools import tool, registry, Tool
 
 _WORD = re.compile(r"[a-z0-9]{2,}")
-_CTX: dict[str, object] = {"approve": None}
+_CTX: dict[str, object] = {"approve": None, "allowed": None}
 
 
-def bind_dispatch(approve) -> None:
-    """Bind the permission gate so call_tool routes through it (set per run)."""
+def bind_dispatch(approve, allowed: "set[str] | None" = None) -> None:
+    """Bind the permission gate (and optional allow-list) for this run.
+
+    allowed: tool names this agent may discover/call. None = no restriction.
+    A restricted subagent passes its own tool set so call_tool can't reach
+    tools outside that sandbox, even when tool-search is active.
+    """
     _CTX["approve"] = approve
+    _CTX["allowed"] = set(allowed) if allowed is not None else None
 
 
 def _discoverable() -> list[Tool]:
-    # everything except the discovery plumbing itself
-    return [t for t in registry.all() if "search" not in t.tags]
+    # everything except the discovery plumbing itself, restricted to the
+    # active agent's allow-list when one is bound.
+    allowed = _CTX.get("allowed")
+    return [t for t in registry.all()
+            if "search" not in t.tags
+            and (allowed is None or t.name in allowed)]
 
 
 def _rank(query: str) -> list[Tool]:
@@ -89,6 +99,10 @@ def call_tool(name: str, arguments: dict) -> str:
     """
     from .agent import execute_tool  # shared permission gate + error handling
 
+    allowed = _CTX.get("allowed")
+    if allowed is not None and name not in allowed:
+        return (f"Error: tool '{name}' is not available to this agent. "
+                "Use find_tools to see what you can call.")
     t = registry.get(name)
     if t is None:
         return (f"Error: no such tool '{name}'. "

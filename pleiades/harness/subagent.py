@@ -37,8 +37,10 @@ def bind_context(cfg: Config, depth: int = 0, approve=None) -> None:
 def dispatch_subagent(role: str, task: str) -> str:
     """Delegate a self-contained sub-task to a focused subagent and return its result.
 
-    role: one of "research" (web, Sonnet), "coder" (files+shell, Opus),
-          "fast" (cheap local model), or "general" (full tools).
+    role: one of "research" (web + read tools), "coder" (files + shell),
+          "fast" (read + web, smallest tier), or "general" (full tools).
+          Each role runs on the like-named tier (configurable in config.json;
+          local by default).
     task: complete standalone description - the subagent has none of this conversation's context.
     """
     from .agent import Agent
