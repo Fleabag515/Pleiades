@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # llama-cpp-python builds from source and isn't needed by the test suite;
+      # install the lightweight deps directly instead of the full package.
+      - name: Install test dependencies
+        run: pip install pytest ruff click rich httpx openai cryptography platformdirs fastapi uvicorn
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest tests/ -q

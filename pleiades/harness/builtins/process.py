@@ -22,7 +22,6 @@ last `_BUFFER_LINES` lines; older output is discarded.
 from __future__ import annotations
 
 import collections
-import os
 import subprocess
 import threading
 from dataclasses import dataclass, field

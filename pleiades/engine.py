@@ -140,10 +140,10 @@ class Engine:
         return "[engine] stopped after hitting the tool-call iteration cap."
 
     def stream(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None):
-        """Stream the final assistant message (after any tool calls resolve).
+        """Yield the final assistant message (after any tool calls resolve).
 
-        Yields text chunks. Tool-call rounds are run non-streamed; only the final
-        completion is streamed for a responsive REPL.
+        Yields text chunks. Each turn runs exactly once (no re-issued streaming
+        request), so Anamnesis stores exactly what the caller sees.
         """
         if isinstance(profile, str):
             profile = self.manager.get(profile)
@@ -165,14 +165,11 @@ class Engine:
                 msg = resp.choices[0].message
                 tool_calls = getattr(msg, "tool_calls", None)
                 if not tool_calls:
-                    # Re-issue the final turn as a stream.
-                    stream = client.chat.completions.create(
-                        model=profile.name, messages=messages, stream=True
-                    )
-                    for chunk in stream:
-                        delta = chunk.choices[0].delta
-                        if delta and delta.content:
-                            yield delta.content
+                    # Yield the reply we already have. Re-issuing it as a true stream
+                    # would run inference twice and store a duplicate (and possibly
+                    # different) turn in Anamnesis memory.
+                    if msg.content:
+                        yield msg.content
                     return
                 messages.append(
                     {

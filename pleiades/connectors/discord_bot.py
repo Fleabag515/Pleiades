@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..engine import Engine
-from ..profiles import Profile, ProfileManager
+from ..profiles import Profile
 
 
 def run_discord_bot(name: str, *, engine: Optional[Engine] = None) -> None:
@@ -24,11 +24,12 @@ def run_discord_bot(name: str, *, engine: Optional[Engine] = None) -> None:
     manager = engine.manager
     profile: Profile = manager.get(name)
 
-    token = manager.open_vault(name).get("discord.token")
+    with manager.open_vault(name) as vault:
+        token = vault.get("discord.token")
     if not token:
         raise RuntimeError(
             f"No discord.token in the vault for '{name}'. "
-            f"Add it with: pleiades vault {name} set discord.token <token>"
+            f"Add it with: pleiades vault set {name} discord.token"
         )
 
     intents = discord.Intents.default()

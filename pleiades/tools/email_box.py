@@ -120,7 +120,9 @@ class EmailTool(Tool):
             q = kw.get("query", "")
             if not q:
                 return "[email error] 'search' needs a 'query'."
-            return self._list(ctx, criteria=("TEXT", q), limit=int(kw.get("limit", 10)))
+            # IMAP requires quoting for queries containing spaces/specials.
+            quoted = '"' + q.replace("\\", "\\\\").replace('"', '\\"') + '"'
+            return self._list(ctx, criteria=("TEXT", quoted), limit=int(kw.get("limit", 10)))
         if action == "read":
             if not kw.get("id"):
                 return "[email error] 'read' needs an 'id'."

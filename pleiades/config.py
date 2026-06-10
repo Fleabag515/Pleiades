@@ -16,6 +16,7 @@ are stored in this module; secrets live in the per-profile vault.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,8 +60,27 @@ def ensure_home() -> None:
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
 
+_NAME_BAD = re.compile(r'[/\\\x00-\x1f<>:"|?*]')
+
+
+def validate_name(name: str) -> str:
+    """Reject profile names that could escape PROFILES_DIR (e.g. '../..').
+
+    Names are used directly as directory names (and by the web UI, where
+    DELETE /api/profiles/{name} removes the directory), so they must never
+    contain path separators or resolve outside the profiles dir.
+    """
+    if (not name or len(name) > 64 or _NAME_BAD.search(name)
+            or name in {".", ".."} or name.startswith((".", " ")) or name.endswith((".", " "))):
+        raise ValueError(
+            f"Invalid profile name {name!r}: no path separators or control/special "
+            "characters, no leading/trailing dots or spaces, max 64 chars."
+        )
+    return name
+
+
 def profile_dir(name: str) -> Path:
-    return PROFILES_DIR / name
+    return PROFILES_DIR / validate_name(name)
 
 
 def vault_path(name: str) -> Path:

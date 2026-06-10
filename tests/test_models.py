@@ -42,13 +42,16 @@ def test_model_add_missing_file_errors():
 
 
 def test_model_ports_are_unique(tmp_path):
-    a = tmp_path / "a.gguf"; a.write_bytes(b"x")
-    b = tmp_path / "b.gguf"; b.write_bytes(b"x")
+    a = tmp_path / "a.gguf"
+    a.write_bytes(b"x")
+    b = tmp_path / "b.gguf"
+    b.write_bytes(b"x")
     mm = ModelManager()
     pa = mm.add("pa", str(a))
     pb = mm.add("pb", str(b))
     assert pa["port"] != pb["port"]
-    mm.remove("pa"); mm.remove("pb")
+    mm.remove("pa")
+    mm.remove("pb")
 
 
 def test_stop_when_not_running():
@@ -73,7 +76,8 @@ def test_adopt_missing_character_errors():
 
 
 def test_assign_model_persists(tmp_path):
-    g = tmp_path / "mm.gguf"; g.write_bytes(b"x")
+    g = tmp_path / "mm.gguf"
+    g.write_bytes(b"x")
     ModelManager().add("mistral", str(g))
     pm = ProfileManager(config.Settings.load(), anamnesis=FakeAnamnesis(["zoe"]))
     pm.adopt("zoe")

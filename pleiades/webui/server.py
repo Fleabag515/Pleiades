@@ -38,12 +38,12 @@ except Exception:  # pragma: no cover
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .. import config
 from ..profiles import ProfileManager, Profile
 from ..models import ModelManager, ModelError
-from ..vault import Vault, RESERVED_KEYS, SITE_PREFIX
+from ..vault import RESERVED_KEYS
 from ..anamnesis import Anamnesis
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -358,7 +358,10 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/profiles/{name}")
     def delete_profile(name: str, delete_anamnesis: bool = True) -> dict:
-        pm.delete(name, delete_anamnesis=delete_anamnesis)
+        try:
+            pm.delete(name, delete_anamnesis=delete_anamnesis)
+        except ValueError as e:  # invalid / path-traversal name
+            raise HTTPException(400, str(e))
         return {"ok": True}
 
     @app.post("/api/profiles/{name}/model")

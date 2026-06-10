@@ -10,7 +10,7 @@ character, never per tool" is enforced.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 from . import config

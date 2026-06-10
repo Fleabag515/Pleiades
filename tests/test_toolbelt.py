@@ -41,3 +41,20 @@ def test_dispatch_bad_args_does_not_raise():
     belt = ToolBelt([EchoTool()])
     out = belt.dispatch("echo", {"wrong": "x"}, ctx=None)
     assert out.startswith("[error]")
+
+
+def test_cli_has_ui_command():
+    """`pleiades ui` must exist (the web UI docs point users at it)."""
+    from pleiades.cli import cli as root
+
+    assert "ui" in root.commands
+
+
+def test_webui_app_builds():
+    """create_app() wires every route without needing live services."""
+    fastapi = __import__("pytest").importorskip("fastapi")  # noqa: F841
+    from pleiades.webui import create_app
+
+    app = create_app()
+    paths = {r.path for r in app.routes}
+    assert "/api/status" in paths and "/api/profiles" in paths

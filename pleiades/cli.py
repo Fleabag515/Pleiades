@@ -8,11 +8,11 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 from rich.table import Table
 
 from . import config
-from .anamnesis import Anamnesis, AnamnesisError
+from .anamnesis import AnamnesisError
 from .profiles import ProfileManager
 
 console = Console()
@@ -40,8 +40,12 @@ def cli() -> None:
 def new(name: str, provider: str, no_email: bool, discord_token: str | None) -> None:
     """Create a character: Anamnesis character + Pleiades profile + vault + browser dir."""
     mgr = _manager()
-    if config.profile_json_path(name).is_file():
-        console.print(f"[red]Profile '{name}' already exists.[/red]")
+    try:
+        if config.profile_json_path(name).is_file():
+            console.print(f"[red]Profile '{name}' already exists.[/red]")
+            sys.exit(1)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
         sys.exit(1)
 
     email_kwargs: dict = {}
@@ -137,10 +141,10 @@ def chat(name: str, no_stream: bool) -> None:
         console.print(f"[bold magenta]{name} ›[/bold magenta] ", end="")
         try:
             if no_stream:
-                console.print(engine.run(profile, user))
+                console.print(engine.run(profile, user), markup=False)
             else:
                 for chunk in engine.stream(profile, user):
-                    console.print(chunk, end="")
+                    console.print(chunk, end="", markup=False)
                 console.print()
         except Exception as e:
             console.print(f"\n[red]error: {e}[/red]")
@@ -330,6 +334,28 @@ def serve() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ui — local web control panel
+# --------------------------------------------------------------------------- #
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Bind address. Use 0.0.0.0 to reach it from another machine.")
+@click.option("--port", type=int, default=None,
+              help="Port (default: first free port from 8750).")
+@click.option("--no-browser", is_flag=True,
+              help="Do not auto-open a browser (headless / remote).")
+def ui(host: str, port: int | None, no_browser: bool) -> None:
+    """Launch the Pleiades control panel (local web UI). Works on Linux and Windows."""
+    try:
+        from .webui import run
+    except ModuleNotFoundError as e:  # fastapi/uvicorn not installed
+        console.print(f"[red]Web UI dependencies missing: {e}[/red]")
+        console.print("Install them with: [bold]pip install -e \".[ui]\"[/bold] "
+                      "(or: pip install fastapi uvicorn)")
+        sys.exit(1)
+    run(host=host, port=port, open_browser=not no_browser)
+
+
+# --------------------------------------------------------------------------- #
 # adopt — wrap a pre-existing Anamnesis character as a Pleiades profile
 # --------------------------------------------------------------------------- #
 @cli.command()
@@ -364,11 +390,15 @@ def update(no_reinstall: bool) -> None:
         console.print("[yellow]Not a git checkout. Re-run the one-line installer to update.[/yellow]")
         return
     before = _git(root, "rev-parse", "--short", "HEAD")
+    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD") or "main"
     console.print(f"Updating [bold]{root}[/bold] (at {before}) …")
+    # fetch + reset (not pull --ff-only): shallow installer clones can't fast-forward.
     try:
-        subprocess.run(["git", "-C", str(root), "pull", "--ff-only"], check=True)
+        subprocess.run(["git", "-C", str(root), "fetch", "origin", branch], check=True)
+        subprocess.run(["git", "-C", str(root), "reset", "--hard", f"origin/{branch}"],
+                       check=True)
     except subprocess.CalledProcessError as e:
-        console.print(f"[red]git pull failed: {e}. "
+        console.print(f"[red]git update failed: {e}. "
                       "Commit/stash local changes and retry.[/red]")
         sys.exit(1)
     after = _git(root, "rev-parse", "--short", "HEAD")

@@ -22,7 +22,7 @@ unsandboxed is the worst case" is enforced in practice.
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, get_type_hints
 
 

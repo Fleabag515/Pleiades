@@ -10,7 +10,6 @@ The session is kept alive across tool calls within a turn (see ToolContext.brows
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 from . import Tool, ToolContext

@@ -23,3 +23,24 @@ def test_path_helpers():
     assert config.vault_path("alice").name == "vault.db"
     assert config.profile_json_path("alice").name == "profile.json"
     assert config.browser_dir("alice").name == "browser"
+
+
+def test_validate_name_accepts_normal_names():
+    for ok in ("alice", "Maia 2", "zoe-prime", "café", "a.b"):
+        assert config.validate_name(ok) == ok
+
+
+def test_validate_name_rejects_traversal_and_separators():
+    import pytest
+
+    for bad in ("", ".", "..", "../x", "a/b", "a\\b", "..secret", " lead",
+                "trail ", "x" * 65, "nul\x00", "con<>"):
+        with pytest.raises(ValueError):
+            config.validate_name(bad)
+
+
+def test_profile_dir_rejects_traversal():
+    import pytest
+
+    with pytest.raises(ValueError):
+        config.profile_dir("../../etc")
