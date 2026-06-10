@@ -484,10 +484,16 @@ def hw(model_name: str | None) -> None:
     cps = rt.caps()
     for m in targets:
         meta = hardware.read_gguf_meta(m["path"])
-        p = place(meta, int(m.get("n_ctx", 8192)), det, cps)
+        raw_ctx = m.get("n_ctx", "auto")
+        if str(raw_ctx).strip().lower() in ("", "auto"):
+            cp = hardware.plan_context(meta, det)
+            n_ctx_val, ctx_line = cp.n_ctx, f"\n  [dim]ctx: {cp.reason}[/dim]"
+        else:
+            n_ctx_val, ctx_line = int(raw_ctx), ""
+        p = place(meta, n_ctx_val, det, cps)
         moe = " · MoE" if meta.is_moe else ""
-        console.print(f"\n[bold]{m['name']}[/bold]{moe} → {p.strategy} "
-                      f"(~{p.est_tps} tok/s)\n  [dim]{p.reason}[/dim]")
+        console.print(f"\n[bold]{m['name']}[/bold]{moe} → ctx={n_ctx_val}, {p.strategy} "
+                      f"(~{p.est_tps} tok/s){ctx_line}\n  [dim]{p.reason}[/dim]")
         if meta.is_moe and not cps.moe_offload:
             console.print("  [yellow]tip: pleiades runtime install → "
                           "expert-offload would speed this up a lot[/yellow]")
@@ -576,13 +582,15 @@ def model() -> None:
 @model.command("add")
 @click.argument("name")
 @click.argument("path")
-@click.option("--ctx", "n_ctx", default=8192, show_default=True, help="Context window.")
+@click.option("--ctx", "n_ctx", default="auto", show_default=True,
+              help="Context window: 'auto' (planned from VRAM at each launch, "
+                   "elastic at runtime) or a number to pin it.")
 @click.option("--gpu-layers", "n_gpu_layers", default="auto", show_default=True,
               help="GPU offload: 'auto' (planned from detected hardware at launch), "
                    "-1 = all layers, 0 = CPU. NVIDIA/CUDA, AMD/ROCm, Apple/Metal builds.")
 @click.option("--chat-format", default="", help="Override chat template (e.g. chatml, llama-3).")
 @click.option("--port", default=0, help="Fixed port (0 = auto-assign).")
-def model_add(name: str, path: str, n_ctx: int, n_gpu_layers: str,
+def model_add(name: str, path: str, n_ctx: str, n_gpu_layers: str,
               chat_format: str, port: int) -> None:
     """Register a GGUF model file under NAME."""
     from .models import ModelManager, ModelError
@@ -595,6 +603,21 @@ def model_add(name: str, path: str, n_ctx: int, n_gpu_layers: str,
     console.print(f"[green]Added model '{name}'[/green] → {m['path']} "
                   f"(port {m['port']}, gpu_layers {m['n_gpu_layers']}).")
     console.print(f"Start it: [bold]pleiades model start {name}[/bold]")
+
+
+@model.command("resize")
+@click.argument("name")
+@click.argument("n_ctx", type=int)
+def model_resize(name: str, n_ctx: int) -> None:
+    """Resize a RUNNING model's context window in place (elastic engine)."""
+    from .models import ModelManager, ModelError
+    try:
+        out = ModelManager().resize(name, n_ctx)
+    except ModelError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[green]'{name}' now at n_ctx {out.get('n_ctx')}[/green] "
+                  f"({out.get('took_ms', '?')} ms)")
 
 
 @model.command("fetch")
