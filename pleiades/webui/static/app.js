@@ -575,8 +575,9 @@ async function renderCharacterDetail(name) {
     credentials: () => paneCredentials(p),
     discord:     () => paneDiscord(p),
     model:       () => paneModel(p, models),
+    anamnesis:   () => paneAnamnesis(p),
   };
-  const labels = { identity: "Identity", email: "Email", credentials: "Credentials", discord: "Discord", model: "Model" };
+  const labels = { identity: "Identity", email: "Email", credentials: "Credentials", discord: "Discord", model: "Model", anamnesis: "Memory" };
   let active = (state.cache.charTab && TABS[state.cache.charTab]) ? state.cache.charTab : "identity";
   Object.keys(TABS).forEach(k => {
     tabBar.append(el("button", { class: `tab ${k === active ? "active" : ""}`, onclick: () => {
@@ -602,7 +603,7 @@ function paneIdentity(p, models) {
     el("div", { class: "card" },
       el("div", { class: "card-head" }, el("h3", {}, "Memory & persona")),
       el("div", { class: "callout" }, el("span", { class: "c-ico" }, "✶"),
-        el("div", { html: "Persona and long-term memory are handled entirely by <b>Anamnesis</b> in the background — every conversation flows through this character's memory proxy automatically. Nothing to configure here." }))));
+        el("div", { html: "Persona and long-term memory are handled by <b>Anamnesis</b> in the background. Use the <b>Memory</b> tab to change the upstream model or browse stored memories." }))));
 }
 function kvRow(k, v, pill) {
   return el("div", { class: "list-row" },
@@ -956,6 +957,154 @@ function paneModel(p, models) {
     el("button", { class: "btn sm", onclick: () => go("models") }, "Manage models →"));
 
   wrap.append(assignCard, infoCard);
+  return wrap;
+}
+
+/* ── Anamnesis / Memory tab ── */
+function paneAnamnesis(p) {
+  const wrap = el("div", {});
+  (async () => {
+    let d;
+    try { d = await api.get(`/api/profiles/${encodeURIComponent(p.name)}/anamnesis`); }
+    catch (e) { wrap.append(el("div", { class: "svc-note", style: "padding:16px" }, String(e.message || e))); return; }
+
+    const cfg = d.config || {};
+    const upstream = cfg.upstream || {};
+    const stats = d.stats || {};
+
+    // ── Upstream config card ──────────────────────────────────────────────
+    const urlIn = textInput(upstream.baseUrl || "", { class: "input mono", placeholder: "http://127.0.0.1:8091/v1" });
+
+    const modelSel = el("select", { class: "select" },
+      el("option", { value: "" }, "— pick a running Pleiades model —"),
+      ...d.running_models.map(m => el("option",
+        { value: m.url, selected: m.url === upstream.baseUrl ? "selected" : null },
+        `${m.name}  ·  port ${m.port}`)));
+    modelSel.onchange = () => { if (modelSel.value) urlIn.value = modelSel.value; };
+
+    const saveBtn = el("button", { class: "btn primary sm" }, "Save & restart");
+    saveBtn.onclick = async () => {
+      if (!urlIn.value.trim()) return toast("URL required", "", "warn");
+      saveBtn.disabled = true; saveBtn.innerHTML = `<span class="spinner"></span> Saving…`;
+      try {
+        await api.put(`/api/profiles/${encodeURIComponent(p.name)}/anamnesis/upstream`,
+          { base_url: urlIn.value.trim() });
+        ok("Upstream updated", `${p.name} restarted`);
+      } catch (er) { err(er); }
+      finally { saveBtn.disabled = false; saveBtn.textContent = "Save & restart"; }
+    };
+
+    // ── Stats card ────────────────────────────────────────────────────────
+    const statsCard = el("div", { class: "card" },
+      el("div", { class: "card-head" }, el("h3", {}, "Memory stats"),
+        el("span", { class: `pill ${d.char_status === "running" ? "up" : "down"}` }, d.char_status)),
+      el("div", { class: "list" },
+        kvRow("Conversation turns", String(stats.turns ?? 0), "up"),
+        kvRow("Memory scenes",      String(stats.scenes ?? 0), "up"),
+        kvRow("Engrams",            String(stats.engrams ?? 0), "up"),
+        kvRow("Observations",       String(stats.observations ?? 0), "up")));
+
+    wrap.append(el("div", { class: "grid cols-2" },
+      el("div", { class: "card" },
+        el("div", { class: "card-head" }, el("h3", {}, "Upstream model")),
+        el("div", { class: "callout", style: "margin-bottom:16px" }, el("span", { class: "c-ico" }, "↑"),
+          el("div", {}, "The OpenAI-compatible endpoint this character's Anamnesis proxy forwards requests to. Pick a running Pleiades model or enter a URL manually.")),
+        d.running_models.length ? field("Running model", modelSel, "Selects the URL below automatically") : null,
+        field("Upstream URL", urlIn, "http://host:port/v1  (llama.cpp or Ollama)"),
+        el("div", { class: "inline-actions", style: "justify-content:flex-end" }, saveBtn)),
+      statsCard));
+
+    // ── Memory browser ────────────────────────────────────────────────────
+    wrap.append(el("div", { class: "section-label" }, "Memory browser"));
+    const memBox = el("div", {});
+    wrap.append(memBox);
+
+    const loadMem = async (kind, page = 0) => {
+      memBox.innerHTML = `<div class="skeleton">Loading ${kind}…</div>`;
+      let m;
+      try { m = await api.get(`/api/profiles/${encodeURIComponent(p.name)}/anamnesis/memory?kind=${kind}&page=${page}&per_page=25`); }
+      catch (e) { memBox.innerHTML = ""; memBox.append(el("div", { class: "svc-note", style:"padding:16px" }, String(e.message || e))); return; }
+      memBox.innerHTML = "";
+
+      // Kind tabs
+      const kindTabs = el("div", { class: "tabs", style: "margin-bottom:12px" });
+      [["scenes","Scenes"],["engrams","Engrams"],["observations","Observations"]].forEach(([k, label]) => {
+        const isActive = k === kind;
+        const count = isActive ? ` (${m.total})` : "";
+        kindTabs.append(el("button", { class: `tab${isActive?" active":""}`,
+          onclick: () => loadMem(k) }, label + count));
+      });
+      memBox.append(kindTabs);
+
+      if (!m.items.length) {
+        memBox.append(el("div", { class: "empty", style: "padding:28px" },
+          el("div", { class: "empty-ico" }, "◌"), el("h3", {}, "Nothing here yet")));
+        return;
+      }
+
+      const list = el("div", { class: "list" });
+      if (kind === "scenes") {
+        m.items.forEach(s => list.append(el("div", { class: "list-row mem-row",
+          onclick: () => {
+            modal.open({ title: s.title,
+              body: el("div", {},
+                el("div", { class: "list", style:"margin-bottom:12px" },
+                  kvRow("Scene ID", String(s.id), "down"),
+                  kvRow("Recalled", `${s.recall_count}×`, "up"),
+                  kvRow("Importance", (s.avg_importance||0).toFixed(3), "up"),
+                  kvRow("Last updated", new Date(s.updated_at*1000).toLocaleString(), "down")),
+                el("p", { style:"line-height:1.6;color:var(--text-dim)" }, s.summary)),
+              footer: [el("button", { class:"btn ghost", onclick:()=>modal.close() }, "Close")] });
+          } },
+          el("div", { class: "mem-main" },
+            el("span", { class: "mem-title" }, s.title),
+            el("span", { class: "mem-summary" }, s.summary)),
+          el("div", { class: "mem-meta" },
+            el("span", { class: "badge-soft" }, `recalled ${s.recall_count}×`),
+            el("span", { class: "muted", style: "font-size:11px" },
+              new Date((s.updated_at||s.created_at)*1000).toLocaleDateString())))));
+      } else if (kind === "engrams") {
+        m.items.forEach(s => list.append(el("div", { class: "list-row mem-row" },
+          el("div", { class: "mem-main" },
+            el("span", { class: `badge-soft mem-cat cat-${(s.category||"other").toLowerCase()}` }, s.category || "other"),
+            el("span", { class: "mem-summary" }, s.content)),
+          el("div", { class: "mem-meta" },
+            el("span", { class: "muted", style:"font-size:11px" },
+              `imp ${(s.importance||0).toFixed(2)} · decay ${(s.decay_score||0).toFixed(2)}`)
+          ))));
+      } else {
+        m.items.forEach(s => list.append(el("div", { class: "list-row" },
+          el("span", { class: "mono", style: "font-size:12px;color:var(--text-dim)" },
+            JSON.stringify(s).slice(0, 140)))));
+      }
+      memBox.append(el("div", { class: "card" }, list));
+
+      // Pagination
+      const pages = Math.ceil(m.total / m.per_page);
+      if (pages > 1) {
+        const pg = el("div", { class: "inline-actions", style: "justify-content:center;margin-top:10px;gap:8px" });
+        if (page > 0) pg.append(el("button", { class: "btn sm ghost", onclick: () => loadMem(kind, page-1) }, "← Prev"));
+        pg.append(el("span", { class: "muted", style: "font-size:13px" }, `${page+1} / ${pages}`));
+        if (page < pages-1) pg.append(el("button", { class: "btn sm ghost", onclick: () => loadMem(kind, page+1) }, "Next →"));
+        memBox.append(pg);
+      }
+    };
+
+    loadMem("scenes");
+
+    // ── Persona viewer ────────────────────────────────────────────────────
+    const persona = cfg.persona;
+    const inlineContent = persona?.source?.inline?.content;
+    if (inlineContent) {
+      wrap.append(el("div", { class: "section-label" }, "Persona"));
+      wrap.append(el("div", { class: "card" },
+        el("div", { class: "card-head" }, el("h3", {}, "Persona"),
+          el("span", { class: `pill ${persona.enabled ? "up" : "down"}` }, persona.enabled ? "active" : "disabled"),
+          el("span", { class: "muted", style: "font-size:12px;margin-left:6px" },
+            `drift ${persona.drift?.enabled?"on":"off"} · evolution ${persona.evolution?.enabled?"on":"off"}`)),
+        el("pre", { class: "persona-pre" }, inlineContent)));
+    }
+  })();
   return wrap;
 }
 

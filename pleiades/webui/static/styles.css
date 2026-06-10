@@ -550,3 +550,17 @@ a { color: var(--accent); text-decoration: none; }
 .mail-row .m-subj { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .mail-row.unread .m-subj, .mail-row.unread .m-from { color: var(--text); }
 .mail-body { white-space: pre-wrap; max-height: 48vh; overflow: auto; font-size: 13px; line-height: 1.6; color: var(--text-dim); }
+
+/* ── Memory / Anamnesis tab ──────────────────────────────────────────────── */
+.mem-row          { align-items: flex-start; gap: 12px; cursor: pointer; flex-wrap: wrap; }
+.mem-row:hover    { background: var(--bg-hover, rgba(255,255,255,.04)); }
+.mem-main         { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mem-title        { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem-summary      { font-size: 12.5px; color: var(--text-dim); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mem-meta         { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; white-space: nowrap; flex-shrink: 0; }
+.mem-cat          { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.cat-relationship { background: rgba(94,124,226,.18) !important; color: #8fa8ff !important; }
+.cat-event        { background: rgba(92,225,230,.15) !important; color: #5ce1e6 !important; }
+.cat-knowledge    { background: rgba(168,230,124,.15) !important; color: #a8e67c !important; }
+.cat-preference   { background: rgba(230,184,92,.15)  !important; color: #e6b85c !important; }
+.persona-pre      { font-family: var(--font-mono, monospace); font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.55; padding: 16px; background: var(--bg-dp); border-radius: 8px; max-height: 320px; overflow-y: auto; color: var(--text-dim); margin: 0; }

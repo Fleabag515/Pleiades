@@ -133,6 +133,12 @@ class AssignModel(BaseModel):
     model: str  # "" clears the assignment (back to default engine)
 
 
+class AnamnesisUpstreamUpdate(BaseModel):
+    base_url: str
+    api_key: Optional[str] = None
+    model_name: Optional[str] = None
+
+
 class ChatBody(BaseModel):
     message: str
     system: Optional[str] = None
@@ -233,6 +239,59 @@ def _profile_view(p: Profile) -> dict:
     d = p.to_json()
     d["has_email"] = p.has_email
     return d
+
+
+# --------------------------------------------------------------------------- #
+# Anamnesis helpers (config lives in ~/.anamnesis/characters/{name}/)
+# --------------------------------------------------------------------------- #
+
+def _anamnesis_config_path(name: str) -> Path:
+    if not re.match(r"^[A-Za-z0-9_\-]+$", name):
+        raise HTTPException(400, "Invalid character name")
+    return Path.home() / ".anamnesis" / "characters" / name / "config.json"
+
+
+def _read_anamnesis_cfg(name: str) -> dict:
+    import json as _json
+    p = _anamnesis_config_path(name)
+    if not p.is_file():
+        raise HTTPException(404, f"No Anamnesis config found for '{name}'")
+    try:
+        return _json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(500, f"Could not read Anamnesis config: {exc}") from exc
+
+
+def _anamnesis_db_path(name: str) -> Optional[Path]:
+    p = Path.home() / ".anamnesis" / "characters" / name / "history.db"
+    return p if p.is_file() else None
+
+
+def _memory_stats(name: str) -> dict:
+    db = _anamnesis_db_path(name)
+    if not db:
+        return {"turns": 0, "scenes": 0, "engrams": 0, "observations": 0}
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        cur = con.cursor()
+
+        def _count(table: str) -> int:
+            try:
+                return cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            except Exception:
+                return 0
+
+        stats = {
+            "turns": _count("turns"),
+            "scenes": _count("memscenes"),
+            "engrams": _count("engrams"),
+            "observations": _count("character_observations"),
+        }
+        con.close()
+        return stats
+    except Exception:
+        return {"turns": 0, "scenes": 0, "engrams": 0, "observations": 0}
 
 
 # --------------------------------------------------------------------------- #
@@ -579,6 +638,108 @@ def create_app() -> FastAPI:
         with pm.open_vault(name) as v:
             ok = v.delete(key)
         return {"ok": ok}
+
+    # ----------------------------- anamnesis ------------------------------ #
+
+    @app.get("/api/profiles/{name}/anamnesis")
+    def get_anamnesis(name: str) -> dict:
+        """Character Anamnesis config + memory stats + running model list."""
+        try:
+            pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        cfg = _read_anamnesis_cfg(name)
+        stats = _memory_stats(name)
+        running_models = [
+            {"name": m["name"], "port": m["port"],
+             "url": f"http://127.0.0.1:{m['port']}/v1"}
+            for m in mm.list() if m.get("running")
+        ]
+        try:
+            char = an.get_character(name)
+            char_status = "running" if (char.get("running") or char.get("active")) else "stopped"
+        except Exception:
+            char_status = "unknown"
+        return {"config": cfg, "stats": stats,
+                "running_models": running_models, "char_status": char_status}
+
+    @app.put("/api/profiles/{name}/anamnesis/upstream")
+    def set_anamnesis_upstream(name: str, body: AnamnesisUpstreamUpdate) -> dict:
+        """Update upstream.baseUrl in config.json and restart the character proxy."""
+        import json as _json
+        try:
+            pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        cfg_path = _anamnesis_config_path(name)
+        cfg = _read_anamnesis_cfg(name)
+        upstream = cfg.get("upstream", {})
+        upstream["baseUrl"] = body.base_url.rstrip("/")
+        if body.api_key is not None:
+            upstream["apiKey"] = body.api_key
+        if body.model_name is not None:
+            upstream["model"] = body.model_name
+        cfg["upstream"] = upstream
+        cfg_path.write_text(_json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Restart via Anamnesis control API
+        try:
+            an.stop(name)
+        except Exception:
+            pass
+        try:
+            an.start(name)
+        except Exception as exc:
+            raise HTTPException(502, f"Config saved but restart failed: {exc}") from exc
+        return {"ok": True, "upstream": upstream}
+
+    @app.get("/api/profiles/{name}/anamnesis/memory")
+    def get_anamnesis_memory(name: str, kind: str = "scenes",
+                             page: int = 0, per_page: int = 20) -> dict:
+        """Paginated memory scenes, engrams, or observations for a character."""
+        try:
+            pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        db = _anamnesis_db_path(name)
+        if not db:
+            return {"items": [], "total": 0, "kind": kind, "page": page, "per_page": per_page}
+        per_page = min(max(per_page, 1), 100)
+        offset = page * per_page
+        try:
+            import sqlite3
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            con.row_factory = sqlite3.Row
+            cur = con.cursor()
+            if kind == "scenes":
+                total = cur.execute("SELECT COUNT(*) FROM memscenes").fetchone()[0]
+                rows = cur.execute(
+                    "SELECT id, title, summary, recall_count, avg_importance, "
+                    "created_at, updated_at FROM memscenes "
+                    "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    (per_page, offset)).fetchall()
+            elif kind == "engrams":
+                total = cur.execute("SELECT COUNT(*) FROM engrams").fetchone()[0]
+                rows = cur.execute(
+                    "SELECT id, content, category, decay_score, importance, "
+                    "recall_count, created_at FROM engrams "
+                    "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (per_page, offset)).fetchall()
+            elif kind == "observations":
+                total = cur.execute("SELECT COUNT(*) FROM character_observations").fetchone()[0]
+                rows = cur.execute(
+                    "SELECT * FROM character_observations "
+                    "ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                    (per_page, offset)).fetchall()
+            else:
+                raise HTTPException(400, "kind must be scenes, engrams, or observations")
+            items = [dict(r) for r in rows]
+            con.close()
+            return {"items": items, "total": total, "kind": kind,
+                    "page": page, "per_page": per_page}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, f"Could not read memory: {exc}") from exc
 
     # ----------------------------- hardware -------------------------------- #
     @app.get("/api/hardware")
