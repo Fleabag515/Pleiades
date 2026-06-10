@@ -56,6 +56,19 @@ class ModelError(RuntimeError):
     pass
 
 
+def _port_free(host: str, port: int) -> bool:
+    """Can we actually bind it? Registry bookkeeping isn't enough — other apps
+    (Docker, dev servers) may already hold a port in our 8090+ range."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
 def _pid_alive(pid: Optional[int]) -> bool:
     if not pid:
         return False
@@ -120,11 +133,11 @@ class ModelManager:
             out.append(m)
         return out
 
-    def _free_port(self, reg: dict, start: int = 8090) -> int:
+    def _free_port(self, reg: dict, start: int = 8090, host: str = "127.0.0.1") -> int:
         used = {m.get("port") for m in reg.values()}
         used |= {r.get("port") for r in self._load_running().values()}
         port = start
-        while port in used:
+        while port in used or not _port_free(host, port):
             port += 1
         return port
 
@@ -189,6 +202,20 @@ class ModelManager:
         if self.is_running(name):
             return self.base_url(name)
 
+        # The registered port may have been taken by another app since add()
+        # (e.g. a Docker service). Detect it now and relocate instead of letting
+        # llama.cpp load the whole model and then die on bind.
+        port_note = ""
+        if not _port_free(m["host"], int(m["port"])):
+            reg = self._load()
+            old_port = m["port"]
+            new_port = self._free_port(reg, host=m["host"])
+            reg[name]["port"] = new_port
+            self._save(reg)
+            m = reg[name]
+            port_note = (f"[pleiades] port {old_port} is in use by another "
+                         f"application — moved '{name}' to port {new_port}\n")
+
         from .hardware import resolve_layers
         layers, why = resolve_layers(m.get("n_gpu_layers", "auto"),
                                      m["path"], int(m.get("n_ctx", 8192)))
@@ -205,6 +232,8 @@ class ModelManager:
         logdir = config.PLEIADES_HOME / "logs"
         logdir.mkdir(parents=True, exist_ok=True)
         logf = open(logdir / f"model-{name}.log", "ab")
+        if port_note:
+            logf.write(port_note.encode())
         logf.write(f"[pleiades] n_gpu_layers={layers} — {why}\n".encode())
         logf.flush()
 

@@ -102,3 +102,42 @@ def test_state_cleans_up_dead_process(tmp_path):
 
 def test_log_tail_missing_is_empty():
     assert ModelManager().log_tail("no-such-model") == ""
+
+
+def test_start_relocates_occupied_port(tmp_path, monkeypatch):
+    """If another app holds the registered port, start() must move the model."""
+    import socket
+
+    import pleiades.models as models_mod
+
+    g = tmp_path / "p.gguf"
+    g.write_bytes(b"x")
+    mm = ModelManager()
+    entry = mm.add("porttest", str(g))
+    # squat on the registered port like docker-proxy would
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.bind(("127.0.0.1", entry["port"]))
+    squatter.listen(1)
+    launched = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kw):
+        if "--port" not in cmd:        # hardware detection probes etc.
+            raise OSError("blocked in test")
+        launched["port"] = int(cmd[cmd.index("--port") + 1])
+        return FakeProc()
+
+    monkeypatch.setattr(models_mod.subprocess, "Popen", fake_popen)
+    try:
+        mm.start("porttest", wait=False)
+        assert launched["port"] != entry["port"]          # relocated
+        assert mm.get("porttest")["port"] == launched["port"]  # persisted
+        assert "moved" in mm.log_tail("porttest")
+    finally:
+        squatter.close()
+        run = mm._load_running()
+        run.pop("porttest", None)
+        mm._save_running(run)
+        mm.remove("porttest")

@@ -77,8 +77,9 @@ def _strip_html(html: str) -> str:
 # --------------------------------------------------------------------------- #
 # Reusable IMAP/SMTP operations (used by the EmailTool AND the web UI)
 # --------------------------------------------------------------------------- #
-def imap_connect(imap_host: str, imap_port: int, address: str, password: str):
-    conn = imaplib.IMAP4_SSL(imap_host, imap_port)
+def imap_connect(imap_host: str, imap_port: int, address: str, password: str,
+                 timeout: float = 15.0):
+    conn = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=timeout)
     conn.login(address, password)
     return conn
 
@@ -128,9 +129,9 @@ def send_message(smtp_host: str, smtp_port: int, address: str, password: str,
     msg["Subject"] = subject
     msg.set_content(body)
     if smtp_port == 465:
-        server = smtplib.SMTP_SSL(smtp_host, smtp_port)
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20.0)
     else:
-        server = smtplib.SMTP(smtp_host, smtp_port)
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=20.0)
         server.starttls()
     with server:
         server.login(address, password)
@@ -197,7 +198,8 @@ class EmailTool(Tool):
     # -- IMAP --------------------------------------------------------------- #
     def _imap(self, ctx: ToolContext):
         address, password = self._creds(ctx)
-        conn = imaplib.IMAP4_SSL(ctx.profile.imap_host, ctx.profile.imap_port)
+        conn = imaplib.IMAP4_SSL(ctx.profile.imap_host, ctx.profile.imap_port,
+                                 timeout=15.0)
         conn.login(address, password)
         return conn
 
