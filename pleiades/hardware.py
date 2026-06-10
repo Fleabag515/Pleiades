@@ -13,6 +13,7 @@ or reads sysfs, and the GGUF header parser is pure Python.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -88,6 +89,58 @@ def _detect_nvidia() -> list[GPU]:
                 continue
             gpus.append(GPU("nvidia", parts[0], total, free))
     return gpus
+
+
+# PowerShell: AMD adapters + dedicated VRAM from the display-class registry key.
+# Win32_VideoController.AdapterRAM is a uint32 (caps at 4 GiB), so
+# HardwareInformation.qwMemorySize is the only honest source. QWORD on most
+# drivers, REG_BINARY on some — both handled. Output: JSON array.
+_WIN_AMD_PS = (
+    # Registry configs outlive removed hardware (a swapped-out card leaves a
+    # ghost entry with full qwMemorySize) — intersect with live adapters.
+    "$live=@(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue"
+    " | ForEach-Object Name);"
+    "$k='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\"
+    "{4d36e968-e325-11ce-bfc1-08002be10318}';"
+    "$out=@(Get-ChildItem $k -ErrorAction SilentlyContinue | ForEach-Object {"
+    "$p=Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue;"
+    "if(($p.DriverDesc -match 'AMD|Radeon') -and ($live -contains $p.DriverDesc)"
+    " -and $p.'HardwareInformation.qwMemorySize'){"
+    "$v=$p.'HardwareInformation.qwMemorySize';"
+    "if($v -is [byte[]]){$v=[System.BitConverter]::ToInt64($v,0)};"
+    "[pscustomobject]@{name=$p.DriverDesc;vram=[int64]$v}}});"
+    "ConvertTo-Json -InputObject $out -Compress"
+)
+
+
+def _parse_win_amd(out: str) -> list[GPU]:
+    """Parse _WIN_AMD_PS JSON into GPUs. Free VRAM unknown -> free == total
+    (module convention, see GPU dataclass)."""
+    try:
+        rows = json.loads(out or "[]")
+    except ValueError:
+        return []
+    if isinstance(rows, dict):  # ConvertTo-Json collapses single-element arrays
+        rows = [rows]
+    gpus, seen = [], set()
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            total = int(r.get("vram") or 0)
+        except (TypeError, ValueError):
+            continue
+        name = str(r.get("name") or "AMD GPU")
+        if total > 0 and (name, total) not in seen:  # per-config duplicate keys
+            seen.add((name, total))
+            gpus.append(GPU("amd", name, total, total))
+    return gpus
+
+
+def _detect_amd_windows() -> list[GPU]:
+    """AMD on Windows: registry via PowerShell. No vendor SDK, no ROCm needed."""
+    out = _run(["powershell", "-NoProfile", "-Command", _WIN_AMD_PS], timeout=15.0)
+    return _parse_win_amd(out)
 
 
 def _detect_amd() -> list[GPU]:
@@ -183,6 +236,10 @@ def detect() -> Hardware:
     hw.gpus = _detect_nvidia()
     if sys.platform == "linux":
         hw.gpus += _detect_amd()
+    elif os.name == "nt" and not hw.gpus:
+        # nvidia-smi found nothing — check for AMD (Radeon offloads via the
+        # native Vulkan llama-server runtime; see install.ps1 / autofit).
+        hw.gpus += _detect_amd_windows()
     return hw
 
 

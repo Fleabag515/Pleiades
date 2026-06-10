@@ -158,3 +158,34 @@ def test_pick_quant_cpu_fallback_prefers_q4_not_q8():
     c = pick_quant(files, _hw(vram_gb=2, ram_gb=32), n_ctx=4096)
     assert quant_of(c["name"]) == "Q4_K_M"
     assert "speed" in c["why"]
+
+
+# --------------------------------------------------------------------------- #
+# Windows AMD registry detection (parser is pure; PS invocation is shelled out)
+# --------------------------------------------------------------------------- #
+def test_parse_win_amd_array():
+    out = ('[{"name":"AMD Radeon RX 9070 XT","vram":17163091968},'
+           '{"name":"AMD Radeon(TM) Graphics","vram":536870912}]')
+    gpus = hardware._parse_win_amd(out)
+    assert [g.vendor for g in gpus] == ["amd", "amd"]
+    assert gpus[0].vram_total == 17163091968
+    assert gpus[0].vram_free == gpus[0].vram_total  # free unknown -> total
+
+
+def test_parse_win_amd_single_object():
+    # ConvertTo-Json collapses single-element arrays into a bare object.
+    gpus = hardware._parse_win_amd('{"name":"AMD Radeon RX 9070 XT","vram":17163091968}')
+    assert len(gpus) == 1 and gpus[0].name == "AMD Radeon RX 9070 XT"
+
+
+def test_parse_win_amd_dedupes_per_config_keys():
+    out = ('[{"name":"AMD Radeon RX 9070 XT","vram":17163091968},'
+           '{"name":"AMD Radeon RX 9070 XT","vram":17163091968}]')
+    assert len(hardware._parse_win_amd(out)) == 1
+
+
+def test_parse_win_amd_garbage_and_zero_vram():
+    assert hardware._parse_win_amd("") == []
+    assert hardware._parse_win_amd("Oops! not json") == []
+    assert hardware._parse_win_amd('[{"name":"x","vram":0}]') == []
+    assert hardware._parse_win_amd('[{"vram":"NaNsense"}]') == []
