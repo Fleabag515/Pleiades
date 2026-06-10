@@ -81,7 +81,7 @@ class LLM:
         raise ValueError(f"unknown backend: {tier.backend}")
 
     def format_tool_results(self, backend: str,
-                            results: list[tuple[ToolCall, str, bool]]) -> dict:
+                            results: list[tuple[ToolCall, str, bool]]) -> "dict | list":
         """Build the user-turn message carrying tool outputs back to the model.
 
         results: list of (call, output_text, is_error).
@@ -94,9 +94,11 @@ class LLM:
                 **({"is_error": True} if err else {}),
             } for c, out, err in results]
             return {"role": "user", "content": blocks}
-        # ollama / openai: one message per tool result
-        # (caller appends each separately — see agent loop)
-        return {"role": "tool", "content": results}
+        # ollama / openai: one message per tool result, each carrying the
+        # tool_call_id required to bind it to its call (see agent loop, which
+        # builds these inline). Returned as a list for callers that use this.
+        return [{"role": "tool", "tool_call_id": c.id, "name": c.name,
+                 "content": out} for c, out, err in results]
 
     # -- anthropic ------------------------------------------------------
     def _client(self):
