@@ -60,6 +60,14 @@ def bind_character(
     vault = pm.open_vault(name)
     _ACTIVE.update(profile=profile, vault=vault, settings=settings)
 
+    # Share ONE persistent browser profile between the work-path (harness) browser
+    # and the chat-path (engine) browser — both use the character's browser_dir.
+    try:
+        from .builtins.browser import bind_browser_profile
+        bind_browser_profile(profile.browser_dir)
+    except Exception:
+        pass
+
     # Scope the workspace to the character's own dir.
     workspace = repo_config.profile_dir(name) / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)

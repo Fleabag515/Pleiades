@@ -23,7 +23,28 @@ import urllib.request
 
 from ..tools import tool
 
-_SEARXNG = os.environ.get("SEARXNG_URL", "http://localhost:8888")
+# SearXNG endpoint resolves from the unified project config (Settings.searxng_url,
+# which honors PLEIADES_SEARXNG_URL). SEARXNG_URL stays supported for back-compat,
+# and bind_searxng() lets a run override it explicitly.
+_BOUND: dict[str, str | None] = {"searxng": None}
+
+
+def bind_searxng(url: str) -> None:
+    """Pin the SearXNG base URL for this run (overrides config/env)."""
+    _BOUND["searxng"] = url.rstrip("/") if url else None
+
+
+def _searxng_base() -> str:
+    if _BOUND["searxng"]:
+        return _BOUND["searxng"]
+    env = os.environ.get("SEARXNG_URL")
+    if env:
+        return env.rstrip("/")
+    try:
+        from ..config import Config  # unified Settings
+        return Config.load().searxng_url.rstrip("/")
+    except Exception:
+        return "http://localhost:8888"
 _UA = "Pleiades/0.1 (+agent workspace)"
 _TAG_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S | re.I)
 _HTML_RE = re.compile(r"<[^>]+>")
@@ -50,9 +71,9 @@ def web_search(query: str, count: int = 6) -> str:
     """
     params = urllib.parse.urlencode({"q": query, "format": "json"})
     try:
-        data = json.loads(_get(f"{_SEARXNG}/search?{params}"))
+        data = json.loads(_get(f"{_searxng_base()}/search?{params}"))
     except Exception as e:
-        return (f"Error reaching SearXNG at {_SEARXNG} ({e}). "
+        return (f"Error reaching SearXNG at {_searxng_base()} ({e}). "
                 "Set SEARXNG_URL or start a SearXNG instance.")
     results = data.get("results", [])[:count]
     if not results:
@@ -95,9 +116,9 @@ def deep_research(query: str, num_sources: int = 4, chars_per_page: int = 3000) 
     # 1. Search
     params = urllib.parse.urlencode({"q": query, "format": "json"})
     try:
-        data = json.loads(_get(f"{_SEARXNG}/search?{params}"))
+        data = json.loads(_get(f"{_searxng_base()}/search?{params}"))
     except Exception as e:
-        return (f"Error reaching SearXNG at {_SEARXNG} ({e}). "
+        return (f"Error reaching SearXNG at {_searxng_base()} ({e}). "
                 "Set SEARXNG_URL or start a SearXNG instance.")
 
     results = data.get("results", [])

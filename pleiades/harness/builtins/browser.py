@@ -41,9 +41,19 @@ _CHALLENGE_MARKERS = (
 )
 
 
+_BOUND_PROFILE: dict[str, str | None] = {"dir": None}
+
+
+def bind_browser_profile(path: str) -> None:
+    """Pin the persistent browser profile dir (e.g. a character's browser_dir),
+    so the work-path browser shares one profile with the chat-path browser."""
+    _BOUND_PROFILE["dir"] = path or None
+
+
 def _profile_dir() -> str:
-    p = os.environ.get("PLEIADES_BROWSER_PROFILE") or str(
-        Path.cwd() / "browser_profile")
+    p = (_BOUND_PROFILE["dir"]
+         or os.environ.get("PLEIADES_BROWSER_PROFILE")
+         or str(Path.cwd() / "browser_profile"))
     Path(p).mkdir(parents=True, exist_ok=True)
     return p
 

@@ -44,12 +44,24 @@ pleiades work --as alice "check my inbox for a verification code and save it to 
 pleiades work --tier coder --policy allow "add a test for vault.delete and run it"
 ```
 
+## Follow-ups done
+
+- **Config unified.** `pleiades.config.Settings` is now the single source of truth
+  (defaults + config.json + env + tiers + `tier()`); `pleiades/harness/config.py`
+  is a shim re-exporting it. `openai_host` derives from the local inference engine,
+  so engine and harness agree on one endpoint.
+- **Web/browser deduped.** Harness `web_search`/`deep_research` read the unified
+  `searxng_url`; the repo's chat-path `SearchTool` now delegates to the harness
+  `web_search` (one implementation). The harness browser and the chat-path browser
+  share ONE persistent profile per character (`bind_browser_profile` ->
+  `profile.browser_dir`).
+
 ## What's next (open)
 
-- **Unify config**: the harness `Config` and the repo `Settings` still co-exist;
-  collapse into one source of truth (env + config.json + tiers).
-- **Dedupe overlapping tools**: harness `web_search`/`browser_*` vs the repo's
-  SearXNG/Camoufox tools — keep one, character-scoped.
+- **One agent loop.** The chat path (`engine.py`, class-based `ToolBelt`) and the
+  work path (`harness/agent.py`, the `@tool` registry) still have separate loops.
+  Merging chat into the harness loop would leave a single loop + single tool surface
+  (the browser would then have one driver instead of two sharing a profile).
 - **Native layer** (his roadmap): LSP bridge, sandboxed executor, streaming tools,
   multi-agent fabric. See `GOLDEN_BASELINE.md` (from his build) for the vision.
 

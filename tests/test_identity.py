@@ -58,3 +58,29 @@ def test_bind_scopes_memory_and_workspace_to_character():
     pdir = str(repo_config.profile_dir(name))
     assert cfg.workspace_root.startswith(pdir)
     assert cfg.memory_dir.startswith(pdir)
+
+
+def test_bind_character_shares_browser_profile():
+    import pleiades.harness.builtins.browser as br
+    from pleiades import config as repo_config
+    name = _make_profile("dora_t")
+    identity.bind_character(name, cfg=None, route_inference=False)
+    assert br._BOUND_PROFILE["dir"] == str(repo_config.browser_dir(name))
+
+
+def test_searchtool_delegates_to_harness(monkeypatch):
+    from pleiades.tools.search import SearchTool
+    from pleiades.tools import ToolContext
+    import pleiades.harness.builtins.web as web
+
+    seen = {}
+    monkeypatch.setattr(web, "web_search", lambda query, count=6: f"WS:{query}:{count}")
+    monkeypatch.setattr(web, "bind_searxng", lambda url: seen.__setitem__("url", url))
+
+    class _S:
+        searxng_url = "http://searx.local:8888"
+
+    ctx = ToolContext(profile=None, vault=None, settings=_S())  # type: ignore[arg-type]
+    out = SearchTool().run(ctx, query="hello", num_results=3)
+    assert out == "WS:hello:3"
+    assert seen["url"] == "http://searx.local:8888"

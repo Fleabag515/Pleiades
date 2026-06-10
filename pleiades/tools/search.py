@@ -29,37 +29,14 @@ class SearchTool(Tool):
     }
 
     def run(self, ctx: ToolContext, query: str, num_results: int = 5) -> str:
+        # Single implementation: delegate to the harness web_search so the chat path
+        # and the work path share one SearXNG search. The harness resolves the
+        # endpoint from the unified config (Settings.searxng_url).
         num_results = max(1, min(int(num_results), 10))
-        url = ctx.settings.searxng_url.rstrip("/") + "/search"
         try:
-            resp = ctx.http.get(
-                url,
-                params={"q": query, "format": "json"},
-                headers={"Accept": "application/json"},
-            )
-        except Exception as e:
-            return f"[search error] could not reach SearXNG at {url}: {e}"
-
-        if resp.status_code == 403:
-            return (
-                "[search error] SearXNG returned 403. Enable JSON output in settings.yml "
-                "(`search.formats: [html, json]`) and restart the service."
-            )
-        if resp.status_code != 200:
-            return f"[search error] SearXNG returned {resp.status_code}."
-
-        try:
-            results = resp.json().get("results", [])
-        except ValueError:
-            return "[search error] SearXNG did not return JSON (is the json format enabled?)."
-
-        if not results:
-            return f"No results for: {query}"
-
-        lines = []
-        for i, r in enumerate(results[:num_results], 1):
-            title = r.get("title", "(no title)")
-            link = r.get("url", "")
-            snippet = (r.get("content") or "").strip().replace("\n", " ")
-            lines.append(f"{i}. {title}\n   {link}\n   {snippet}")
-        return "\n".join(lines)
+            from ..harness.builtins.web import web_search as _web_search, bind_searxng
+            # Make sure the shared impl points at this run's configured instance.
+            bind_searxng(ctx.settings.searxng_url)
+            return _web_search(query, count=num_results)
+        except Exception as e:  # never crash the agent loop
+            return f"[search error] {e}"
