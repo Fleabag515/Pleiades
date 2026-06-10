@@ -36,22 +36,26 @@ def notify(title: str, message: str) -> str:
     system = platform.system()
     try:
         if system == "Darwin":
-            script = f'display notification "{message}" with title "{title}"'
+            esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+            script = (f'display notification "{esc(message)}" '
+                      f'with title "{esc(title)}"')
             subprocess.run(["osascript", "-e", script], timeout=5)
         elif system == "Windows":
-            # Use PowerShell's BurntToast or fallback to msg command
+            # Pass text via the environment ($env:PL_*) so quotes/semicolons in
+            # title/message can't break out of (or inject into) the command.
             ps = (
-                f'Add-Type -AssemblyName System.Windows.Forms;'
-                f'$n = New-Object System.Windows.Forms.NotifyIcon;'
-                f'$n.Icon = [System.Drawing.SystemIcons]::Information;'
-                f'$n.Visible = $true;'
-                f'$n.ShowBalloonTip(5000, "{title}", "{message}", '
-                f'[System.Windows.Forms.ToolTipIcon]::Info);'
-                f'Start-Sleep -Seconds 6; $n.Dispose()'
+                'Add-Type -AssemblyName System.Windows.Forms;'
+                '$n = New-Object System.Windows.Forms.NotifyIcon;'
+                '$n.Icon = [System.Drawing.SystemIcons]::Information;'
+                '$n.Visible = $true;'
+                '$n.ShowBalloonTip(5000, $env:PL_NOTIFY_TITLE, '
+                '$env:PL_NOTIFY_MSG, [System.Windows.Forms.ToolTipIcon]::Info);'
+                'Start-Sleep -Seconds 6; $n.Dispose()'
             )
+            env = {**os.environ, "PL_NOTIFY_TITLE": title, "PL_NOTIFY_MSG": message}
             subprocess.Popen(
                 ["powershell", "-WindowStyle", "Hidden", "-Command", ps],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
             )
         elif system == "Linux":
             # notify-send (libnotify) — available on most desktop distros
