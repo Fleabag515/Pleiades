@@ -403,42 +403,31 @@ def adopt(name: str) -> None:
 # --------------------------------------------------------------------------- #
 # update — pull the latest Pleiades from GitHub and reinstall
 # --------------------------------------------------------------------------- #
-def _git(root: Path, *args: str) -> str:
-    out = subprocess.run(["git", "-C", str(root), *args],
-                         capture_output=True, text=True)
-    return out.stdout.strip()
-
-
 @cli.command()
 @click.option("--no-reinstall", is_flag=True, help="Pull only; skip pip reinstall.")
-def update(no_reinstall: bool) -> None:
-    """Update Pleiades to the latest version on GitHub (git pull + reinstall)."""
-    root = Path(__file__).resolve().parent.parent
-    if not (root / ".git").is_dir():
-        console.print("[yellow]Not a git checkout. Re-run the one-line installer to update.[/yellow]")
+@click.option("--check", "check_only", is_flag=True, help="Only check; don't update.")
+def update(no_reinstall: bool, check_only: bool) -> None:
+    """Update Pleiades to the latest version on GitHub (also: the ⬆ button in the UI)."""
+    from . import update as upd
+
+    if check_only:
+        c = upd.check()
+        if c.error:
+            console.print(f"[yellow]{c.error}[/yellow]")
+        elif c.behind:
+            console.print(f"Update available: {c.installed} → [green]{c.latest}[/green]. "
+                          "Run [bold]pleiades update[/bold].")
+        else:
+            console.print(f"[green]Up to date ({c.installed}).[/green]")
         return
-    before = _git(root, "rev-parse", "--short", "HEAD")
-    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD") or "main"
-    console.print(f"Updating [bold]{root}[/bold] (at {before}) …")
-    # fetch + reset (not pull --ff-only): shallow installer clones can't fast-forward.
     try:
-        subprocess.run(["git", "-C", str(root), "fetch", "origin", branch], check=True)
-        subprocess.run(["git", "-C", str(root), "reset", "--hard", f"origin/{branch}"],
-                       check=True)
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]git update failed: {e}. "
-                      "Commit/stash local changes and retry.[/red]")
+        changed = upd.run_update(reinstall=not no_reinstall,
+                                 log=lambda m: console.print(f"[dim]{m}[/dim]"))
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
         sys.exit(1)
-    after = _git(root, "rev-parse", "--short", "HEAD")
-    if before == after:
-        console.print("[green]Already up to date.[/green]")
-        return
-    console.print(f"[green]Updated {before} → {after}.[/green]")
-    if not no_reinstall:
-        console.print("Reinstalling dependencies …")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-e", f"{root}[all]"],
-                       check=False)
-    console.print("[green]Done.[/green]")
+    console.print("[green]Updated.[/green]" if changed
+                  else "[green]Already up to date.[/green]")
 
 
 # --------------------------------------------------------------------------- #

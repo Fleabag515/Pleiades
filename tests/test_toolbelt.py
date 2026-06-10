@@ -58,3 +58,12 @@ def test_webui_app_builds():
     app = create_app()
     paths = {r.path for r in app.routes}
     assert "/api/status" in paths and "/api/profiles" in paths
+
+
+def test_webui_has_update_and_hardware_routes():
+    __import__("pytest").importorskip("fastapi")
+    from pleiades.webui import create_app
+
+    paths = {r.path for r in create_app().routes}
+    assert {"/api/update/check", "/api/update", "/api/update/status",
+            "/api/hardware", "/api/models/fetch"} <= paths

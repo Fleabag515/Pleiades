@@ -24,6 +24,8 @@ from __future__ import annotations
 import os
 import re
 import socket
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -226,6 +228,15 @@ def create_app() -> FastAPI:
         except Exception:
             chars = []
         inference_up = _reachable(s.inference_base_url, "/models")
+        from pathlib import Path as _P
+        has_default = bool(s.model_path) and _P(s.model_path).expanduser().is_file()
+        has_registry = bool(mm.list())
+        if inference_up:
+            inference_state = "running"
+        elif has_default or has_registry:
+            inference_state = "on_demand"   # starts automatically on first chat
+        else:
+            inference_state = "no_model"
         searxng_up = _reachable(s.searxng_url, "/healthz") or _reachable(s.searxng_url)
         models = mm.list()
         running = [m for m in models if m.get("running")]
@@ -234,7 +245,7 @@ def create_app() -> FastAPI:
                 "anamnesis": {"up": anamnesis_up, "url": s.anamnesis_control_url,
                               "characters": len(chars)},
                 "inference": {"up": inference_up, "url": s.inference_base_url,
-                              "model_path": s.model_path},
+                              "model_path": s.model_path, "state": inference_state},
                 "searxng": {"up": searxng_up, "url": s.searxng_url},
             },
             "counts": {
@@ -540,6 +551,43 @@ def create_app() -> FastAPI:
     def email_presets() -> dict:
         return config.EMAIL_PRESETS
 
+    # ----------------------------- self-update ------------------------------ #
+    update_state: dict[str, Any] = {}
+
+    @app.get("/api/update/check")
+    def update_check() -> dict:
+        from ..update import check
+        c = check()
+        return {"supported": c.supported, "installed": c.installed,
+                "latest": c.latest, "behind": c.behind, "error": c.error}
+
+    @app.post("/api/update")
+    def update_run() -> dict:
+        if update_state.get("status") in ("updating", "restarting"):
+            raise HTTPException(409, "Update already in progress.")
+        from ..update import run_update
+
+        def work() -> None:
+            update_state.update(status="updating", log=[], error="")
+            try:
+                changed = run_update(log=lambda m: update_state["log"].append(m))
+            except Exception as e:
+                update_state.update(status="error", error=str(e))
+                return
+            if changed:
+                update_state.update(status="restarting")
+                time.sleep(0.8)  # let the status response flush to the browser
+                _restart_server()
+            else:
+                update_state.update(status="up-to-date")
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"ok": True}
+
+    @app.get("/api/update/status")
+    def update_status() -> dict:
+        return update_state or {"status": "idle"}
+
     # ----------------------------- static ---------------------------------- #
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -565,6 +613,30 @@ def _free_port(preferred: int = 8750) -> int:
     return preferred
 
 
+_RUN_ARGS: dict[str, Any] = {}
+
+
+def _restart_server() -> None:
+    """Replace this process with a fresh `python -m pleiades.webui` (post-update)."""
+    args = [sys.executable, "-m", "pleiades.webui",
+            "--host", str(_RUN_ARGS.get("host", "127.0.0.1")),
+            "--port", str(_RUN_ARGS.get("port", 8750)), "--no-browser"]
+    if os.name == "posix":
+        os.execv(sys.executable, args)
+    else:  # Windows: detach a child, then exit so it can take the port
+        subprocess.Popen(args, creationflags=0x00000008 | 0x00000200)
+        os._exit(0)
+
+
+def _wait_port_free(host: str, port: int, timeout: float = 8.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex((host, port)) != 0:
+                return
+        time.sleep(0.2)
+
+
 def run(host: str = "127.0.0.1", port: Optional[int] = None,
         open_browser: bool = True) -> None:
     """Launch the control panel with uvicorn and (optionally) open a browser.
@@ -573,7 +645,10 @@ def run(host: str = "127.0.0.1", port: Optional[int] = None,
     """
     import uvicorn
 
+    if port:
+        _wait_port_free(host, port)  # restart case: predecessor may still hold it
     port = port or _free_port()
+    _RUN_ARGS.update(host=host, port=port)
     url = f"http://{host}:{port}/"
 
     if open_browser:

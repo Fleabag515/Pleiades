@@ -44,3 +44,18 @@ def test_profile_dir_rejects_traversal():
 
     with pytest.raises(ValueError):
         config.profile_dir("../../etc")
+
+
+def test_update_check_unsupported_outside_git(tmp_path):
+    from pleiades import update as upd
+
+    c = upd.check(tmp_path)
+    assert not c.supported and "git" in c.error
+
+
+def test_update_run_refuses_outside_git(tmp_path):
+    import pytest
+    from pleiades import update as upd
+
+    with pytest.raises(RuntimeError):
+        upd.run_update(tmp_path)

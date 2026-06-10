@@ -119,10 +119,13 @@ async function renderDashboard() {
 
   const svc = (name, info, extra) => {
     const up = info.up;
+    let dot = up ? "up" : "down", pill = up ? "up" : "down", label = up ? "online" : "offline";
+    if (!up && info.state === "on_demand") { dot = "idle"; pill = "warn"; label = "idle — starts on first chat"; }
+    if (!up && info.state === "no_model") { dot = "idle"; pill = "warn"; label = "no model yet"; }
     return el("div", { class: "svc" },
       el("div", { class: "svc-top" },
-        el("div", { class: "inline-actions" }, el("span", { class: `dot ${up ? "up" : "down"}` }), el("span", { class: "svc-name" }, name)),
-        el("span", { class: `pill ${up ? "up" : "down"}` }, up ? "online" : "offline")),
+        el("div", { class: "inline-actions" }, el("span", { class: `dot ${dot}` }), el("span", { class: "svc-name" }, name)),
+        el("span", { class: `pill ${pill}` }, label)),
       el("div", { class: "svc-url" }, info.url || "—"),
       extra ? el("div", { class: "svc-note" }, extra) : null);
   };
@@ -130,7 +133,7 @@ async function renderDashboard() {
   c.append(el("div", { class: "section-label" }, "Services"));
   c.append(el("div", { class: "svc-grid" },
     svc("Anamnesis", s.services.anamnesis, `${s.services.anamnesis.characters} character(s) registered`),
-    svc("Inference engine", s.services.inference, s.services.inference.model_path ? `default model: ${s.services.inference.model_path.split(/[\\/]/).pop()}` : "no default model set"),
+    svc("Inference engine", s.services.inference, s.services.inference.model_path ? `default model: ${s.services.inference.model_path.split(/[\\/]/).pop()}` : s.services.inference.state === "no_model" ? "fetch a model under Models — it starts automatically when a character chats" : "serves registered models on demand"),
     svc("SearXNG", s.services.searxng, "local web search")));
 
   c.append(el("div", { class: "section-label" }, "Hardware"));
@@ -757,7 +760,45 @@ async function loadStatusMini() {
   } catch (_) {}
 }
 
+/* ───────────── self-update ───────────── */
+async function checkUpdate() {
+  let c;
+  try { c = await api.get("/api/update/check"); } catch { return; }
+  const host = $("#update-host"); host.innerHTML = "";
+  if (!c.supported || !c.behind) return;
+  host.append(el("button", { class: "btn primary", id: "update-btn",
+    title: `${c.installed} → ${c.latest}`, onclick: runUpdate }, "⬆ Update Pleiades"));
+}
+
+async function runUpdate() {
+  const btn = $("#update-btn");
+  btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Updating…`;
+  try { await api.post("/api/update"); } catch (e) { btn.disabled = false; return err(e); }
+  const timer = setInterval(async () => {
+    let st;
+    try { st = await api.get("/api/update/status"); }
+    catch { return waitForRestart(timer); }   // server went down to restart
+    if (st.status === "error") {
+      clearInterval(timer); btn.disabled = false; btn.textContent = "⬆ Update Pleiades";
+      return err(new Error(st.error));
+    }
+    if (st.status === "up-to-date") { clearInterval(timer); $("#update-host").innerHTML = ""; ok("Already up to date"); }
+    if (st.status === "restarting") { waitForRestart(timer); }
+    if (st.status === "updating" && st.log && st.log.length) btn.innerHTML = `<span class="spinner"></span> ${st.log[st.log.length - 1]}`;
+  }, 900);
+}
+
+function waitForRestart(timer) {
+  clearInterval(timer);
+  toast("Updating", "Pleiades is restarting — this page will reload.");
+  const probe = setInterval(async () => {
+    try { await api.get("/api/status"); clearInterval(probe); location.reload(); } catch {}
+  }, 1200);
+}
+
 /* ───────────── boot ───────────── */
 loadStatusMini();
 go("dashboard");
 setInterval(loadStatusMini, 20000);
+checkUpdate();
+setInterval(checkUpdate, 6 * 60 * 1000);
