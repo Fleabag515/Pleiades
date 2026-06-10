@@ -131,6 +131,11 @@ DEFAULT_TIERS: dict[str, dict] = {
     "local":      {"backend": "openai", "model": "local", "max_tokens": 4096},
     "chat":       {"backend": "openai", "model": "local", "max_tokens": 8192},
     "coder":      {"backend": "openai", "model": "local", "max_tokens": 16000},
+    # Subagent roles route to these by name; local-first by default, but a user
+    # can repoint any of them at a cloud model in config.json (e.g. research ->
+    # anthropic/Sonnet) without touching code.
+    "research":   {"backend": "openai", "model": "local", "max_tokens": 8192},
+    "fast":       {"backend": "openai", "model": "local", "max_tokens": 2048},
     "cloud":      {"backend": "anthropic", "model": OPUS,   "effort": "high",   "max_tokens": 8192},
     "cloud-fast": {"backend": "anthropic", "model": SONNET, "effort": "medium", "max_tokens": 8192},
     "ollama":     {"backend": "ollama", "model": "qwen2.5:7b", "max_tokens": 4096},
