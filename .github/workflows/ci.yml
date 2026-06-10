@@ -19,9 +19,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       # llama-cpp-python builds from source and isn't needed by the test suite;
-      # install the lightweight deps directly instead of the full package.
+      # install the lightweight deps directly, then the package itself with
+      # --no-deps so `import pleiades` resolves without building llama-cpp-python.
       - name: Install test dependencies
-        run: pip install pytest ruff click rich httpx openai cryptography platformdirs fastapi uvicorn
+        run: |
+          pip install pytest ruff click rich httpx openai cryptography platformdirs fastapi uvicorn
+          pip install -e . --no-deps
       - name: Lint
         run: ruff check .
       - name: Test
