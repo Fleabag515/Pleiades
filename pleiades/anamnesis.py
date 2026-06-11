@@ -168,7 +168,17 @@ class Anamnesis:
             return False  # nothing to point yet; creation will set it
         cfg = char.get("config") if isinstance(char.get("config"), dict) else char
         cur = (cfg.get("upstream") or {}) if isinstance(cfg, dict) else {}
-        if all(cur.get(k) == v for k, v in upstream.items()):
+        if not cur:
+            # The daemon's character payload is minimal ({name, port, active,
+            # running}) — without this disk fallback every chat looks like a
+            # config change and restarts the proxy mid-boot, forever.
+            disk = Path.home() / ".anamnesis" / "characters" / name / "config.json"
+            if disk.is_file():
+                try:
+                    cur = json.loads(disk.read_text(encoding="utf-8")).get("upstream") or {}
+                except (json.JSONDecodeError, OSError):
+                    cur = {}
+        if cur and all(cur.get(k) == v for k, v in upstream.items()):
             return False
 
         try:
