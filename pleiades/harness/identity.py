@@ -68,6 +68,14 @@ def bind_character(
     except Exception:
         pass
 
+    # Point the shared (human-editable) notebook at this character's profile dir,
+    # so NOTEBOOK.md lives somewhere the human can find and edit alongside the agent.
+    try:
+        from .builtins.notebook import bind_notebook
+        bind_notebook(str(repo_config.profile_dir(name) / "NOTEBOOK.md"))
+    except Exception:
+        pass
+
     # Scope the workspace to the character's own dir.
     workspace = repo_config.profile_dir(name) / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)

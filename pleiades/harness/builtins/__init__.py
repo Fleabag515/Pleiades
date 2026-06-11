@@ -7,6 +7,7 @@ from . import git        # noqa: F401  git_status/diff/log/blame/show/branches/a
 from . import process    # noqa: F401  start_process / read_process_output / kill / send_stdin
 from . import system     # noqa: F401  notify / context_status / clipboard / get_env / open_file
 from . import memory     # noqa: F401  set_section / add_finding / note_to_self / remember / recall / forget
+from . import notebook    # noqa: F401  notebook_read / notebook_append / notebook_write (shared human-editable file)
 from . import documents  # noqa: F401  read_pdf / read_docx / read_xlsx / read_image
 from . import quality    # noqa: F401  format_code / lint_code / run_tests
 from . import events     # noqa: F401  start/stop_webhook_listener / wait_for_event / list_events
