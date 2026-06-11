@@ -14,6 +14,7 @@ Memory is Anamnesis's job — we never re-send long histories or separately pers
 
 from __future__ import annotations
 
+import os
 from typing import Optional, Union
 
 from . import config
@@ -150,7 +151,18 @@ class Engine:
 
             try:  # bind identity so file/shell/memory tools live in the
                   # character's own workspace and memory
-                _identity.bind_character(profile.name, cfg=self.settings)
+                from .harness import Config as HarnessConfig
+                from .harness.builtins.memory import bind_memory
+                from .harness.anamnesis import Anamnesis as WorkingMemory
+
+                hcfg = HarnessConfig.load()
+                # route_inference=False: the engine already wires the OpenAI client
+                # to the character's proxy; we only want workspace + memory scoping.
+                _identity.bind_character(profile.name, cfg=hcfg, route_inference=False)
+                # Bind the working/long-term memory store — WITHOUT this, every
+                # note_to_self / remember / record_lesson in chat returns
+                # "memory not bound" (the bug that made chat lessons silently vanish).
+                bind_memory(WorkingMemory.from_config(hcfg))
             except Exception:
                 pass
 
@@ -207,7 +219,8 @@ class Engine:
             ctx.close()
 
     @staticmethod
-    def _base_messages(user_message: str, system: Optional[str]) -> list[dict]:
+    def _base_messages(user_message: str, system: Optional[str],
+                       env_note: Optional[str] = None) -> list[dict]:
         """The new turn only (Anamnesis supplies memory/history) + local time.
 
         When no caller system prompt is given, fall back to the default operating
@@ -218,12 +231,31 @@ class Engine:
         time_line = ("Current local date and time: "
                      + now.strftime("%A, %B %d %Y, %H:%M (%Z)"))
         base = system.rstrip() if system and system.strip() else DEFAULT_OPERATING_CONTRACT
-        sys_text = f"{base}\n\n{time_line}"
+        env = f"\n\n{env_note.rstrip()}" if env_note else ""
+        sys_text = f"{base}{env}\n\n{time_line}"
         return [{"role": "system", "content": sys_text},
                 {"role": "user", "content": user_message}]
 
+    @staticmethod
+    def _environment_note(profile: Profile) -> str:
+        """Concrete machine facts so the character uses REAL paths (it otherwise
+        invents Linux paths like /home/<name> that don't exist on this box)."""
+        import platform
+        ws = config.profile_dir(profile.name) / "workspace"
+        nb = config.profile_dir(profile.name) / "NOTEBOOK.md"
+        return (
+            f"Your environment — use these REAL paths, never invent /home/... or other "
+            f"placeholder paths:\n"
+            f"- Operating system: {platform.system()} ({os.name}).\n"
+            f"- Your workspace directory (the default home for your file/shell/git work): "
+            f"{ws}\n"
+            f"- Your shared notebook file: {nb}\n"
+            f"When a path is needed and the user didn't give one, work inside your "
+            f"workspace directory above; pass paths exactly as written for this OS."
+        )
+
     def _loop(self, client, ctx: ToolContext, belt: ToolBelt, profile: Profile, user_message: str, system: Optional[str]) -> str:
-        messages = self._base_messages(user_message, system)
+        messages = self._base_messages(user_message, system, self._environment_note(profile))
 
         tools = belt.openai_schema()
 
@@ -285,7 +317,8 @@ class Engine:
         n_tokens = 0
         t_first = t_last = None
         try:
-            messages = self._base_messages(user_message, system)
+            messages = self._base_messages(user_message, system,
+                                           self._environment_note(profile))
             tools = belt.openai_schema()
             import time as _time
 
