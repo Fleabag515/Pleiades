@@ -116,7 +116,13 @@ a { color: var(--accent); text-decoration: none; }
 .foot-meta { font-size: 11px; color: var(--text-faint); display: flex; align-items: center; }
 
 /* ─── Topbar ─── */
-.main { display: flex; flex-direction: column; min-width: 0; }
+/* min-height: 0 is the load-bearing line: .main is a grid item, and grid
+   items refuse to shrink below content height by default (min-height:auto).
+   Without it the #app row inflates to the chat's full content height
+   (thousands of px clipped into the void), .chat-wrap's flex:1 inherits the
+   explosion, and the mousewheel only finds tiny inner scrollers — the
+   infamous dead double scrollbar. Verified live in devtools. */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; max-height: 100vh; }
 .topbar {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   padding: 22px 36px 16px;
