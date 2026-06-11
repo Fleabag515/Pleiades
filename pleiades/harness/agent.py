@@ -118,9 +118,22 @@ def execute_tool(tool: Tool, args: dict,
                 "choose a different approach or ask the user."), True
     try:
         result = tool.func(**args)
+        _record(tool.name, True)
         return (result if isinstance(result, str) else json.dumps(result)), False
     except Exception as e:
-        return f"Error running {tool.name}: {e}", True
+        _record(tool.name, False, str(e))
+        return (f"Error running {tool.name}: {e}. "
+                f"Tip: study_tool('{tool.name}') shows the schema and your "
+                f"recent mistakes with it."), True
+
+
+def _record(name: str, ok: bool, error: str = "") -> None:
+    """Feed the practice stats (builtins.practice). Never raises."""
+    try:
+        from .builtins.practice import record_outcome
+        record_outcome(name, ok, error)
+    except Exception:
+        pass
 
 
 class Agent:

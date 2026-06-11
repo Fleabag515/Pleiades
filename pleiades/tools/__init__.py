@@ -102,20 +102,34 @@ class ToolBelt:
         return [t.schema() for t in self._tools.values()]
 
     def dispatch(self, name: str, args: Any, ctx: ToolContext) -> str:
+        """Run a tool; errors come back as TEACHING results, not dead ends.
+
+        A malformed call is a learning opportunity: include the tool's
+        parameter schema in the error so the model can correct itself on the
+        very next iteration instead of flailing or giving up.
+        """
         tool = self._tools.get(name)
         if tool is None:
-            return f"[error] unknown tool: {name}"
+            close = [n for n in self._tools if name.lower() in n.lower()
+                     or n.lower() in name.lower()]
+            hint = f" Did you mean: {', '.join(close[:3])}?" if close else ""
+            return f"[error] unknown tool: {name}.{hint}"
         if isinstance(args, str):
             try:
                 args = json.loads(args) if args.strip() else {}
             except json.JSONDecodeError:
-                return f"[error] could not parse arguments for {name}: {args!r}"
+                return (f"[error] could not parse arguments for {name} as JSON: "
+                        f"{args!r}. Expected parameters: "
+                        f"{json.dumps(tool.parameters)}. Retry with valid JSON.")
         if not isinstance(args, dict):
-            return f"[error] arguments for {name} must be an object"
+            return (f"[error] arguments for {name} must be a JSON object. "
+                    f"Expected parameters: {json.dumps(tool.parameters)}")
         try:
             return tool.run(ctx, **args)
         except TypeError as e:
-            return f"[error] bad arguments for {name}: {e}"
+            return (f"[error] bad arguments for {name}: {e}. "
+                    f"Expected parameters: {json.dumps(tool.parameters)}. "
+                    f"Retry with corrected arguments.")
         except Exception as e:  # tools must never crash the agent loop
             return f"[error] {name} failed: {e}"
 
