@@ -15,6 +15,7 @@ Tool guide:
 
 from __future__ import annotations
 
+import html as _htmllib
 import json
 import os
 import re
@@ -46,8 +47,16 @@ def _searxng_base() -> str:
     except Exception:
         return "http://localhost:8888"
 _UA = "Pleiades/0.1 (+agent workspace)"
-_TAG_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S | re.I)
-_HTML_RE = re.compile(r"<[^>]+>")
+# Whole blocks that are almost never content — drop them outright (with contents).
+_DROP_RE = re.compile(
+    r"<(script|style|noscript|template|svg|nav|header|footer|aside|form)\b[^>]*>.*?</\1>",
+    re.S | re.I)
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+# Closing block tags become line breaks so structure survives the strip.
+_BLOCK_RE = re.compile(r"</(p|div|li|ul|ol|h[1-6]|section|article|tr|table|blockquote)\s*>", re.I)
+_BR_RE = re.compile(r"<br\s*/?>", re.I)
+_TAG_RE = re.compile(r"<[^>]+>")
+_BLANKS_RE = re.compile(r"\n{3,}")
 
 
 def _get(url: str, timeout: int = 30) -> str:
@@ -57,9 +66,20 @@ def _get(url: str, timeout: int = 30) -> str:
 
 
 def _strip_html(html: str) -> str:
+    """HTML -> readable text, keeping paragraph structure and dropping the usual
+    chrome (scripts, styles, nav/header/footer/aside/forms). Decodes entities so
+    the model reads "don't" not "don&#39;t". Much higher signal-per-token than a
+    flat tag strip — which is what http_fetch and deep_research feed the model."""
+    html = _COMMENT_RE.sub(" ", html)
+    html = _DROP_RE.sub(" ", html)
+    html = _BR_RE.sub("\n", html)
+    html = _BLOCK_RE.sub("\n", html)
     text = _TAG_RE.sub(" ", html)
-    text = _HTML_RE.sub(" ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = _htmllib.unescape(text)
+    # Tidy per line, drop empties, and cap runs of blank lines.
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.splitlines()]
+    text = "\n".join(ln for ln in lines if ln)
+    return _BLANKS_RE.sub("\n\n", text).strip()
 
 
 @tool(safe=True, tags=("web", "read"))
