@@ -951,6 +951,51 @@ def create_app() -> FastAPI:
         except ValueError:
             raise HTTPException(400, "Bad chat id.")
 
+    # Pending tool approvals for chat turns. The NDJSON stream is stalled
+    # while the engine waits inside the approve callback, so the frontend
+    # polls GET /approval and answers via POST /approval.
+    chat_approvals: dict[str, dict] = {}
+
+    def _chat_approve_cb(chat_id: str):
+        import threading
+
+        ctl = {"pending": None, "event": threading.Event(), "answer": {"ok": False}}
+        chat_approvals[chat_id] = ctl
+
+        def approve(tool, args) -> bool:
+            try:
+                from ..harness import Config as HarnessConfig
+                policy = HarnessConfig.load().exec_policy
+            except Exception:
+                policy = "ask"
+            if policy == "allow":
+                return True
+            if policy == "deny":
+                return False
+            import json as _json
+            ctl["pending"] = {"tool": getattr(tool, "name", str(tool)),
+                              "args": _json.dumps(args)[:300]}
+            ctl["event"].clear()
+            answered = ctl["event"].wait(timeout=600)  # 10 min, then deny
+            ctl["pending"] = None
+            return bool(ctl["answer"]["ok"]) if answered else False
+
+        return approve
+
+    @app.get("/api/chats/{chat_id}/approval")
+    def chats_approval_get(chat_id: str) -> dict:
+        ctl = chat_approvals.get(chat_id)
+        return {"pending": ctl["pending"] if ctl else None}
+
+    @app.post("/api/chats/{chat_id}/approval")
+    def chats_approval_post(chat_id: str, body: WorkApprove) -> dict:
+        ctl = chat_approvals.get(chat_id)
+        if not ctl or not ctl["pending"]:
+            raise HTTPException(409, "Nothing awaiting approval.")
+        ctl["answer"]["ok"] = bool(body.approve)
+        ctl["event"].set()
+        return {"ok": True}
+
     @app.post("/api/chats/{chat_id}/message")
     def chats_message(chat_id: str, body: ChatMessage) -> StreamingResponse:
         """One unified chat/agent turn, streamed as NDJSON events.
@@ -976,7 +1021,8 @@ def create_app() -> FastAPI:
             try:
                 from ..engine import Engine
                 engine = Engine(settings=config.Settings.load(),
-                                manager=pm, anamnesis=an)
+                                manager=pm, anamnesis=an,
+                                approve=_chat_approve_cb(chat_id))
                 for evt in engine.stream_events(p, body.message, system=body.system):
                     if evt["type"] == "token":
                         text_acc += evt["text"]
@@ -1005,6 +1051,8 @@ def create_app() -> FastAPI:
                     pass  # persistence must never kill the stream
             except Exception as e:
                 yield _json.dumps({"type": "error", "error": str(e)}) + "\n"
+            finally:
+                chat_approvals.pop(chat_id, None)  # no stale approval cards
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
 
@@ -1028,8 +1076,17 @@ def create_app() -> FastAPI:
             import json as _json
             try:
                 from ..engine import Engine
+
+                def _policy_only(tool, args) -> bool:
+                    # No approval UI on this legacy endpoint: 'ask' fails safe.
+                    try:
+                        from ..harness import Config as HarnessConfig
+                        return HarnessConfig.load().exec_policy == "allow"
+                    except Exception:
+                        return False
+
                 engine = Engine(settings=config.Settings.load(),
-                                manager=pm, anamnesis=an)
+                                manager=pm, anamnesis=an, approve=_policy_only)
                 for chunk in engine.stream(p, body.message, system=body.system):
                     if chunk:
                         yield _json.dumps({"type": "chunk", "text": chunk}) + "\n"

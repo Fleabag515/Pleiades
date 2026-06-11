@@ -31,7 +31,11 @@ class Engine:
         settings: Optional[config.Settings] = None,
         manager: Optional[ProfileManager] = None,
         anamnesis: Optional[Anamnesis] = None,
+        approve=None,
     ):
+        # approve(tool, args) -> bool gates side-effecting bridged tools in
+        # chat; None = console y/N prompt (UIs inject their own callback).
+        self.approve = approve
         self.settings = settings or config.Settings.load()
         self.anamnesis = anamnesis or Anamnesis(self.settings.anamnesis_control_url)
         self.manager = manager or ProfileManager(self.settings, self.anamnesis)
@@ -94,10 +98,17 @@ class Engine:
         return client, ctx, belt
 
     def _bridge_harness_tools(self, belt: ToolBelt, profile: Profile) -> None:
-        """Expose every harness tool in chat (chat-native names win on clash)."""
+        """Expose every harness tool in chat (chat-native names win on clash).
+
+        Bridged tools go through the harness permission gate (execute_tool +
+        exec_policy), exactly like `pleiades work` — chat must not be the
+        unguarded side door. `ask` prompts via self.approve (console y/N by
+        default; UIs can inject their own callback).
+        """
         try:
             from .harness import builtins as _builtins      # noqa: F401  registers
             from .harness import identity as _identity
+            from .harness.agent import execute_tool
             from .harness.tools import registry
             from .tools import Tool
 
@@ -107,6 +118,8 @@ class Engine:
             except Exception:
                 pass
 
+            approve = getattr(self, "approve", None) or self._console_approve
+
             class _Bridge(Tool):
                 def __init__(self, ht):
                     self._ht = ht
@@ -115,7 +128,8 @@ class Engine:
                     self.parameters = ht.schema
 
                 def run(self, ctx, **kwargs):
-                    return str(self._ht.func(**kwargs))
+                    out, _err = execute_tool(self._ht, kwargs, approve)
+                    return str(out)
 
             for ht in registry.all():
                 if ht.name not in belt:
@@ -123,6 +137,27 @@ class Engine:
         except Exception:
             # The harness is optional context — chat works without it.
             pass
+
+    @staticmethod
+    def _console_approve(tool, args) -> bool:
+        """Default chat gate: exec_policy allow/deny, else ask on the console."""
+        import json as _json
+        try:
+            from .harness import Config as HarnessConfig
+            policy = HarnessConfig.load().exec_policy
+        except Exception:
+            policy = "ask"
+        if policy == "allow":
+            return True
+        if policy == "deny":
+            return False
+        try:
+            short = _json.dumps(args)[:120]
+            name = getattr(tool, "name", str(tool))
+            ans = input(f"  [approve] {name}({short}) [y/N] ").strip().lower()
+        except EOFError:
+            return False
+        return ans in ("y", "yes")
 
     # -- main entry point --------------------------------------------------- #
     def run(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None) -> str:

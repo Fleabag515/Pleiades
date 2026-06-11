@@ -58,10 +58,18 @@ class ModelError(RuntimeError):
 
 def _port_free(host: str, port: int) -> bool:
     """Can we actually bind it? Registry bookkeeping isn't enough — other apps
-    (Docker, dev servers) may already hold a port in our 8090+ range."""
+    (Docker, dev servers) may already hold a port in our 8090+ range.
+
+    No SO_REUSEADDR on Windows: there it means "steal the port", so bind()
+    happily succeeds on a port another process is LISTENING on and this probe
+    reports occupied ports as free (live servers then get duplicated).
+    """
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name == "posix":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # TIME_WAIT
+        elif hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         try:
             s.bind((host, port))
             return True
@@ -77,6 +85,32 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return True
     except OSError:
         return False
+
+
+def _pid_on_port(host: str, port: int) -> Optional[int]:
+    """PID of the process LISTENING on host:port, or None.
+
+    Needed because running.json can go stale (crash, manual kill): the
+    recorded pid dies but the actual server lives on. Windows: parse
+    netstat -ano. POSIX: spawned with start_new_session, killpg covers it.
+    """
+    if os.name != "nt" or not port:
+        return None
+    try:
+        out = subprocess.run(["netstat", "-ano"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    needle = f":{port}"
+    for line in out.splitlines():
+        parts = line.split()
+        if (len(parts) >= 5 and parts[0] == "TCP" and "LISTENING" in parts
+                and parts[1].endswith(needle)):
+            try:
+                return int(parts[-1])
+            except ValueError:
+                continue
+    return None
 
 
 class ModelManager:
@@ -263,6 +297,18 @@ class ModelManager:
         if self.is_running(name):
             return self.base_url(name)
 
+        # The registered port may be occupied by an ORPHAN OF OURSELVES: if
+        # running.json went stale (crash/manual kill) the old server keeps
+        # serving while is_running() says dead — relocating would then spawn
+        # a duplicate per chat. If whatever holds the port answers /v1/models
+        # with our alias, adopt it instead of spawning another.
+        if not _port_free(m["host"], int(m["port"])) and self._is_our_server(m):
+            run = self._load_running()
+            run[name] = {"pid": _pid_on_port(m["host"], int(m["port"])) or 0,
+                         "host": m["host"], "port": m["port"]}
+            self._save_running(run)
+            return self.base_url(name)
+
         # The registered port may have been taken by another app since add()
         # (e.g. a Docker service). Detect it now and relocate instead of letting
         # llama.cpp load the whole model and then die on bind.
@@ -322,6 +368,17 @@ class ModelManager:
             time.sleep(0.5)
         raise ModelError(f"model '{name}' not ready after {timeout:.0f}s.")
 
+    def _is_our_server(self, m: dict) -> bool:
+        """Does whatever holds the model's port answer as this model?"""
+        import httpx
+
+        try:
+            r = httpx.get(f"http://{m['host']}:{m['port']}/v1/models", timeout=3.0)
+            ids = {x.get("id", "") for x in r.json().get("data", [])}
+            return m["name"] in ids
+        except Exception:
+            return False
+
     def stop(self, name: str) -> bool:
         run = self._load_running()
         r = run.get(name)
@@ -334,6 +391,18 @@ class ModelManager:
                     os.killpg(os.getpgid(pid), signal.SIGTERM)
                 else:
                     os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        # running.json can be stale — also kill whoever still holds the port,
+        # or "Stopped" is a lie and orphans accumulate one per restart. Only
+        # if it answers as THIS model though; never terminate a foreign app.
+        host = r.get("host", "127.0.0.1")
+        port = int(r.get("port") or 0)
+        port_pid = _pid_on_port(host, port)
+        if (port_pid and port_pid != pid
+                and self._is_our_server({"host": host, "port": port, "name": name})):
+            try:
+                os.kill(port_pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         del run[name]

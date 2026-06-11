@@ -397,6 +397,30 @@ async function renderChat() {
       raw = ""; liveHost = null;
     };
 
+    /* approval poller — the NDJSON stream stalls while the engine waits for
+       a verdict on a gated tool, so we watch the side-channel and render an
+       inline Approve/Deny card. */
+    let apprCard = null;
+    const answerApproval = (ok) => fetch(`/api/chats/${chat.id}/approval`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approve: ok }),
+    }).catch(() => {});
+    const apprTimer = setInterval(async () => {
+      try {
+        const a = await (await fetch(`/api/chats/${chat.id}/approval`)).json();
+        if (a.pending && !apprCard) {
+          apprCard = el("div", { class: "approval" },
+            el("span", {}, "⚠️"),
+            el("div", { style: "flex:1;min-width:200px" },
+              el("div", {}, `${who} wants to run `, el("span", { class: "tool" }, a.pending.tool)),
+              el("div", { class: "args" }, a.pending.args)),
+            el("button", { class: "btn sm good", onclick: () => answerApproval(true) }, "✓ Approve"),
+            el("button", { class: "btn sm danger", onclick: () => answerApproval(false) }, "✕ Deny"));
+          bubble.append(apprCard); follow();
+        } else if (!a.pending && apprCard) { apprCard.remove(); apprCard = null; }
+      } catch { /* polling is best-effort */ }
+    }, 1200);
+
     try {
       const r = await fetch(`/api/chats/${chat.id}/message`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -443,6 +467,8 @@ async function renderChat() {
       bubble.append(el("div", { class: "seg-text" },
         `Couldn't reach ${who}: ${e.message}. Check that the model and the Anamnesis daemon are running (see Overview).`));
     } finally {
+      clearInterval(apprTimer);
+      if (apprCard) { apprCard.remove(); apprCard = null; }
       busy = false; sendBtn.disabled = false; ta.focus(); follow();
     }
   }
