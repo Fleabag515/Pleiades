@@ -15,6 +15,17 @@ from . import config
 from .anamnesis import AnamnesisError
 from .profiles import ProfileManager
 
+# Windows consoles default to a legacy code page (cp1252) that can't encode the
+# arrows/box characters in our help text — Click's --help writes raw stdout, so a
+# stray glyph crashes the whole command with UnicodeEncodeError. Force UTF-8 once,
+# at import, so the CLI is encoding-safe everywhere. (Rich already does this for
+# console.print; this covers click.echo / --help too.)
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
 console = Console()
 
 
@@ -591,7 +602,7 @@ def adopt(name: str) -> None:
 @click.option("--no-reinstall", is_flag=True, help="Pull only; skip pip reinstall.")
 @click.option("--check", "check_only", is_flag=True, help="Only check; don't update.")
 def update(no_reinstall: bool, check_only: bool) -> None:
-    """Update Pleiades to the latest version on GitHub (also: the ⬆ button in the UI)."""
+    """Update Pleiades to the latest version on GitHub (also: the Update button in the UI)."""
     from . import update as upd
 
     if check_only:
