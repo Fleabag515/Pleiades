@@ -62,6 +62,24 @@ def check(root: Optional[Path] = None) -> UpdateCheck:
                        behind=remote != local)
 
 
+def _deps_changed(root: Path, before: str, after: str) -> bool:
+    """Did dependency metadata move between two commits? Conservative: any error
+    or any touch of pyproject.toml means 'yes, reinstall to be safe'."""
+    if not before or not after or before == after:
+        return False
+    code, out = _git(root, "diff", "--name-only", before, after, "--", "pyproject.toml")
+    if code != 0:
+        return True  # can't tell — reinstall rather than risk a stale env
+    return bool(out.strip())
+
+
+def _is_file_lock_error(text: str) -> bool:
+    """Recognise the Windows 'file in use' family of pip failures."""
+    t = (text or "").lower()
+    return ("access is denied" in t or "winerror 5" in t
+            or "being used by another process" in t or "permission denied" in t)
+
+
 def run_update(root: Optional[Path] = None, *, reinstall: bool = True,
                log: Optional[Callable[[str], None]] = None) -> bool:
     """Fetch + hard-reset to origin, then reinstall. Returns True if code changed.
@@ -88,10 +106,27 @@ def run_update(root: Optional[Path] = None, *, reinstall: bool = True,
     say(f"now at {after[:7]}" + ("" if changed else " (already up to date)"))
 
     if changed and reinstall:
+        # Only reinstall when the dependency set actually moved. Most updates touch
+        # only Python source (already live via the editable install), so skipping the
+        # pip step avoids needlessly trying to overwrite files the running process
+        # holds open — the usual cause of WinError 5 / "Access is denied" mid-update.
+        if not _deps_changed(root, before, after):
+            say("dependencies unchanged — skipping reinstall.")
+            return changed
         say("reinstalling dependencies …")
         out = subprocess.run([sys.executable, "-m", "pip", "install", "-q",
                               "-e", f"{root}[all]"],
                              capture_output=True, text=True, timeout=900)
         if out.returncode != 0:
-            raise RuntimeError(f"pip reinstall failed: {(out.stderr or '')[-400:]}")
+            err = (out.stderr or "")[-400:]
+            if _is_file_lock_error(err):
+                # The running Pleiades process (this very `pleiades update`, the web
+                # UI, or a model server) holds files pip wants to overwrite. The code
+                # is already updated; just finish deps from a fresh shell.
+                cmd = f'pip install -e "{root}[all]"'
+                say("code updated, but dependencies could not be reinstalled while "
+                    "Pleiades is running (a file was locked).")
+                say(f"Close running Pleiades processes and finish with:  {cmd}")
+                return changed
+            raise RuntimeError(f"pip reinstall failed: {err}")
     return changed

@@ -24,6 +24,28 @@ from .tools import ToolBelt, ToolContext, build_default_belt
 
 MAX_TOOL_ITERATIONS = 8
 
+# Persona-agnostic operating contract injected into the chat path when the caller
+# supplies no system prompt of its own. Anamnesis injects the character's persona
+# (voice) separately; this only governs *how the character operates its tools* so a
+# small local model actually uses them instead of narrating or stalling. It must not
+# overwrite the voice — hence "stay fully in your established voice/persona".
+DEFAULT_OPERATING_CONTRACT = (
+    "You are running as yourself with a real, live tool belt this session — not a "
+    "disembodied chat assistant. Operating rules:\n"
+    "- Stay fully in your own established voice and persona. Never slip into a generic, "
+    "corporate, or robotic assistant tone, even when using tools or declining.\n"
+    "- You have actual tools (search, web, files, shell, memory, practice_status, and "
+    "more). When the human asks you to DO or CHECK something a tool covers — e.g. "
+    "\"check practice_status\", \"search X\", \"read that file\" — actually CALL the tool. "
+    "Do not describe what you would do, and do not ask for clarification you do not need; "
+    "act first, then narrate the result in-character.\n"
+    "- Persist what matters: when you learn a durable fact, preference, or lesson, save it "
+    "with your memory tools (remember / note_to_self / record_lesson) so it survives. "
+    "If you are unsure whether you already know something, recall first.\n"
+    "- Only ask the human a question when the task is genuinely ambiguous or needs their "
+    "approval (destructive or external actions). Otherwise, proceed."
+)
+
 
 class Engine:
     def __init__(
@@ -172,12 +194,17 @@ class Engine:
 
     @staticmethod
     def _base_messages(user_message: str, system: Optional[str]) -> list[dict]:
-        """The new turn only (Anamnesis supplies memory/history) + local time."""
+        """The new turn only (Anamnesis supplies memory/history) + local time.
+
+        When no caller system prompt is given, fall back to the default operating
+        contract so the character actually drives its tools and stays in voice.
+        """
         import datetime
         now = datetime.datetime.now().astimezone()
         time_line = ("Current local date and time: "
                      + now.strftime("%A, %B %d %Y, %H:%M (%Z)"))
-        sys_text = f"{system.rstrip()}\n\n{time_line}" if system else time_line
+        base = system.rstrip() if system and system.strip() else DEFAULT_OPERATING_CONTRACT
+        sys_text = f"{base}\n\n{time_line}"
         return [{"role": "system", "content": sys_text},
                 {"role": "user", "content": user_message}]
 
