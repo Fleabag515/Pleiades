@@ -56,16 +56,26 @@ class Engine:
                     pass  # fall back to the default engine below
         return ensure_inference(self.settings)
 
+    @staticmethod
+    def _model_for(profile: Profile) -> str:
+        """Model identifier to send upstream. llama.cpp servers ignore it, but
+        Ollama-style upstreams validate strictly — the character's *name* is
+        not a model and 404s there. Prefer the assigned model."""
+        return getattr(profile, "model", "") or profile.name
+
     def _client_for(self, profile: Profile):
         """Bring up inference + the character proxy and return an OpenAI client + ctx."""
         from openai import OpenAI
 
         # 1. Resolve the upstream the character should use, and point Anamnesis at it.
+        # set_upstream survives daemons without a PATCH route (edits config.json on
+        # disk + restarts the proxy) — otherwise a character created against a
+        # different backend keeps its stale upstream forever.
         upstream = self._upstream_for(profile)
         try:
-            self.anamnesis.update_character(profile.name, upstream={"baseUrl": upstream})
+            self.anamnesis.set_upstream(profile.name, {"baseUrl": upstream})
         except Exception:
-            # Non-fatal: the character may already be configured, or PATCH unsupported.
+            # Non-fatal: the character may not exist yet (created below).
             pass
 
         # 2. Character proxy.
@@ -143,7 +153,7 @@ class Engine:
 
         for _ in range(MAX_TOOL_ITERATIONS):
             resp = client.chat.completions.create(
-                model=profile.name,
+                model=self._model_for(profile),
                 messages=messages,
                 tools=tools or None,
                 tool_choice="auto" if tools else None,
@@ -209,7 +219,7 @@ class Engine:
                 streamed = True
                 try:
                     stream = client.chat.completions.create(
-                        model=profile.name, messages=messages,
+                        model=self._model_for(profile), messages=messages,
                         tools=tools or None,
                         tool_choice="auto" if tools else None, stream=True,
                     )
@@ -240,7 +250,7 @@ class Engine:
                     # Backend refused streaming (some llama.cpp builds reject
                     # stream+tools). One non-streamed request instead.
                     resp = client.chat.completions.create(
-                        model=profile.name, messages=messages,
+                        model=self._model_for(profile), messages=messages,
                         tools=tools or None,
                         tool_choice="auto" if tools else None,
                     )

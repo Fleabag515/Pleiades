@@ -472,16 +472,27 @@ def quant_of(filename: str) -> str:
     return m.group(1).upper() if m else ""
 
 
+def is_mmproj(filename: str) -> bool:
+    """Multimodal projector sidecars (mmproj-*.gguf) are not standalone models.
+
+    Left in the candidate pool they win every "fits in VRAM" contest (~1 GB)
+    and the fetcher proudly downloads a file llama.cpp can't load as a model.
+    """
+    return Path(filename).name.lower().startswith("mmproj")
+
+
 def group_split_ggufs(files: list[dict]) -> list[dict]:
     """Group multi-part GGUFs (-00001-of-00003.gguf) into one logical entry.
 
     Input/output dicts: {"name": str, "size": int} (+ "parts": [names] on groups).
+    Multimodal projector sidecars (mmproj-*) are excluded — they're companions
+    to a model, never the model.
     """
     groups: dict[str, dict] = {}
     out: list[dict] = []
     for f in files:
         name = f["name"]
-        if not name.lower().endswith(".gguf"):
+        if not name.lower().endswith(".gguf") or is_mmproj(name):
             continue
         m = _SPLIT_RE.search(name)
         if not m:

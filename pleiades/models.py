@@ -221,6 +221,7 @@ class ModelManager:
             cmd = [native, "-m", m["path"],
                    "--host", m["host"], "--port", str(m["port"]),
                    "-c", str(n_ctx), "-ngl", str(ngl), "-t", str(threads),
+                   "--alias", m["name"],
                    "--jinja"]
             if forced is None and pl.n_cpu_moe and cps.moe_offload:
                 cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
@@ -235,6 +236,7 @@ class ModelManager:
         cmd = [
             sys.executable, "-m", "llama_cpp.server",
             "--model", m["path"],
+            "--model_alias", m["name"],
             "--host", m["host"], "--port", str(m["port"]),
             "--n_ctx", str(n_ctx),
             "--n_gpu_layers", str(layers),

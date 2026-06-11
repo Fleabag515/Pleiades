@@ -189,3 +189,29 @@ def test_parse_win_amd_garbage_and_zero_vram():
     assert hardware._parse_win_amd("Oops! not json") == []
     assert hardware._parse_win_amd('[{"name":"x","vram":0}]') == []
     assert hardware._parse_win_amd('[{"vram":"NaNsense"}]') == []
+
+
+# --------------------------------------------------------------------------- #
+# mmproj sidecars must never be model candidates
+# --------------------------------------------------------------------------- #
+def test_mmproj_excluded_from_grouping():
+    files = [
+        {"name": "mmproj-Some-Model-f16.gguf", "size": 9 * 10**8},
+        {"name": "Some-Model-Q4_K_M.gguf", "size": 20 * 10**9},
+        {"name": "sub/dir/mmproj-other-F32.gguf", "size": 8 * 10**8},
+    ]
+    grouped = group_split_ggufs(files)
+    assert [g["name"] for g in grouped] == ["Some-Model-Q4_K_M.gguf"]
+
+
+def test_mmproj_only_repo_yields_nothing():
+    files = [{"name": "mmproj-Some-Model-f16.gguf", "size": 9 * 10**8}]
+    assert group_split_ggufs(files) == []
+    assert pick_quant(files, _hw(vram_gb=16), n_ctx=4096) is None
+
+
+def test_is_mmproj():
+    assert hardware.is_mmproj("mmproj-x-f16.gguf")
+    assert hardware.is_mmproj("repo/sub/MMPROJ-x.gguf")
+    assert not hardware.is_mmproj("model-with-mmproj-in-middle.gguf")
+    assert not hardware.is_mmproj("Some-Model-Q4_K_M.gguf")

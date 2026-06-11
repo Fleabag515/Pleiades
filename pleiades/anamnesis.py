@@ -149,6 +149,52 @@ class Anamnesis:
         port = self._extract_port(char)
         return port is not None
 
+    def set_upstream(self, name: str, upstream: dict) -> bool:
+        """Point a character's upstream at `upstream` (e.g. {"baseUrl": ...}).
+
+        The daemon's control API has no PATCH/edit route (as of 0.6.x), so a
+        running proxy keeps whatever upstream it was created with — a character
+        born against Ollama will 404 forever no matter what the client wishes.
+        Strategy: skip if already correct; try PATCH (future daemons); fall
+        back to editing ~/.anamnesis/characters/<name>/config.json directly
+        (the documented layout, CLAUDE.md §2); restart the proxy if it was
+        running so the change actually applies. Returns True if restarted.
+        """
+        import json
+
+        try:
+            char = self.get_character(name)
+        except AnamnesisError:
+            return False  # nothing to point yet; creation will set it
+        cfg = char.get("config") if isinstance(char.get("config"), dict) else char
+        cur = (cfg.get("upstream") or {}) if isinstance(cfg, dict) else {}
+        if all(cur.get(k) == v for k, v in upstream.items()):
+            return False
+
+        try:
+            self.update_character(name, upstream=upstream)
+        except AnamnesisError:
+            path = Path.home() / ".anamnesis" / "characters" / name / "config.json"
+            if not path.is_file():
+                raise AnamnesisError(
+                    f"Cannot reconfigure '{name}': daemon rejected the update and "
+                    f"{path} does not exist."
+                )
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                raise AnamnesisError(f"Cannot read {path}: {e}") from e
+            merged = data.get("upstream") or {}
+            merged.update(upstream)
+            data["upstream"] = merged
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        if self.is_running(name):
+            self.stop(name)
+            self.start(name)
+            return True
+        return False
+
     def ensure_running(self, name: str, *, create_if_missing: bool = True, **create_cfg: Any) -> str:
         """Create (optionally) + start a character if needed; return its proxy base URL."""
         if not self.exists(name):
