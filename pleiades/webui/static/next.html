@@ -346,12 +346,12 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
           <span class="ttl">Talk · alice</span>
           <div class="seg"><button data-m="stream" onclick="setMode('stream')">Stream</button><button class="on" data-m="pipeline" onclick="setMode('pipeline')">Pipeline</button><button data-m="mind" onclick="setMode('mind')">Mind</button></div>
           <div class="sp"></div>
-          <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">brain</span>
-            <select style="width:auto"><option>qwen2.5-coder (local)</option><option>llama-3.1-8b (local)</option><option>Claude · debug only</option></select></div>
+          <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">character</span>
+            <select id="talk-char" style="width:auto"></select></div>
         </div>
         <div class="talkscroll" id="talkscroll">
-          <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">a</span>alice · local</div>Hey — full tool belt is live. Try the suggestion below to watch a run in Stream, Pipeline, and Mind.</div>
-          <button class="btn" onclick="runDemo()">▶ run: check inbox → store code in vault</button>
+          <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">P</span>Pleiades</div>Pick a character and send a message — it runs on the local model with the full tool belt. The button below shows the Stream / Pipeline / Mind visualizations as a concept demo.</div>
+          <button class="btn" onclick="runDemo()">▶ demo: see Stream · Pipeline · Mind</button>
         </div>
         <div class="composer"><input id="talkin" placeholder="Message alice — every tool always on…"/><button class="btn pri" onclick="talkSend()">↑</button></div>
 
@@ -399,7 +399,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
   document.getElementById('main').classList.toggle('flush',v==='talk');
-  if(v==='deck')loadDeck(); if(v==='characters')loadChars();}
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk();}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -614,8 +614,45 @@ const RUN={
 };
 let ran=false;
 function runDemo(){ran=true;document.getElementById('r-tok').textContent='3,480';document.getElementById('r-tools').textContent='4';document.getElementById('r-turns').textContent='3';renderRun(true);}
-function talkSend(){const i=document.getElementById('talkin');if(!i.value.trim())return;
-  const s=document.getElementById('talkscroll');const u=document.createElement('div');u.className='tmsg u';u.innerHTML='<div class="bub">'+i.value+'</div>';s.append(u);i.value='';runDemo();s.scrollTop=s.scrollHeight;}
+let talkChats={};
+function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+async function loadTalk(){try{const d=await api('/api/profiles');const sel=document.getElementById('talk-char');if(!sel)return;
+  const cur=sel.value;sel.innerHTML=(d.profiles||[]).map(pf=>'<option value="'+pf.name+'">'+pf.name+' · '+(pf.model||'default engine')+'</option>').join('')||'<option value="">no characters — create one</option>';
+  if(cur)sel.value=cur;}catch(e){}}
+async function talkSend(){
+  const i=document.getElementById('talkin');const text=(i.value||'').trim();if(!text)return;
+  const sel=document.getElementById('talk-char');const character=sel&&sel.value;
+  const s=document.getElementById('talkscroll');
+  if(!character){const w=document.createElement('div');w.className='tmsg';w.innerHTML='<div class="amsg" style="color:var(--bad)">No character selected. Create one in Characters first.</div>';s.append(w);return}
+  i.value='';
+  const u=document.createElement('div');u.className='tmsg u';u.innerHTML='<div class="bub">'+escapeHtml(text)+'</div>';s.append(u);
+  try{if(!talkChats[character]){const c=await (await fetch('/api/chats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character})})).json();talkChats[character]=c.id||c.chat_id||c.name}}catch(e){}
+  const chatId=talkChats[character];
+  const wrap=document.createElement('div');wrap.className='tmsg';
+  wrap.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">'+character[0].toLowerCase()+'</span>'+character+'</div>';
+  const runBox=document.createElement('div');runBox.className='runblock';runBox.style.display='none';
+  runBox.innerHTML='<div class="rh"><span>⚙</span> tools</div>';const runBody=document.createElement('div');runBody.className='rb';runBox.append(runBody);
+  const textEl=document.createElement('div');textEl.className='amsg';
+  wrap.append(runBox);wrap.append(textEl);s.append(wrap);s.scrollTop=s.scrollHeight;
+  let acc='';
+  try{
+    const r=await fetch('/api/chats/'+encodeURIComponent(chatId)+'/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+    if(!r.body)throw new Error('no stream');
+    const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
+    while(true){const {value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
+      let nl;while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
+        let ev;try{ev=JSON.parse(line)}catch(e){continue}
+        if(ev.type==='token'||ev.type==='chunk'){acc+=ev.text||'';textEl.textContent=acc}
+        else if(ev.type==='tool_call'){runBox.style.display='';const st=document.createElement('div');st.className='tstep';
+          st.innerHTML='<div class="sh"><span class="dot" style="background:var(--warn);box-shadow:none"></span><span class="nm">'+escapeHtml(ev.name||'tool')+'</span><span class="st">running…</span></div>';runBody.append(st)}
+        else if(ev.type==='tool_result'){const st=runBody.lastChild;if(st){const d=st.querySelector('.dot');if(d){d.style.background='var(--good)';d.style.boxShadow='0 0 7px var(--good)'}const t=st.querySelector('.st');if(t)t.textContent=ev.ok===false?'error':'ok'}}
+        else if(ev.type==='done'){const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};set('r-tok',(ev.tokens||0).toLocaleString());set('r-tools',runBody.children.length);const rt=document.getElementById('r-turns');if(rt)rt.textContent=(parseInt(rt.textContent)||0)+1}
+        else if(ev.type==='error'){textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(ev.error||'error')+'</span>'}
+        s.scrollTop=s.scrollHeight}
+    }
+    if(!acc && !runBody.children.length){textEl.innerHTML='<span style="color:var(--muted)">(no response)</span>'}
+  }catch(e){textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>'}
+}
 function renderRun(fresh){
   const s=document.getElementById('talkscroll');
   document.querySelectorAll('.runblock,.mind,.pipewrap,.runmsg').forEach(e=>e.remove());
@@ -694,7 +731,7 @@ async function setPolicy(p){document.getElementById('ep-ask').classList.toggle('
   try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_policy:p==='act'?'allow':'ask'})})}catch(e){}}
 async function loadPolicy(){try{const d=await api('/api/settings');const p=(d.settings&&d.settings.exec_policy)||'ask';const act=(p==='allow'||p==='act');
   document.getElementById('ep-ask').classList.toggle('on',!act);document.getElementById('ep-act').classList.toggle('on',act)}catch(e){}}
-loadDeck();loadCat();loadConn();loadPolicy();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
+loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
 </script>
 </body>
 </html>
