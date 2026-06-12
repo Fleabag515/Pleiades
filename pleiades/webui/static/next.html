@@ -251,24 +251,10 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <!-- DECK -->
     <section class="view on" id="v-deck">
       <h1 class="h1">Command deck</h1><p class="sub">Your workstation at a glance — hardware, services, models, characters.</p>
-      <div class="grid" style="grid-template-columns:repeat(4,1fr)">
-        <div class="card"><h3>GPU <span class="t">AMD · Vulkan</span></h3><div class="metric"><span class="n" style="color:var(--gpu)">16</span><span class="u"> GB · RX 7800 XT</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">5.4 GB used · qwen2.5-coder resident</div></div>
-        <div class="card"><h3>System RAM</h3><div class="metric"><span class="n">64</span><span class="u"> GB · 18 used</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">16 CPU threads</div></div>
-        <div class="card"><h3>Models</h3><div class="metric"><span class="n">4</span><span class="u"> registered · 2 running</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">62 tps live</div></div>
-        <div class="card"><h3>Characters</h3><div class="metric"><span class="n">3</span><span class="u"> · 0 orphans</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">alice · mark · default</div></div>
-      </div>
+      <div class="grid" style="grid-template-columns:repeat(4,1fr)" id="deck-metrics"></div>
       <div class="grid" style="grid-template-columns:1.3fr 1fr;margin-top:14px">
-        <div class="card"><h3>Services</h3>
-          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Inference engine</span><span class="v">:8080 · running</span></div>
-          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Anamnesis memory</span><span class="v">:9000 · 3 chars</span></div>
-          <div class="kv"><span class="k"><span class="dot warn" style="display:inline-block;margin-right:7px"></span>SearXNG</span><span class="v">:8888 · stopped</span></div>
-          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Camoufox browser</span><span class="v">ready</span></div>
-        </div>
-        <div class="card"><h3>Running models</h3>
-          <div class="kv"><span class="k">qwen2.5-coder</span><span class="v" style="color:var(--a2)">:8081 · 62 tps</span></div>
-          <div class="kv"><span class="k">llama-3.1-8b</span><span class="v" style="color:var(--a2)">:8082 · 48 tps</span></div>
-          <button class="btn sm" style="margin-top:10px" onclick="go('foundry')">+ pull a new model</button>
-        </div>
+        <div class="card"><h3>Services</h3><div id="deck-services"><div style="color:var(--muted);font-size:12px">loading…</div></div></div>
+        <div class="card"><h3>Running models</h3><div id="deck-running"></div><button class="btn sm" style="margin-top:10px" onclick="go('foundry')">+ pull a new model</button></div>
       </div>
     </section>
 
@@ -285,25 +271,24 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
       <h1 class="h1">Characters</h1><p class="sub">A character binds one model + memory + email + vault + browser + Discord into one identity.</p>
       <div class="grid" style="grid-template-columns:1fr 1fr 1fr" id="charcards"></div>
       <div class="card" style="margin-top:16px">
-        <h3 id="cfg-h">alice · configuration <span class="t">editing</span></h3>
+        <h3 id="cfg-h">character · configuration <span class="t">editing</span></h3>
         <div class="row2">
           <div>
-            <div class="field"><label>Model</label><select><option>qwen2.5-coder (running)</option><option>llama-3.1-8b</option><option>default engine</option><option>Claude · debug only</option></select></div>
-            <div class="field"><label>Persona source</label><select><option>auto</option><option>custom</option></select></div>
-            <div class="field"><label>Email · provider preset</label><select><option>gmail</option><option>mail.com</option><option>outlook</option><option>generic</option></select></div>
-            <div class="row2"><div class="field"><label>IMAP host</label><input value="imap.gmail.com"/></div><div class="field"><label>port</label><input value="993"/></div></div>
-            <div class="row2"><div class="field"><label>SMTP host</label><input value="smtp.gmail.com"/></div><div class="field"><label>port</label><input value="587"/></div></div>
+            <div class="field"><label>Model</label><select id="cf-model"></select></div>
+            <div class="field"><label>Persona source</label><select id="cf-persona"><option value="auto">auto</option><option value="custom">custom</option></select></div>
+            <div class="field"><label>Email address</label><input id="cf-email" placeholder="name@host"/></div>
+            <div class="row2"><div class="field"><label>IMAP host</label><input id="cf-imaph"/></div><div class="field"><label>port</label><input id="cf-imapp"/></div></div>
+            <div class="row2"><div class="field"><label>SMTP host</label><input id="cf-smtph"/></div><div class="field"><label>port</label><input id="cf-smtpp"/></div></div>
           </div>
           <div>
-            <div class="field"><label>Discord bot token</label><input value="••••••••••••••••" type="password"/></div>
-            <div class="row2"><div class="field"><label>Enabled</label><select><option>yes</option><option>no</option></select></div><div class="field"><label>Require @mention</label><select><option>yes</option><option>no</option></select></div></div>
-            <div class="field"><label>Anamnesis memory</label><input value="127.0.0.1:8084 · 1,204 turns" disabled/></div>
-            <div class="field"><label>Vault secrets</label>
-              <button class="btn" style="width:100%;display:flex;justify-content:space-between" onclick="openVault()">🔒 Manage secrets<span style="color:var(--muted)">8 stored ›</span></button>
+            <div class="row2"><div class="field"><label>Discord enabled</label><select id="cf-den"><option>yes</option><option>no</option></select></div><div class="field"><label>Require @mention</label><select id="cf-dmention"><option>yes</option><option>no</option></select></div></div>
+            <div class="field"><label>Discord allowed channels</label><input id="cf-dchan" placeholder="comma-separated channel IDs"/></div>
+            <div class="field"><label>Vault secrets <span style="color:var(--faint)">· Fernet-encrypted</span></label>
+              <button class="btn" id="cf-vaultbtn" style="width:100%;display:flex;justify-content:space-between" onclick="openVault()">🔒 Manage secrets<span class="vc" style="color:var(--muted)">— ›</span></button>
             </div>
           </div>
         </div>
-        <button class="btn pri" style="margin-top:6px">Save character</button>
+        <button class="btn pri" id="cf-save" style="margin-top:6px" onclick="saveChar()">Save character</button>
       </div>
     </section>
 
@@ -413,7 +398,8 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 <script>
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
-  document.getElementById('main').classList.toggle('flush',v==='talk');}
+  document.getElementById('main').classList.toggle('flush',v==='talk');
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars();}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -422,19 +408,78 @@ document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLower
 /* modal */
 function showModal(html){document.getElementById('modal').innerHTML=html;document.getElementById('mb').classList.add('open')}
 function closeModal(){document.getElementById('mb').classList.remove('open')}
-function openVault(){
-  const rows=[['stripe_verify','verification code','••••','now'],['smtp_password','email send','••••','reserved'],
-    ['discord_token','bot auth','••••','reserved'],['openai_key','fallback api','••••','2d'],
-    ['github_pat','repo access','••••','5d'],['aws_secret','s3 backups','••••','1w'],
-    ['session_cookie','site login','••••','3d'],['totp_seed','2fa','••••','1w']];
-  showModal(`<div class="mh">🔒 alice · vault secrets <span class="t" style="margin-left:8px;color:var(--faint);font-family:var(--mono);font-size:10.5px">Fernet-encrypted</span><span class="x" onclick="closeModal()">✕</span></div>
-    <div class="mbody">
-      <div style="display:flex;gap:8px;margin-bottom:12px"><input placeholder="Search secrets…" style="flex:1"/><button class="btn pri sm">+ Add</button></div>
-      ${rows.map(([k,n,v,t])=>`<div class="kv"><span class="k"><b style="color:var(--text);font-family:var(--mono)">${k}</b> · ${n}</span>
-        <span class="v" style="display:flex;gap:8px;align-items:center">${v} · ${t}
-        <button class="btn sm">Reveal</button><button class="btn sm">Edit</button><button class="btn sm x">Delete</button></span></div>`).join('')}
-    </div>`);
+function setHTML(id,h){const e=document.getElementById(id);if(e)e.innerHTML=h}
+function val(id){const e=document.getElementById(id);return e?e.value:''}
+function setVal(id,v){const e=document.getElementById(id);if(e)e.value=v}
+function _card(t,n,col,u,sub){return '<div class="card"><h3>'+t+'</h3><div class="metric"><span class="n"'+(col?' style="color:'+col+'"':'')+'>'+n+'</span><span class="u"> '+u+'</span></div>'+(sub?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+sub+'</div>':'')+'</div>'}
+function _srow(up,name,v){return '<div class="kv"><span class="k"><span class="dot '+(up?'up':'warn')+'" style="display:inline-block;margin-right:7px"></span>'+name+'</span><span class="v">'+v+'</span></div>'}
+async function loadDeck(){
+  try{const [st,hw,md]=await Promise.all([api('/api/status'),api('/api/hardware'),api('/api/models')]);
+    const g=hw.gpus&&hw.gpus[0];const c=st.counts;const run=md.running||[];
+    setHTML('deck-metrics',
+      _card('GPU', g?(g.vram_total/1073741824).toFixed(0):'—','var(--gpu)', g?'GB · '+g.name:'no GPU', g?(fmtGB(g.vram_total-g.vram_free)+' used'):'')+
+      _card('System RAM',(hw.ram_total/1073741824).toFixed(0),'','GB · '+((hw.ram_total-hw.ram_available)/1073741824).toFixed(0)+' used',hw.cpu_threads+' CPU threads')+
+      _card('Models',md.models.length,'','registered · '+run.length+' running','')+
+      _card('Characters',c.profiles,'','· '+c.orphans+' orphans',(st.services.anamnesis.characters||0)+' in memory'));
+    const sv=st.services;const port=u=>(String(u).match(/:(\d+)/)||['',''])[1];
+    setHTML('deck-services',
+      _srow(sv.inference.up,'Inference engine',':'+port(sv.inference.url)+' · '+sv.inference.state)+
+      _srow(sv.anamnesis.up,'Anamnesis memory',':'+port(sv.anamnesis.url)+' · '+sv.anamnesis.characters+' chars')+
+      _srow(sv.searxng.up,'SearXNG',':'+port(sv.searxng.url)+' · '+(sv.searxng.up?'running':'stopped')));
+    setHTML('deck-running', run.length?run.map(m=>'<div class="kv"><span class="k">'+m.name+'</span><span class="v" style="color:var(--a2)">:'+m.port+' · '+m.n_gpu_layers+' layers</span></div>').join(''):'<div style="color:var(--muted);font-size:12px">none running</div>');
+  }catch(e){setHTML('deck-metrics','<div class="card" style="color:var(--bad)">'+e.message+'</div>')}
 }
+let MODELS=[],curChar='';
+async function loadChars(){
+  try{const [d,md]=await Promise.all([api('/api/profiles'),api('/api/models')]);
+    MODELS=md.models||[];const box=document.getElementById('charcards');box.innerHTML='';
+    (d.profiles||[]).forEach(pf=>{const conn=[pf.has_email?'✉':'',pf.discord_enabled?'◈':'','✦'].filter(Boolean).join('  ');
+      const e=document.createElement('div');e.className='card';
+      e.innerHTML='<h3>'+pf.name+'<span class="tagp '+(pf.model?'tp-run':'tp-idle')+'" style="margin-left:auto">'+(pf.model?'configured':'no model')+'</span></h3>'+
+        '<div class="kv"><span class="k">model</span><span class="v">'+(pf.model||'default engine')+'</span></div>'+
+        '<div class="kv"><span class="k">connectors</span><span class="v">'+conn+'</span></div>'+
+        '<button class="btn sm" style="margin-top:10px" onclick="configChar(\''+pf.name+'\')">Configure</button>';box.append(e)});
+    if(d.orphans&&d.orphans.length){const e=document.createElement('div');e.className='card';e.style.borderStyle='dashed';
+      e.innerHTML='<h3>Adoptable<span class="tagp tp-warn" style="margin-left:auto">'+d.orphans.length+'</span></h3><div class="kv"><span class="k">Anamnesis chars</span><span class="v">'+d.orphans.join(', ')+'</span></div><div style="color:var(--muted);font-size:11.5px;margin-top:8px">not yet Pleiades profiles</div>';box.append(e)}
+    if((d.profiles||[]).length && !curChar) configChar(d.profiles[0].name);
+  }catch(e){document.getElementById('charcards').innerHTML='<div class="card" style="color:var(--bad)">'+e.message+'</div>'}
+}
+async function configChar(name){curChar=name;
+  try{const pf=await api('/api/profiles/'+encodeURIComponent(name));
+    document.getElementById('cfg-h').innerHTML=name+' · configuration <span class="t">editing</span>';
+    const opts=['<option value="">default engine</option>'].concat(MODELS.map(m=>'<option '+(m.name===pf.model?'selected':'')+'>'+m.name+'</option>')).concat(['<option value="__claude"'+(pf.model==='__claude'?' selected':'')+'>Claude · debug only</option>']).join('');
+    setHTML('cf-model',opts);
+    setVal('cf-persona',pf.persona_source||'auto');setVal('cf-email',pf.email_address||'');
+    setVal('cf-imaph',pf.imap_host||'');setVal('cf-imapp',pf.imap_port||993);
+    setVal('cf-smtph',pf.smtp_host||'');setVal('cf-smtpp',pf.smtp_port||587);
+    setVal('cf-den',pf.discord_enabled?'yes':'no');setVal('cf-dmention',pf.discord_require_mention?'yes':'no');
+    setVal('cf-dchan',pf.discord_allowed_channels||'');
+    const vb=document.getElementById('cf-vaultbtn');if(vb)vb.querySelector('.vc').textContent=(pf.vault?pf.vault.length:0)+' stored ›';
+    document.getElementById('cfg-h').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){}
+}
+async function saveChar(){if(!curChar)return;const btn=document.getElementById('cf-save');
+  const body={email_address:val('cf-email'),imap_host:val('cf-imaph'),imap_port:+val('cf-imapp')||993,
+    smtp_host:val('cf-smtph'),smtp_port:+val('cf-smtpp')||587,persona_source:val('cf-persona'),
+    discord_enabled:val('cf-den')==='yes',discord_require_mention:val('cf-dmention')==='yes',
+    discord_allowed_channels:val('cf-dchan')};
+  if(btn)btn.textContent='Saving…';
+  try{await fetch('/api/profiles/'+encodeURIComponent(curChar),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const m=val('cf-model');await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m==='__claude'?'':m})});
+    if(btn)btn.textContent='✓ Saved';setTimeout(()=>{if(btn)btn.textContent='Save character'},1500);loadChars();
+  }catch(e){if(btn)btn.textContent='Save failed'}
+}
+async function openVault(){if(!curChar)return;
+  try{const pf=await api('/api/profiles/'+encodeURIComponent(curChar));const rows=pf.vault||[];
+    showModal('<div class="mh">🔒 '+curChar+' · vault secrets <span class="t" style="margin-left:8px;color:var(--faint);font-family:var(--mono);font-size:10.5px">Fernet-encrypted</span><span class="x" onclick="closeModal()">✕</span></div>'+
+      '<div class="mbody"><div style="display:flex;gap:8px;margin-bottom:12px"><input id="vk" placeholder="key (e.g. site:example.com)" style="flex:1"/><input id="vv" placeholder="value" style="flex:1" type="password"/><button class="btn pri sm" onclick="vaultAdd()">+ Add</button></div>'+
+      (rows.length?rows.map(r=>'<div class="kv"><span class="k"><b style="color:var(--text);font-family:var(--mono)">'+r.key+'</b>'+(r.reserved?' · <span class="tagp tp-warn">reserved</span>':(r.meta&&r.meta.note?' · '+r.meta.note:''))+'</span><span class="v" style="display:flex;gap:8px;align-items:center">•••• <button class="btn sm x" onclick="vaultDel('+JSON.stringify(r.key)+')">Delete</button></span></div>').join(''):'<div style="color:var(--muted);font-size:13px">No secrets stored.</div>')+
+      '</div>');
+  }catch(e){}
+}
+async function vaultAdd(){const k=val('vk'),v=val('vv');if(!k||!v)return;
+  await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/vault',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,value:v,note:''})});openVault()}
+async function vaultDel(key){await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/vault/'+encodeURIComponent(key),{method:'DELETE'});openVault()}
 
 /* ───── Foundry (live · wired to backend) ───── */
 let pref=2, curRepo='';
@@ -510,10 +555,7 @@ async function refreshState(){
   }catch(e){}
 }
 
-function loadChars(){const cs=[['alice','qwen2.5-coder','running','✉ ◈ ◐ ✦'],['mark','llama-3.1-8b','running','◈ ✦'],['default','qwen2.5-7b','idle','✦']];
-  const box=document.getElementById('charcards');box.innerHTML='';
-  cs.forEach(([n,m,st,conn])=>{const e=document.createElement('div');e.className='card';
-    e.innerHTML=`<h3>${n}<span class="tagp ${st==='running'?'tp-run':'tp-idle'}" style="margin-left:auto">${st}</span></h3><div class="kv"><span class="k">model</span><span class="v">${m}</span></div><div class="kv"><span class="k">connectors</span><span class="v">${conn}</span></div><button class="btn sm" style="margin-top:10px" onclick="configChar('${n}')">Configure</button>`;box.append(e)})}
+/* loadChars: defined live above */
 
 /* ───── Tools: collapsible categories + tooltips ───── */
 const CAT={
@@ -635,9 +677,9 @@ const PIPE=[
 function showPDetail(n){const d=document.getElementById('pdetail');if(!d)return;
   d.innerHTML='<h4>'+(n.kind==='tool'?'<span style="color:var(--a2);font-family:var(--mono)">mcp__pleiades__'+n.label+'</span>':n.label)+(n.detail.Status?'<span class="tagp tp-run" style="margin-left:auto">'+n.detail.Status+'</span>':'')+'</h4>'+
     Object.entries(n.detail).filter(([k])=>k!=='Status').map(([k,v])=>'<div class="kv"><span class="k">'+k+'</span><span class="v" style="max-width:68%;text-align:right;word-break:break-word">'+v+'</span></div>').join('');}
-function configChar(name){const h=document.getElementById('cfg-h');if(h){h.innerHTML=name+' · configuration <span class="t">editing</span>';h.scrollIntoView({behavior:'smooth',block:'center'});}}
+/* configChar: defined live above */
 function setPolicy(p){document.getElementById('ep-ask').classList.toggle('on',p==='ask');document.getElementById('ep-act').classList.toggle('on',p==='act');}
-loadChars();loadCat();loadConn();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
+loadDeck();loadCat();loadConn();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
 </script>
 </body>
 </html>
