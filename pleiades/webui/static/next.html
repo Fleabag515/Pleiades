@@ -579,17 +579,29 @@ function loadCat(){const box=document.getElementById('catalog');box.innerHTML=''
     w.querySelector('.ch').onclick=()=>w.classList.toggle('open');box.append(w)}}
 
 /* ───── Connectors with action buttons ───── */
-function loadConn(){const C=[['✉','Email · IMAP/SMTP','per-character inbox; receive codes','run','2 wired'],
-  ['◈','Discord','host a character as a bot','run','alice'],
-  ['◐','Camoufox browser','headed, anti-fingerprint profile','run','ready'],
-  ['⌕','SearXNG','local web search','warn','stopped'],
-  ['✦','Anamnesis','canonical memory proxy','run',':9000']];
+async function loadConn(){
+  let up={};try{const st=await api('/api/status');up=st.services||{}}catch(e){}
+  const sx=!!(up.searxng&&up.searxng.up),an=!!(up.anamnesis&&up.anamnesis.up),inf=!!(up.inference&&up.inference.up);
+  const C=[
+    ['✉','Email · IMAP/SMTP','per-character inbox; receive verification codes','run','per-character',null],
+    ['◈','Discord','host a character as a bot','run','per-character',null],
+    ['◐','Camoufox browser','headed, anti-fingerprint profile','run','ready',null],
+    ['⌕','SearXNG','local web search (docker)',sx?'run':'warn',sx?'running':'stopped','searx'],
+    ['✦','Anamnesis','canonical memory proxy',an?'run':'warn',an?':9000':'down',null]];
   const box=document.getElementById('connectors');box.innerHTML='';
-  C.forEach(([ic,nm,ds,st,tag])=>{const e=document.createElement('div');e.className='conn';
+  C.forEach(([ic,nm,ds,st,tag,kind])=>{const e=document.createElement('div');e.className='conn';
     const acts=st==='run'?['Stop','Debug','Settings','Edit']:['Start','Fix','Settings','Edit'];
-    e.innerHTML=`<div class="ci">${ic}</div><div class="info"><div class="nm">${nm}</div><div class="ds">${ds}</div></div>
-      <span class="tagp ${st==='run'?'tp-run':'tp-warn'}">${tag}</span>
-      <div class="acts">${acts.map(a=>`<button class="btn sm ${a==='Stop'||a==='Fix'?'':''}">${a}</button>`).join('')}</div>`;box.append(e)})}
+    e.innerHTML='<div class="ci">'+ic+'</div><div class="info"><div class="nm">'+nm+'</div><div class="ds">'+ds+'</div></div>'+
+      '<span class="tagp '+(st==='run'?'tp-run':'tp-warn')+'">'+tag+'</span><div class="acts"></div>';
+    const ah=e.querySelector('.acts');
+    acts.forEach(a=>{const b=document.createElement('button');b.className='btn sm';b.textContent=a;
+      if(kind==='searx'&&a==='Start')b.onclick=()=>searxctl('up','Start');
+      else if(kind==='searx'&&a==='Stop')b.onclick=()=>searxctl('down','Stop');
+      ah.append(b)});
+    box.append(e)});
+}
+async function searxctl(dir,label){try{const bs=document.querySelectorAll('#connectors .acts button');bs.forEach(b=>{if(b.textContent===label)b.textContent='…'});
+  await fetch('/api/search/'+dir,{method:'POST'});setTimeout(loadConn,2000)}catch(e){loadConn()}}
 
 /* ───── TALK: modes + demo run ───── */
 let mode='pipeline';
@@ -678,8 +690,11 @@ function showPDetail(n){const d=document.getElementById('pdetail');if(!d)return;
   d.innerHTML='<h4>'+(n.kind==='tool'?'<span style="color:var(--a2);font-family:var(--mono)">mcp__pleiades__'+n.label+'</span>':n.label)+(n.detail.Status?'<span class="tagp tp-run" style="margin-left:auto">'+n.detail.Status+'</span>':'')+'</h4>'+
     Object.entries(n.detail).filter(([k])=>k!=='Status').map(([k,v])=>'<div class="kv"><span class="k">'+k+'</span><span class="v" style="max-width:68%;text-align:right;word-break:break-word">'+v+'</span></div>').join('');}
 /* configChar: defined live above */
-function setPolicy(p){document.getElementById('ep-ask').classList.toggle('on',p==='ask');document.getElementById('ep-act').classList.toggle('on',p==='act');}
-loadDeck();loadCat();loadConn();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
+async function setPolicy(p){document.getElementById('ep-ask').classList.toggle('on',p==='ask');document.getElementById('ep-act').classList.toggle('on',p==='act');
+  try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_policy:p==='act'?'allow':'ask'})})}catch(e){}}
+async function loadPolicy(){try{const d=await api('/api/settings');const p=(d.settings&&d.settings.exec_policy)||'ask';const act=(p==='allow'||p==='act');
+  document.getElementById('ep-ask').classList.toggle('on',!act);document.getElementById('ep-act').classList.toggle('on',act)}catch(e){}}
+loadDeck();loadCat();loadConn();loadPolicy();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
 </script>
 </body>
 </html>
