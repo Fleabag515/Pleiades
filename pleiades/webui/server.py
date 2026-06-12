@@ -912,6 +912,57 @@ def create_app() -> FastAPI:
         except FetchError as e:
             raise HTTPException(502, str(e))
 
+    @app.get("/api/models/quant-options")
+    def models_quant_options(repo: str, n_ctx: int = 8192,
+                             preference: str = "balanced") -> dict:
+        """For an HF repo, list GGUF quants with autofit placement for THIS machine.
+
+        Powers the foundry: each candidate quant gets size + VRAM fit + GPU layer
+        split + estimated tok/s, and the recommendation for the chosen preference.
+        """
+        from ..fetch import FetchError, list_repo_ggufs, remote_gguf_meta
+        from .. import hardware as hw_mod, runtime, autofit
+        try:
+            files = list_repo_ggufs(repo)
+        except FetchError as e:
+            raise HTTPException(502, str(e))
+        grouped = hw_mod.group_split_ggufs(files)
+        by_quant: dict[str, dict] = {}
+        for g in grouped:
+            q = hw_mod.quant_of(g["name"])
+            if q and q in autofit.QUALITY and (q not in by_quant or g["size"] < by_quant[q]["size"]):
+                by_quant[q] = g
+        if not by_quant:
+            raise HTTPException(404, f"No recognized GGUF quants in '{repo}'.")
+        hw = hw_mod.detect()
+        caps = runtime.caps()
+        smallest = min(by_quant.values(), key=lambda g: g["size"])
+        meta_hint = remote_gguf_meta(repo, smallest["name"])
+        opts = []
+        for q, entry in sorted(by_quant.items(), key=lambda kv: autofit.QUALITY[kv[0]]):
+            meta = autofit._scaled_meta(meta_hint, entry["size"])
+            pl = autofit.place(meta, n_ctx, hw, caps)
+            opts.append({"quant": q, "file": entry["name"], "size": entry["size"],
+                         "quality": autofit.QUALITY[q], "strategy": pl.strategy,
+                         "n_gpu_layers": pl.n_gpu_layers, "est_tps": pl.est_tps,
+                         "vram_used": pl.vram_used, "fits_fully": pl.strategy == "full_gpu",
+                         "feasible": pl.feasible, "reason": pl.reason})
+        try:
+            rec = autofit.choose_quant(files, hw, n_ctx, preference, caps, meta_hint)
+        except Exception:
+            rec = None
+        gpu = hw.gpu
+        return {"repo": repo, "preference": preference,
+                "n_layers": getattr(meta_hint, "n_layers", 0) or 0,
+                "is_moe": bool(getattr(meta_hint, "is_moe", False)),
+                "hardware": {"summary": hw.describe(),
+                             "gpu": gpu.name if gpu else "", "vendor": gpu.vendor if gpu else "",
+                             "vram_total": gpu.vram_total if gpu else 0,
+                             "vram_free": gpu.vram_free if gpu else 0,
+                             "ram_available": hw.ram_available},
+                "recommended": rec.quant if rec else None,
+                "options": opts}
+
     @app.post("/api/models/{name}/stop")
     def models_stop(name: str) -> dict:
         return {"ok": mm.stop(name)}
@@ -1306,6 +1357,13 @@ def create_app() -> FastAPI:
         if idx.is_file():
             return FileResponse(str(idx))
         return JSONResponse({"error": "frontend not built"}, status_code=500)
+
+    @app.get("/next")
+    def index_next() -> Any:
+        nx = STATIC_DIR / "next.html"
+        if nx.is_file():
+            return FileResponse(str(nx))
+        return JSONResponse({"error": "next UI not present"}, status_code=404)
 
     return app
 
