@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Pleiades · Workstation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg:#080910; --bg2:#0d0f17; --surf:#12151f; --surf2:#181c28; --surf3:#1f2433; --line:#232a3b;
+  --text:#e9ecf5; --muted:#8b93a8; --faint:#5a6177;
+  --a1:#8b9bff; --a2:#62e0d8; --good:#4fd6a0; --warn:#f3b65a; --bad:#f06d6d; --gpu:#b48bff; --cl:#d98b5f;
+  --mono:'JetBrains Mono',monospace; --sans:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:radial-gradient(1000px 600px at 85% -10%,rgba(120,110,255,.10),transparent),var(--bg);
+  color:var(--text);font-family:var(--sans);font-size:14px;-webkit-font-smoothing:antialiased}
+#app{display:grid;grid-template-columns:212px 1fr;grid-template-rows:auto 1fr;height:100vh;
+  grid-template-areas:"side top" "side main";overflow:hidden}
+button{font-family:inherit}
+
+/* telemetry strip */
+.top{grid-area:top;display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.gauge{display:flex;align-items:center;gap:9px;background:var(--surf);border:1px solid var(--line);border-radius:10px;padding:7px 12px}
+.gauge .lab{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--faint);font-family:var(--mono)}
+.gauge .val{font-family:var(--mono);font-size:12.5px;font-weight:600}
+.bar{width:74px;height:6px;border-radius:99px;background:var(--surf3);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px}
+.svc{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.dot{width:7px;height:7px;border-radius:50%}
+.dot.up{background:var(--good);box-shadow:0 0 8px var(--good)}.dot.warn{background:var(--warn)}.dot.off{background:var(--faint)}
+.top .sp{flex:1}
+.kq{display:flex;align-items:center;gap:8px;background:var(--surf);border:1px solid var(--line);border-radius:9px;padding:7px 11px;color:var(--muted);font-size:12.5px;cursor:text}
+.kq .kbd{font-family:var(--mono);font-size:10.5px;background:var(--surf2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:var(--faint)}
+
+/* sidebar */
+.side{grid-area:side;background:var(--bg2);border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:3px}
+.brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
+.brand svg{width:28px;height:28px}.brand .bn{font-weight:800;font-size:16px}.brand .bs{font-size:9.5px;color:var(--faint);letter-spacing:.5px;text-transform:uppercase}
+.nl{font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:var(--faint);padding:12px 9px 4px}
+.nav{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:9px;color:var(--muted);cursor:pointer;font-weight:500}
+.nav:hover{background:var(--surf);color:var(--text)}
+.nav.on{background:var(--surf2);color:var(--text)}.nav.on .ic{color:var(--a2)}
+.nav .ic{width:18px;height:18px;color:var(--faint)}
+.nav .ct{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint);background:var(--surf);border-radius:99px;padding:1px 7px}
+.side .foot{margin-top:auto;font-size:10.5px;color:var(--faint);padding:8px 9px;display:flex;align-items:center;gap:7px}
+
+/* main */
+.main{grid-area:main;overflow-y:auto;padding:22px 26px 40px}
+.main.flush{padding:0;overflow:hidden}
+.h1{font-size:20px;font-weight:700;margin:0}
+.sub{color:var(--muted);font-size:13px;margin:3px 0 18px}
+.view{display:none;animation:rise .3s ease}.view.on{display:block}
+.view.on.flexcol{display:flex;flex-direction:column;height:100%}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.grid{display:grid;gap:14px}
+.card{background:var(--surf);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h3{margin:0 0 12px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.card h3 .t{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint);font-weight:400}
+.metric{font-family:var(--mono)}.metric .n{font-size:24px;font-weight:700}.metric .u{font-size:12px;color:var(--muted)}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.kv:last-child{border:0}.kv .k{color:var(--muted)}.kv .v{font-family:var(--mono)}
+.tagp{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:6px}
+.tp-run{color:var(--good);background:rgba(79,214,160,.13)}.tp-idle{color:var(--faint);background:var(--surf2)}
+.tp-best{color:#06121a;background:linear-gradient(135deg,var(--a1),var(--a2))}.tp-warn{color:var(--warn);background:rgba(243,182,90,.13)}
+.tp-gpu{color:var(--gpu);background:rgba(180,139,255,.13)}.tp-cl{color:var(--cl);background:rgba(217,139,95,.14)}
+.btn{border:1px solid var(--line);background:var(--surf2);color:var(--text);border-radius:9px;padding:8px 13px;cursor:pointer;font-size:12.5px;font-weight:500}
+.btn:hover{border-color:var(--a2)}
+.btn.pri{background:linear-gradient(135deg,var(--a1),var(--a2));color:#06121a;border:0;font-weight:600}
+.btn.sm{padding:5px 9px;font-size:11px}
+.btn.x{border-color:rgba(240,109,109,.4);color:var(--bad)}
+input,select{background:var(--surf2);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px 11px;font-family:var(--sans);font-size:13px;width:100%}
+input:focus,select:focus{outline:none;border-color:var(--a1)}
+label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
+.field{margin-bottom:12px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* hover tip */
+.tip{position:relative}
+.tip:hover .tipbox{display:block}
+.tipbox{display:none;position:absolute;bottom:130%;left:50%;transform:translateX(-50%);z-index:30;
+  width:210px;background:var(--surf3);border:1px solid var(--line);border-radius:9px;padding:9px 11px;
+  font-size:11.5px;color:var(--text);line-height:1.45;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.tipbox b{color:var(--a2);font-family:var(--mono);font-size:11px}
+
+/* foundry */
+.searchbar{display:flex;gap:10px;margin-bottom:16px}.searchbar input{flex:1}
+.result{display:flex;align-items:center;gap:13px;padding:13px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surf);cursor:pointer;margin-bottom:10px}
+.result:hover{border-color:var(--a1)}.result.sel{border-color:var(--a2);background:var(--surf2)}
+.result .ttl{font-weight:600;font-size:13.5px}.result .meta{font-size:11.5px;color:var(--muted);font-family:var(--mono);margin-top:2px}
+.result .right{margin-left:auto;text-align:right}
+.autofit{border:1px solid var(--a2);border-radius:14px;background:linear-gradient(180deg,rgba(98,224,216,.06),transparent);padding:16px}
+.autofit .hd{display:flex;align-items:center;gap:10px;margin-bottom:6px}.autofit .hd .big{font-size:15px;font-weight:700}
+.slider{display:flex;align-items:center;gap:12px;margin:14px 0}.slider input[type=range]{flex:1}
+.quants{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.quant{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-family:var(--mono);font-size:12px;background:var(--surf)}
+.quant.pick{border-color:var(--a2);background:var(--surf2)}
+.quant .nm{font-weight:600;min-width:74px}.quant .sz{color:var(--muted);min-width:56px}.quant .fit{font-size:11px}.quant .tps{margin-left:auto;color:var(--a2);font-weight:600}.quant.over .tps{color:var(--warn)}
+.prog{height:8px;border-radius:99px;background:var(--surf3);overflow:hidden;margin-top:10px;display:none}.prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--a1),var(--a2));transition:width .2s}
+.place{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--muted)}.layer{height:14px;border-radius:3px}
+
+/* tools: collapsible category cards */
+.catcard{border:1px solid var(--line);border-radius:11px;background:var(--surf);margin-bottom:9px;overflow:hidden}
+.catcard .ch{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;font-weight:600;font-size:13px}
+.catcard .ch .ico{width:18px;height:18px;color:var(--a2)}
+.catcard .ch .n{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint);background:var(--surf2);border-radius:99px;padding:2px 9px}
+.catcard .ch .chev{transition:.2s;color:var(--faint)}
+.catcard.open .ch .chev{transform:rotate(90deg)}
+.catcard .cb{display:none;padding:2px 14px 13px;gap:7px;grid-template-columns:repeat(auto-fill,minmax(146px,1fr))}
+.catcard.open .cb{display:grid}
+.tool{font-family:var(--mono);font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:5px 9px;background:var(--surf2);cursor:help;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool:hover{color:var(--text);border-color:var(--a2)}
+.seg2{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg2 button{border:0;background:transparent;color:var(--muted);padding:4px 12px;cursor:pointer;font-size:11.5px;font-weight:600}
+.seg2 button.on{background:var(--surf3);color:var(--text)}
+#ep-act.on{background:rgba(243,182,90,.18);color:var(--warn)}
+
+/* connectors */
+.conn{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--line)}.conn:last-child{border:0}
+.conn .ci{width:34px;height:34px;border-radius:9px;background:var(--surf2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--a2);font-size:16px}
+.conn .info{min-width:150px}.conn .nm{font-weight:600;font-size:13px}.conn .ds{font-size:11px;color:var(--muted)}
+.conn .acts{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+
+/* claude area */
+.cl-grid{display:grid;grid-template-columns:1fr 1.1fr;gap:16px;align-items:start}
+.clchat{border:1px solid var(--line);border-radius:14px;background:var(--surf);display:flex;flex-direction:column;height:440px}
+.clchat .hd{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px}
+.clchat .body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px}
+.clchat .foot{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}.clchat .foot input{flex:1}
+.clmsg{line-height:1.55;font-size:13px}.clmsg.u{align-self:flex-end;background:var(--surf2);border:1px solid var(--line);border-radius:11px;padding:8px 12px;max-width:85%}
+.clmsg.a{color:var(--text)}.clmsg.a b{color:var(--cl)}
+.avatar{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#1a1008;background:var(--cl)}
+
+/* modal */
+.mb{position:fixed;inset:0;background:rgba(4,5,8,.6);display:none;align-items:center;justify-content:center;z-index:60}
+.mb.open{display:flex}
+.modal{width:560px;max-width:92vw;max-height:80vh;background:var(--surf);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 30px 80px rgba(0,0,0,.55)}
+.modal .mh{display:flex;align-items:center;gap:9px;padding:14px 16px;border-bottom:1px solid var(--line);font-weight:600}
+.modal .mh .x{margin-left:auto;cursor:pointer;color:var(--faint)}
+.modal .mbody{padding:16px;overflow-y:auto}
+
+/* TALK */
+.talk{display:grid;grid-template-columns:1fr 300px;grid-template-rows:auto 1fr auto;
+  grid-template-areas:"modes rail" "scroll rail" "composer rail";height:100%;gap:0}
+.modes{grid-area:modes;display:flex;align-items:center;gap:8px;padding:14px 18px 10px}
+.modes .seg{display:flex;background:var(--surf);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.modes .seg button{border:0;background:transparent;color:var(--muted);padding:7px 14px;cursor:pointer;font-size:12.5px;font-weight:600}
+.modes .seg button.on{background:var(--surf3);color:var(--text)}
+.modes .ttl{font-weight:700;font-size:15px;margin-right:6px}
+.modes .sp{flex:1}
+.talkscroll{grid-area:scroll;overflow-y:auto;padding:6px 18px 10px}
+.composer{grid-area:composer;display:flex;gap:9px;padding:12px 18px 16px;border-top:1px solid var(--line)}
+.composer input{flex:1;border-radius:13px;padding:13px 15px}
+.rail{grid-area:rail;border-left:1px solid var(--line);background:var(--bg2);padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:13px}
+.rail .rc{background:var(--surf);border:1px solid var(--line);border-radius:12px;padding:13px}
+.rail .rc h4{margin:0 0 9px;font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--faint)}
+.spark{display:flex;align-items:flex-end;gap:2px;height:30px;margin-top:6px}
+.spark i{flex:1;background:var(--a2);border-radius:1px;opacity:.8}
+.ev{display:flex;gap:8px;font-size:12px;padding:5px 0;color:var(--muted)}.ev .d{width:6px;height:6px;border-radius:50%;background:var(--a1);margin-top:5px}
+.mdl-pick{display:flex;align-items:center;gap:8px}
+
+/* talk: stream bubbles */
+.tmsg{margin-bottom:14px;line-height:1.6;max-width:760px}
+.tmsg .who{font-size:11px;color:var(--faint);font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:7px}
+.tmsg.u{margin-left:auto;text-align:right}
+.tmsg.u .bub{display:inline-block;background:var(--surf2);border:1px solid var(--line);border-radius:13px 13px 4px 13px;padding:9px 13px;text-align:left}
+.runblock{border:1px solid var(--line);border-radius:13px;background:var(--surf);overflow:hidden;max-width:760px;margin:6px 0}
+.runblock .rh{display:flex;gap:9px;align-items:center;padding:10px 13px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+.runblock .rb{padding:12px 13px;display:flex;flex-direction:column;gap:9px}
+.tstep{border:1px solid var(--line);border-radius:9px;background:var(--surf2)}
+.tstep .sh{display:flex;align-items:center;gap:9px;padding:8px 11px;font-family:var(--mono);font-size:12px}
+.tstep .dot{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 7px var(--good)}
+.tstep .nm{color:var(--a2)}.tstep .st{margin-left:auto;font-size:10.5px;color:var(--faint)}
+
+/* MIND view — synchronized 3-lane timeline */
+.mind{position:relative;background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:14px 14px 6px;overflow:hidden}
+.mind .legend{display:flex;gap:16px;margin-bottom:8px;font-size:11px;color:var(--muted)}
+.mind .legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px;vertical-align:-1px}
+.lanes{position:relative;overflow-x:auto;padding-bottom:6px}
+.lanewrap{position:relative;width:860px}
+.lane{position:relative;height:74px;border-top:1px dashed var(--line)}
+.lane .tag{position:absolute;left:0;top:6px;font-size:10px;font-family:var(--mono);letter-spacing:.5px;text-transform:uppercase;color:var(--faint)}
+.beat{position:absolute;top:24px;border-radius:9px;padding:7px 10px;font-size:11px;line-height:1.3;width:max-content;max-width:170px;
+  border:1px solid var(--line);background:var(--surf);opacity:.25;transition:.35s;transform:translateY(4px)}
+.beat.lit{opacity:1;transform:none;box-shadow:0 4px 16px rgba(0,0,0,.35)}
+.beat.th{border-color:rgba(139,155,255,.5)}.beat.th.lit{background:rgba(139,155,255,.12)}
+.beat.to{border-color:rgba(98,224,216,.5);font-family:var(--mono)}.beat.to.lit{background:rgba(98,224,216,.12)}
+.beat.ou{border-color:rgba(79,214,160,.5)}.beat.ou.lit{background:rgba(79,214,160,.12)}
+.beat .l{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--faint);margin-bottom:2px}
+#threads{position:absolute;inset:0;pointer-events:none;z-index:1}
+.playhead{position:absolute;top:18px;bottom:6px;width:2px;background:linear-gradient(var(--a2),transparent);box-shadow:0 0 10px var(--a2);left:0;z-index:3}
+.mindbar{display:flex;align-items:center;gap:10px;margin-top:8px}
+.mindbar .pl{cursor:pointer}
+
+/* PIPELINE view — animated DOM flow */
+.pipewrap{max-width:780px}
+.pflow{display:flex;align-items:center;flex-wrap:wrap;gap:0;row-gap:14px;padding:16px 4px 10px}
+.pseg{display:flex;align-items:center;flex:0 0 auto}
+.pnode2{flex:0 0 auto;border:1px solid var(--line);background:var(--surf);border-radius:11px;padding:10px 13px;cursor:pointer;min-width:92px;text-align:center;opacity:0;transform:translateY(10px) scale(.94);transition:.4s cubic-bezier(.2,.8,.3,1)}
+.pnode2.in{opacity:1;transform:none}
+.pnode2.tool{font-family:var(--mono);font-size:12px}
+.pnode2.sel{border-color:var(--a2);box-shadow:0 0 0 1px var(--a2),0 8px 22px rgba(0,0,0,.4)}
+.pnode2 .k{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--faint);margin-bottom:3px}
+.pnode2 .dot{width:7px;height:7px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;box-shadow:0 0 6px var(--good)}
+.parrow{flex:0 0 auto;width:24px;height:2px;background:var(--line);position:relative;opacity:0;transition:.4s}
+.parrow.in{opacity:1;background:linear-gradient(90deg,var(--a1),var(--a2))}
+.parrow.in:after{content:"";position:absolute;right:-2px;top:-3px;border-left:6px solid var(--a2);border-top:4px solid transparent;border-bottom:4px solid transparent}
+.pdetail{border:1px solid var(--line);border-radius:12px;background:var(--surf);padding:14px;margin-top:6px}
+.pdetail h4{margin:0 0 10px;font-size:13px;display:flex;align-items:center;gap:8px}
+
+/* palette */
+.pb{position:fixed;inset:0;background:rgba(4,5,8,.55);display:none;align-items:flex-start;justify-content:center;padding-top:13vh;z-index:50}.pb.open{display:flex}
+.pal{width:540px;max-width:92vw;background:var(--surf);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.pal input{border:0;border-bottom:1px solid var(--line);border-radius:0;font-size:15px;padding:15px}
+.pal .it{display:flex;gap:11px;align-items:center;padding:10px 14px;cursor:pointer}.pal .it:hover{background:var(--surf2)}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside class="side">
+    <div class="brand">
+      <svg viewBox="0 0 48 48"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b9bff"/><stop offset="1" stop-color="#62e0d8"/></linearGradient></defs>
+        <g fill="url(#g)"><circle cx="24" cy="9" r="3.4"/><circle cx="13" cy="16" r="2.6"/><circle cx="34" cy="15" r="2.9"/><circle cx="9" cy="29" r="2.2"/><circle cx="20" cy="27" r="3.1"/><circle cx="33" cy="30" r="2.4"/><circle cx="27" cy="40" r="2"/></g>
+        <g stroke="url(#g)" stroke-width="0.8" opacity="0.4" fill="none"><path d="M24 9 L34 15 L33 30 L20 27 L13 16 Z"/><path d="M20 27 L9 29 M33 30 L27 40"/></g></svg>
+      <div><div class="bn">Pleiades</div><div class="bs">Workstation</div></div>
+    </div>
+    <div class="nl">Build</div>
+    <div class="nav on" data-v="deck"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg>Command deck</div>
+    <div class="nav" data-v="foundry"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>Model foundry<span class="ct">HF</span></div>
+    <div class="nav" data-v="characters"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>Characters<span class="ct">3</span></div>
+    <div class="nav" data-v="tools"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M22 19l-6-6 2-2-4-4-2 2-6-6-2 2 6 6-6 6 2 2 6-6 6 6z"/></svg>Tools &amp; connectors<span class="ct">75</span></div>
+    <div class="nav" data-v="claude"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 5l1.5 3.5L17 12l-3.5 1.5L12 17l-1.5-3.5L7 12l3.5-1.5z"/></svg>Claude lab<span class="ct">Pro</span></div>
+    <div class="nl">Operate</div>
+    <div class="nav" data-v="talk"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>Talk</div>
+    <div class="foot"><span class="dot up"></span>127.0.0.1 · local only</div>
+  </aside>
+
+  <header class="top">
+    <div class="gauge"><span class="lab">GPU</span><div class="bar"><i style="width:34%;background:var(--gpu)"></i></div><span class="val" style="color:var(--gpu)">5.4/16 GB</span></div>
+    <div class="gauge"><span class="lab">RAM</span><div class="bar"><i style="width:28%;background:var(--a1)"></i></div><span class="val">18/64 GB</span></div>
+    <div class="gauge"><span class="lab">TPS</span><span class="val" style="color:var(--a2)">62</span></div>
+    <div class="svc"><span class="dot up"></span>engine</div><div class="svc"><span class="dot up"></span>anamnesis</div><div class="svc"><span class="dot warn"></span>searxng</div>
+    <div class="sp"></div>
+    <div class="kq" onclick="openPal()">Search · do · summon<span class="kbd">⌘K</span></div>
+  </header>
+
+  <main class="main" id="main">
+
+    <!-- DECK -->
+    <section class="view on" id="v-deck">
+      <h1 class="h1">Command deck</h1><p class="sub">Your workstation at a glance — hardware, services, models, characters.</p>
+      <div class="grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="card"><h3>GPU <span class="t">AMD · Vulkan</span></h3><div class="metric"><span class="n" style="color:var(--gpu)">16</span><span class="u"> GB · RX 7800 XT</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">5.4 GB used · qwen2.5-coder resident</div></div>
+        <div class="card"><h3>System RAM</h3><div class="metric"><span class="n">64</span><span class="u"> GB · 18 used</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">16 CPU threads</div></div>
+        <div class="card"><h3>Models</h3><div class="metric"><span class="n">4</span><span class="u"> registered · 2 running</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">62 tps live</div></div>
+        <div class="card"><h3>Characters</h3><div class="metric"><span class="n">3</span><span class="u"> · 0 orphans</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">alice · mark · default</div></div>
+      </div>
+      <div class="grid" style="grid-template-columns:1.3fr 1fr;margin-top:14px">
+        <div class="card"><h3>Services</h3>
+          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Inference engine</span><span class="v">:8080 · running</span></div>
+          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Anamnesis memory</span><span class="v">:9000 · 3 chars</span></div>
+          <div class="kv"><span class="k"><span class="dot warn" style="display:inline-block;margin-right:7px"></span>SearXNG</span><span class="v">:8888 · stopped</span></div>
+          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Camoufox browser</span><span class="v">ready</span></div>
+        </div>
+        <div class="card"><h3>Running models</h3>
+          <div class="kv"><span class="k">qwen2.5-coder</span><span class="v" style="color:var(--a2)">:8081 · 62 tps</span></div>
+          <div class="kv"><span class="k">llama-3.1-8b</span><span class="v" style="color:var(--a2)">:8082 · 48 tps</span></div>
+          <button class="btn sm" style="margin-top:10px" onclick="go('foundry')">+ pull a new model</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOUNDRY -->
+    <section class="view" id="v-foundry">
+      <h1 class="h1">Model foundry</h1><p class="sub">Search any GGUF on Hugging Face. Pleiades picks the optimal quant for your exact hardware and downloads it.</p>
+      <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder"/><button class="btn pri" onclick="hfSearch()">Search</button></div>
+      <div class="row2" style="align-items:start;gap:18px"><div id="results"></div><div id="fitpane"></div></div>
+      <h3 style="margin:24px 0 10px;font-size:13px;color:var(--muted)">Installed library</h3><div id="library"></div>
+    </section>
+
+    <!-- CHARACTERS -->
+    <section class="view" id="v-characters">
+      <h1 class="h1">Characters</h1><p class="sub">A character binds one model + memory + email + vault + browser + Discord into one identity.</p>
+      <div class="grid" style="grid-template-columns:1fr 1fr 1fr" id="charcards"></div>
+      <div class="card" style="margin-top:16px">
+        <h3 id="cfg-h">alice · configuration <span class="t">editing</span></h3>
+        <div class="row2">
+          <div>
+            <div class="field"><label>Model</label><select><option>qwen2.5-coder (running)</option><option>llama-3.1-8b</option><option>default engine</option><option>Claude · debug only</option></select></div>
+            <div class="field"><label>Persona source</label><select><option>auto</option><option>custom</option></select></div>
+            <div class="field"><label>Email · provider preset</label><select><option>gmail</option><option>mail.com</option><option>outlook</option><option>generic</option></select></div>
+            <div class="row2"><div class="field"><label>IMAP host</label><input value="imap.gmail.com"/></div><div class="field"><label>port</label><input value="993"/></div></div>
+            <div class="row2"><div class="field"><label>SMTP host</label><input value="smtp.gmail.com"/></div><div class="field"><label>port</label><input value="587"/></div></div>
+          </div>
+          <div>
+            <div class="field"><label>Discord bot token</label><input value="••••••••••••••••" type="password"/></div>
+            <div class="row2"><div class="field"><label>Enabled</label><select><option>yes</option><option>no</option></select></div><div class="field"><label>Require @mention</label><select><option>yes</option><option>no</option></select></div></div>
+            <div class="field"><label>Anamnesis memory</label><input value="127.0.0.1:8084 · 1,204 turns" disabled/></div>
+            <div class="field"><label>Vault secrets</label>
+              <button class="btn" style="width:100%;display:flex;justify-content:space-between" onclick="openVault()">🔒 Manage secrets<span style="color:var(--muted)">8 stored ›</span></button>
+            </div>
+          </div>
+        </div>
+        <button class="btn pri" style="margin-top:6px">Save character</button>
+      </div>
+    </section>
+
+    <!-- TOOLS -->
+    <section class="view" id="v-tools">
+      <h1 class="h1">Tools &amp; connectors</h1><p class="sub">Every character has the full belt — 75 tools, 13 categories — always available. Tap a category to expand; hover any tool for what it does.</p>
+      <div class="row2" style="gap:18px;align-items:start">
+        <div>
+          <div class="card" style="padding:13px"><h3 style="padding:0 3px">Tool belt <span style="color:var(--faint);font-weight:400;font-size:11px">75 tools</span>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--muted);font-weight:400">exec policy</span>
+            <span class="seg2"><button class="on" id="ep-ask" onclick="setPolicy('ask')">Ask</button><button id="ep-act" onclick="setPolicy('act')">Act</button></span></span></h3><div id="catalog"></div></div>
+        </div>
+        <div>
+          <div class="card"><h3>Connectors</h3><div id="connectors"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CLAUDE LAB -->
+    <section class="view" id="v-claude">
+      <h1 class="h1">Claude lab</h1><p class="sub">Your Claude subscription — used to build, debug, and stress-test your local tools. Optional debug brain, never the default.</p>
+      <div class="cl-grid">
+        <div style="display:flex;flex-direction:column;gap:16px">
+          <div class="card"><h3><span class="avatar">C</span> Account <span class="t">subscription</span></h3>
+            <div class="kv"><span class="k">status</span><span class="v" style="color:var(--good)">connected · Pro</span></div>
+            <div class="kv"><span class="k">auth</span><span class="v">claude login (OAuth)</span></div>
+            <div class="field" style="margin-top:12px"><label>Model</label>
+              <select><option>claude-fable-5 (newest · Mythos-class)</option><option>claude-sonnet-4-6</option><option>claude-opus-4-8</option><option>claude-haiku-4-5</option></select></div>
+            <div style="display:flex;gap:8px;margin-top:4px"><button class="btn sm">Reconnect</button><button class="btn sm x">Disconnect</button></div>
+            <div class="kv" style="margin-top:10px"><span class="k">debug brain</span><span class="v"><span class="tagp tp-cl">enabled for debugging</span></span></div>
+            <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5">When on, you can pick <b style="color:var(--cl)">Claude · debug</b> as a character's brain to diagnose tool issues. Local models stay default.</div>
+          </div>
+          <div class="card"><h3>Tool audit <span class="t">stress-test</span></h3>
+            <div class="kv"><span class="k">last run</span><span class="v">3 bugs · 5 smells</span></div>
+            <div class="kv"><span class="k">coverage</span><span class="v">75 / 75 tools</span></div>
+            <div style="display:flex;gap:8px;margin-top:12px"><button class="btn pri sm">Run audit</button><button class="btn sm">Open report</button><button class="btn sm">Differential</button></div>
+          </div>
+        </div>
+        <div class="clchat">
+          <div class="hd"><span class="avatar">C</span> Build with Claude<span class="t" style="margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)">claude-fable-5</span></div>
+          <div class="body" id="clbody">
+            <div class="clmsg a"><b>Claude</b> — I can see your repo and the live tool belt. Want me to harden a tool's schema, write tests, or trace a failing connector?</div>
+            <div class="clmsg u">vault_set throws on keys with slashes — fix it and add a test</div>
+            <div class="clmsg a"><b>Claude</b> found it: <code>vault.set()</code> doesn't sanitize <code>/</code>. Patching the key validation + adding <code>test_vault_slash_key</code>. Run it?</div>
+          </div>
+          <div class="foot"><input placeholder="Ask Claude to build or debug…"/><button class="btn pri">Send</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TALK -->
+    <section class="view flexcol" id="v-talk">
+      <div class="talk">
+        <div class="modes">
+          <span class="ttl">Talk · alice</span>
+          <div class="seg"><button data-m="stream" onclick="setMode('stream')">Stream</button><button class="on" data-m="pipeline" onclick="setMode('pipeline')">Pipeline</button><button data-m="mind" onclick="setMode('mind')">Mind</button></div>
+          <div class="sp"></div>
+          <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">brain</span>
+            <select style="width:auto"><option>qwen2.5-coder (local)</option><option>llama-3.1-8b (local)</option><option>Claude · debug only</option></select></div>
+        </div>
+        <div class="talkscroll" id="talkscroll">
+          <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">a</span>alice · local</div>Hey — full tool belt is live. Try the suggestion below to watch a run in Stream, Pipeline, and Mind.</div>
+          <button class="btn" onclick="runDemo()">▶ run: check inbox → store code in vault</button>
+        </div>
+        <div class="composer"><input id="talkin" placeholder="Message alice — every tool always on…"/><button class="btn pri" onclick="talkSend()">↑</button></div>
+
+        <aside class="rail">
+          <div class="rc"><h4>Model</h4>
+            <div class="kv"><span class="k">qwen2.5-coder</span><span class="v tp-run tagp">running</span></div>
+            <div class="kv"><span class="k">port</span><span class="v">:8081</span></div>
+            <div class="kv"><span class="k">context</span><span class="v">8k / 8k</span></div>
+            <div class="kv"><span class="k">layers</span><span class="v" style="color:var(--gpu)">33/33 GPU</span></div>
+            <h4 style="margin-top:12px">Throughput</h4><div class="spark" id="spark"></div>
+            <div style="text-align:right;font-family:var(--mono);font-size:12px;color:var(--a2);margin-top:2px">62 tps</div>
+          </div>
+          <div class="rc"><h4>Recent events</h4>
+            <div class="ev"><span class="d"></span>webhook · github push · 2m</div>
+            <div class="ev"><span class="d"></span>email · code received · 9m</div>
+            <div class="ev"><span class="d"></span>memory · checkpoint · 14m</div>
+            <div class="ev"><span class="d"></span>vault · stripe_verify · now</div>
+          </div>
+          <div class="rc"><h4>Session</h4>
+            <div class="kv"><span class="k">tokens</span><span class="v" id="r-tok">0</span></div>
+            <div class="kv"><span class="k">tools run</span><span class="v" id="r-tools">0</span></div>
+            <div class="kv"><span class="k">turns</span><span class="v" id="r-turns">0</span></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- modal host -->
+<div class="mb" id="mb" onclick="if(event.target===this)closeModal()"><div class="modal" id="modal"></div></div>
+
+<!-- palette -->
+<div class="pb" id="pb" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="pal"><input id="palin" placeholder="Pull a model · new character · run audit · build with Claude…"/>
+    <div class="it" onclick="go('foundry');closePal()">◆ Pull a model from Hugging Face</div>
+    <div class="it" onclick="go('characters');closePal()">⇄ Configure character</div>
+    <div class="it" onclick="go('claude');closePal()">✦ Build / debug with Claude</div>
+    <div class="it" onclick="go('deck');closePal()">▦ Open command deck</div>
+  </div>
+</div>
+
+<script>
+function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
+  document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
+  document.getElementById('main').classList.toggle('flush',v==='talk');}
+document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
+function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
+function closePal(){document.getElementById('pb').classList.remove('open')}
+document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openPal()}if(e.key==='Escape'){closePal();closeModal()}});
+
+/* modal */
+function showModal(html){document.getElementById('modal').innerHTML=html;document.getElementById('mb').classList.add('open')}
+function closeModal(){document.getElementById('mb').classList.remove('open')}
+function openVault(){
+  const rows=[['stripe_verify','verification code','••••','now'],['smtp_password','email send','••••','reserved'],
+    ['discord_token','bot auth','••••','reserved'],['openai_key','fallback api','••••','2d'],
+    ['github_pat','repo access','••••','5d'],['aws_secret','s3 backups','••••','1w'],
+    ['session_cookie','site login','••••','3d'],['totp_seed','2fa','••••','1w']];
+  showModal(`<div class="mh">🔒 alice · vault secrets <span class="t" style="margin-left:8px;color:var(--faint);font-family:var(--mono);font-size:10.5px">Fernet-encrypted</span><span class="x" onclick="closeModal()">✕</span></div>
+    <div class="mbody">
+      <div style="display:flex;gap:8px;margin-bottom:12px"><input placeholder="Search secrets…" style="flex:1"/><button class="btn pri sm">+ Add</button></div>
+      ${rows.map(([k,n,v,t])=>`<div class="kv"><span class="k"><b style="color:var(--text);font-family:var(--mono)">${k}</b> · ${n}</span>
+        <span class="v" style="display:flex;gap:8px;align-items:center">${v} · ${t}
+        <button class="btn sm">Reveal</button><button class="btn sm">Edit</button><button class="btn sm x">Delete</button></span></div>`).join('')}
+    </div>`);
+}
+
+/* ───── Foundry ───── */
+const VRAM=16;
+const REPOS={'qwen2.5 coder':[{id:'bartowski/Qwen2.5-Coder-7B-Instruct-GGUF',dl:'412k',likes:280,params:7},{id:'bartowski/Qwen2.5-Coder-14B-Instruct-GGUF',dl:'168k',likes:142,params:14},{id:'bartowski/Qwen2.5-Coder-32B-Instruct-GGUF',dl:'201k',likes:333,params:32}],
+  'llama 3.1':[{id:'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',dl:'1.2M',likes:640,params:8},{id:'bartowski/Meta-Llama-3.1-70B-Instruct-GGUF',dl:'380k',likes:410,params:70}],
+  'mistral nemo':[{id:'bartowski/Mistral-Nemo-Instruct-2407-GGUF',dl:'520k',likes:300,params:12}],
+  'mixtral':[{id:'bartowski/Mixtral-8x7B-Instruct-GGUF',dl:'290k',likes:520,params:47,moe:true}]};
+const QUANTS=[{nm:'Q3_K_M',bpw:0.42},{nm:'Q4_K_M',bpw:0.55},{nm:'Q5_K_M',bpw:0.67},{nm:'Q6_K',bpw:0.81},{nm:'Q8_0',bpw:1.06}];
+let pref=2;
+function hfSearch(){const q=document.getElementById('hfq').value.toLowerCase().trim();let hits=[];
+  for(const k in REPOS) if(!q||k.includes(q)||q.includes(k.split(' ')[0])) hits=hits.concat(REPOS[k]);
+  if(!hits.length) hits=REPOS['qwen2.5 coder'];
+  const box=document.getElementById('results');box.innerHTML='';
+  hits.forEach((r,i)=>{const e=document.createElement('div');e.className='result'+(i===0?' sel':'');
+    e.innerHTML=`<div><div class="ttl">${r.id.split('/')[1]}</div><div class="meta">${r.id.split('/')[0]} · ${r.params}B${r.moe?' · MoE':''}</div></div>
+      <div class="right"><div class="meta">↓ ${r.dl}</div><div class="meta">♥ ${r.likes}</div></div>`;
+    e.onclick=()=>{document.querySelectorAll('.result').forEach(x=>x.classList.remove('sel'));e.classList.add('sel');fit(r)};box.append(e)});
+  fit(hits[0]);}
+function fit(r){const cand=QUANTS.map(qt=>{const gb=+(qt.bpw*r.params).toFixed(1);const fits=gb<VRAM-1.5;
+    const layers=fits?'33/33':Math.max(8,Math.round(33*(VRAM-1.5)/gb))+'/33';
+    let tps=Math.round(120/r.params*(1.1-qt.bpw*0.25)*7);if(!fits)tps=Math.round(tps*0.32);
+    return {...qt,gb,fits,layers,tps:Math.max(6,tps)}});
+  const fitting=cand.filter(c=>c.fits);let rec=fitting.length?fitting[Math.min(pref,fitting.length-1)]:cand[1];
+  document.getElementById('fitpane').innerHTML=`<div class="autofit">
+    <div class="hd"><span class="tagp tp-best">BEST FOR YOUR HARDWARE</span><span class="big">${rec.nm}</span></div>
+    <div style="font-size:12.5px;color:var(--muted)">${r.id.split('/')[1]} · ${r.params}B${r.moe?' · MoE':''} on RX 7800 XT (16 GB, Vulkan)</div>
+    <div class="slider"><span style="font-size:11px;color:var(--muted)">speed</span><input type="range" min="0" max="4" value="${pref}" oninput="pref=+this.value;fit(window._r)"/><span style="font-size:11px;color:var(--muted)">quality</span></div>
+    <div class="quants">${cand.map(c=>`<div class="quant ${c===rec?'pick':''} ${c.fits?'':'over'}"><span class="nm">${c.nm}</span><span class="sz">${c.gb} GB</span><span class="fit tagp ${c.fits?'tp-gpu':'tp-warn'}">${c.fits?c.layers+' GPU':'spills to RAM'}</span><span class="tps">~${c.tps} tps</span></div>`).join('')}</div>
+    <div class="place">placement <span class="layer" style="width:${rec.fits?120:70}px;background:var(--gpu)"></span> GPU ${rec.layers}${rec.fits?'':' <span class="layer" style="width:46px;background:var(--a1)"></span> RAM'} · est <b style="color:var(--a2)">${rec.tps} tps</b></div>
+    <button class="btn pri" style="margin-top:13px" onclick="dl('${rec.nm}','${r.id}',${rec.gb})">⇣ Download ${rec.nm} (${rec.gb} GB) — optimal</button>
+    <div class="prog" id="prog"><i id="progi"></i></div><div id="dlmsg" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div></div>`;
+  window._r=r;}
+function dl(q,id,gb){const p=document.getElementById('prog'),i=document.getElementById('progi'),m=document.getElementById('dlmsg');
+  p.style.display='block';let v=0;const t=setInterval(()=>{v+=Math.random()*14;if(v>=100){v=100;clearInterval(t);
+    m.innerHTML='✓ downloaded · registered · 33/33 GPU planned. <b style="color:var(--a2)">Ready to run.</b>';}
+    i.style.width=v+'%';m.textContent='downloading '+q+'.gguf … '+Math.round(v)+'%'},250)}
+function loadLib(){const lib=[['qwen2.5-coder','7B · Q5_K_M · :8081','run','33/33 GPU · 62 tps'],['llama-3.1-8b','8B · Q4_K_M · :8082','run','33/33 GPU · 48 tps'],['qwen2.5-7b','7B · Q5_K_M','idle','planned 33/33'],['mistral-nemo-12b','12B · Q5_K_M','idle','planned 33/43']];
+  const box=document.getElementById('library');box.innerHTML='';
+  lib.forEach(([n,s,st,plan])=>{const e=document.createElement('div');e.className='result';
+    e.innerHTML=`<div><div class="ttl">${n}</div><div class="meta">${s} · ${plan}</div></div><div class="right" style="display:flex;gap:8px;align-items:center"><span class="tagp ${st==='run'?'tp-run':'tp-idle'}">${st==='run'?'running':'idle'}</span><button class="btn sm">${st==='run'?'Stop':'Start'}</button><button class="btn sm">Logs</button></div>`;box.append(e)})}
+function loadChars(){const cs=[['alice','qwen2.5-coder','running','✉ ◈ ◐ ✦'],['mark','llama-3.1-8b','running','◈ ✦'],['default','qwen2.5-7b','idle','✦']];
+  const box=document.getElementById('charcards');box.innerHTML='';
+  cs.forEach(([n,m,st,conn])=>{const e=document.createElement('div');e.className='card';
+    e.innerHTML=`<h3>${n}<span class="tagp ${st==='running'?'tp-run':'tp-idle'}" style="margin-left:auto">${st}</span></h3><div class="kv"><span class="k">model</span><span class="v">${m}</span></div><div class="kv"><span class="k">connectors</span><span class="v">${conn}</span></div><button class="btn sm" style="margin-top:10px" onclick="configChar('${n}')">Configure</button>`;box.append(e)})}
+
+/* ───── Tools: collapsible categories + tooltips ───── */
+const CAT={
+  files:[['read_file','Read a UTF-8 text file, optionally a line range.'],['write_file','Create or overwrite a file.'],['edit_file','Exact find-and-replace edit in a file.'],['preview_edit','Show the diff an edit would make before applying.'],['grep_search','Regex search across files.'],['get_symbols','List functions/classes in a file without reading it all.'],['list_dir','List a directory.'],['find_files','Find files by glob pattern.'],['append_file','Append text to a file.']],
+  git:[['git_status','Working-tree status.'],['git_diff','Show unstaged/staged diff.'],['git_log','Commit history.'],['git_blame','Line-by-line authorship.'],['git_show','Show a commit.'],['git_branches','List branches.'],['git_commit','Commit staged changes (gated).'],['git_add','Stage files (gated).'],['git_checkout','Switch/restore (gated).']],
+  shell:[['run_shell','Run a shell command (gated).'],['run_python','Run a Python snippet (gated).'],['start_process','Launch a long-running process.'],['read_process_output','Read output from a running process.'],['list_processes','List managed processes.'],['kill_process','Terminate a process.'],['send_stdin','Send input to a process.']],
+  browser:[['browser_open','Open a URL in the headed Camoufox browser.'],['browser_read','Read the current page text.'],['browser_click','Click an element.'],['browser_fill','Type into a field.'],['browser_screenshot','Capture the page.'],['browser_links','List links on the page.'],['browser_press','Press a key.'],['browser_back','Go back.'],['browser_wait_for','Wait for an element/condition.'],['browser_scroll','Scroll the page.'],['browser_close','Close the browser.']],
+  web:[['web_search','Search the web via local SearXNG.'],['http_fetch','Fetch a URL’s contents.'],['deep_research','Multi-source research pass.']],
+  documents:[['read_pdf','Extract text from a PDF.'],['read_docx','Read a Word document.'],['read_xlsx','Read a spreadsheet.'],['read_image','Describe/parse an image.']],
+  memory:[['set_section','Update a working-memory section (Goal/Plan/…).'],['add_finding','Record a finding mid-task.'],['note_to_self','Quick scratch note.'],['remember','Store a durable fact.'],['recall','Retrieve relevant memory.'],['forget','Delete a memory.'],['list_memory','List stored memories.'],['save_checkpoint','Snapshot working state.'],['load_checkpoint','Restore a snapshot.']],
+  quality:[['format_code','Auto-format a file.'],['lint_code','Lint a file.'],['run_tests','Run the test suite.']],
+  events:[['start_webhook_listener','Listen for incoming webhooks.'],['stop_webhook_listener','Stop listening.'],['wait_for_event','Block until an event arrives.'],['list_events','List recent events.']],
+  inference:[['hardware','Report detected GPU/RAM/placement.'],['models','List/inspect local models.'],['profile','Read the active character profile.'],['characters','List characters.']],
+  system:[['notify','Send a desktop notification.'],['read_clipboard','Read the clipboard.'],['write_clipboard','Write the clipboard.'],['get_env','Read an env var.'],['open_file','Open a file in the OS.'],['context_status','Report context-window usage.']],
+  practice:[['practice_status','Self-practice progress.'],['study_tool','Drill a tool to learn it.'],['record_lesson','Save a lesson learned.']]};
+const CATICON={files:'🗂',git:'⎇',shell:'❯',browser:'◐',web:'⌕',documents:'▤',memory:'✦',quality:'✓',events:'⚡',inference:'▦',system:'⚙',practice:'◷'};
+function loadCat(){const box=document.getElementById('catalog');box.innerHTML='';
+  for(const c in CAT){const w=document.createElement('div');w.className='catcard';
+    w.innerHTML=`<div class="ch"><span class="ico">${CATICON[c]||'•'}</span>${c}<span class="n">${CAT[c].length}</span><span class="chev">▸</span></div>
+      <div class="cb">${CAT[c].map(([t,d])=>`<span class="tool tip">${t}<span class="tipbox"><b>${t}</b><br>${d}</span></span>`).join('')}</div>`;
+    w.querySelector('.ch').onclick=()=>w.classList.toggle('open');box.append(w)}}
+
+/* ───── Connectors with action buttons ───── */
+function loadConn(){const C=[['✉','Email · IMAP/SMTP','per-character inbox; receive codes','run','2 wired'],
+  ['◈','Discord','host a character as a bot','run','alice'],
+  ['◐','Camoufox browser','headed, anti-fingerprint profile','run','ready'],
+  ['⌕','SearXNG','local web search','warn','stopped'],
+  ['✦','Anamnesis','canonical memory proxy','run',':9000']];
+  const box=document.getElementById('connectors');box.innerHTML='';
+  C.forEach(([ic,nm,ds,st,tag])=>{const e=document.createElement('div');e.className='conn';
+    const acts=st==='run'?['Stop','Debug','Settings','Edit']:['Start','Fix','Settings','Edit'];
+    e.innerHTML=`<div class="ci">${ic}</div><div class="info"><div class="nm">${nm}</div><div class="ds">${ds}</div></div>
+      <span class="tagp ${st==='run'?'tp-run':'tp-warn'}">${tag}</span>
+      <div class="acts">${acts.map(a=>`<button class="btn sm ${a==='Stop'||a==='Fix'?'':''}">${a}</button>`).join('')}</div>`;box.append(e)})}
+
+/* ───── TALK: modes + demo run ───── */
+let mode='pipeline';
+function setMode(m){mode=m;document.querySelectorAll('.modes .seg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));renderRun();}
+const RUN={
+  think:[[0.0,'Goal','Find newest verification email → save code to vault'],[1.1,'Plan','search → open → extract → vault_set'],[3.0,'Observe','Stripe message is newest of 3'],[5.0,'Decide','Code 481920 valid → store']],
+  tools:[[1.4,'search_inbox',0.4,'3 results'],[2.6,'read_email',0.6,'Stripe · 481920'],[4.0,'dispatch_subagent',0.3,'format valid'],[5.4,'vault_set',0.3,'stored']],
+  out:[[6.0,'Done. Saved stripe_verify to alice’s vault.']],
+  threads:[[0,0],[1,1],[1,2],[2,3]] /* [thoughtIdx,toolIdx] causal links */
+};
+let ran=false;
+function runDemo(){ran=true;document.getElementById('r-tok').textContent='3,480';document.getElementById('r-tools').textContent='4';document.getElementById('r-turns').textContent='3';renderRun(true);}
+function talkSend(){const i=document.getElementById('talkin');if(!i.value.trim())return;
+  const s=document.getElementById('talkscroll');const u=document.createElement('div');u.className='tmsg u';u.innerHTML='<div class="bub">'+i.value+'</div>';s.append(u);i.value='';runDemo();s.scrollTop=s.scrollHeight;}
+function renderRun(fresh){
+  const s=document.getElementById('talkscroll');
+  document.querySelectorAll('.runblock,.mind,.pipewrap,.runmsg').forEach(e=>e.remove());
+  if(!ran)return;
+  if(mode==='stream'){
+    const b=document.createElement('div');b.className='runblock';
+    b.innerHTML=`<div class="rh"><span>✓</span>run · 4 tools · 3 turns · qwen2.5-coder</div><div class="rb">
+      ${RUN.tools.map(t=>`<div class="tstep"><div class="sh"><span class="dot"></span><span class="nm">mcp__pleiades__${t[1]}</span><span class="st">ok · ${t[2]}s</span></div></div>`).join('')}</div>`;
+    s.append(b);
+    const a=document.createElement('div');a.className='tmsg runmsg';a.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">a</span>alice</div>'+RUN.out[0][1];s.append(a);
+  } else if(mode==='pipeline'){
+    const w=document.createElement('div');w.className='pipewrap';
+    w.innerHTML='<div class="pflow" id="pflow"></div><div class="pdetail" id="pdetail"><div style="color:var(--muted);font-size:12px">Building the run… click any node to inspect its args, output, and timing.</div></div>';
+    s.append(w);
+    const flow=w.querySelector('#pflow');let delay=200;
+    PIPE.forEach((n,i)=>{
+      const seg=document.createElement('div');seg.className='pseg';
+      if(i>0){const ar=document.createElement('div');ar.className='parrow';seg.append(ar);const d=delay;setTimeout(()=>ar.classList.add('in'),d);delay+=120;}
+      const nd=document.createElement('div');nd.className='pnode2'+(n.kind==='tool'?' tool':'');
+      nd.innerHTML=(n.kind==='tool'?'<span class="dot"></span>':'<div class="k">'+n.kind+'</div>')+n.label;
+      nd.onclick=()=>{document.querySelectorAll('.pnode2').forEach(x=>x.classList.remove('sel'));nd.classList.add('sel');showPDetail(n)};
+      seg.append(nd);flow.append(seg);const d2=delay;setTimeout(()=>nd.classList.add('in'),d2);delay+=300;
+    });
+  } else { /* MIND */
+    const SC=86; // px per second
+    const W=860;
+    const lane=(tag)=>`<div class="lane"><span class="tag">${tag}</span></div>`;
+    const m=document.createElement('div');m.className='mind';
+    m.innerHTML=`<div class="legend"><span><i style="background:var(--a1)"></i>thought</span><span><i style="background:var(--a2)"></i>tool</span><span><i style="background:var(--good)"></i>output</span><span style="margin-left:auto;color:var(--faint)">time →</span></div>
+      <div class="lanes"><div class="lanewrap" id="lw" style="width:${W}px">
+        <svg id="threads" width="${W}" height="240"></svg>
+        ${lane('Thought')}${lane('Tools')}${lane('Output')}
+        <div class="playhead" id="ph"></div>
+      </div></div>
+      <div class="mindbar"><button class="btn sm pl" onclick="playMind()">▶ replay</button><span style="font-size:11px;color:var(--muted)">watch thought, tool, and output unfold on one timeline — threads show what caused what</span></div>`;
+    s.append(m);
+    const lw=document.getElementById('lw');
+    const place=(b,laneIdx)=>{b.style.left=(70+b.dataset.t*SC)+'px';b.style.top=(24+laneIdx*74)+'px';};
+    RUN.think.forEach((t,i)=>{const b=document.createElement('div');b.className='beat th';b.id='th'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">${t[1]}</div>${t[2]}`;lw.append(b);place(b,0)});
+    RUN.tools.forEach((t,i)=>{const b=document.createElement('div');b.className='beat to';b.id='to'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">tool · ${t[2]}s</div>${t[1]}`;lw.append(b);place(b,1)});
+    RUN.out.forEach((t,i)=>{const b=document.createElement('div');b.className='beat ou';b.id='ou'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">output</div>${t[1]}`;lw.append(b);place(b,2)});
+    drawThreads(SC);playMind();
+  }
+  s.scrollTop=s.scrollHeight;
+}
+function drawThreads(SC){const svg=document.getElementById('threads');if(!svg)return;
+  const ctr=(id,lane)=>{const e=document.getElementById(id);return{x:70+(+e.dataset.t)*SC+20,y:24+lane*74+20}};
+  svg.innerHTML=RUN.threads.map(([ti,toi])=>{const a=ctr('th'+ti,0),b=ctr('to'+toi,1);
+    return `<path d="M${a.x} ${a.y+18} C ${a.x} ${a.y+50}, ${b.x} ${b.y-30}, ${b.x} ${b.y-12}" stroke="var(--a1)" fill="none" opacity="0.4" stroke-width="1.4"/>`}).join('')
+    + RUN.tools.map((t,i)=>{const a=ctr('to'+i,1),b=ctr('ou0',2);return i===RUN.tools.length-1?`<path d="M${a.x} ${a.y+18} C ${a.x} ${a.y+50}, ${b.x} ${b.y-30}, ${b.x} ${b.y-12}" stroke="var(--good)" fill="none" opacity="0.4" stroke-width="1.4"/>`:''}).join('');}
+let mt=null;
+function playMind(){const ph=document.getElementById('ph');if(!ph)return;const SC=86,W=860,DUR=6.6;
+  document.querySelectorAll('.beat').forEach(b=>b.classList.remove('lit'));
+  let start=null;cancelAnimationFrame(mt);
+  function step(ts){if(!start)start=ts;const el=(ts-start)/1000*1.2;const x=70+el*SC;ph.style.left=Math.min(x,W-4)+'px';
+    document.querySelectorAll('.beat').forEach(b=>{if(+b.dataset.t<=el)b.classList.add('lit')});
+    if(el<DUR+0.6)mt=requestAnimationFrame(step);}
+  mt=requestAnimationFrame(step);}
+
+/* sparkline */
+function spark(){const s=document.getElementById('spark');if(!s)return;s.innerHTML='';for(let i=0;i<28;i++){const h=30+Math.random()*60;s.append(Object.assign(document.createElement('i'),{style:`height:${h}%`}))}}
+
+const PIPE=[
+ {label:'Task',kind:'input',detail:{Input:'check the inbox for a verification code and store it in the vault'}},
+ {label:'Plan',kind:'plan',detail:{Steps:'search → open → extract → vault_set',Turns:'3'}},
+ {label:'search_inbox',kind:'tool',detail:{Args:'query="verification code"',Output:'3 results',Duration:'0.4s',Status:'ok'}},
+ {label:'read_email',kind:'tool',detail:{Args:'id=msg_88c2',Output:'From: Stripe · "Your code is 481920"',Duration:'0.6s',Status:'ok'}},
+ {label:'subagent',kind:'tool',detail:{Args:'task="validate 6-digit"',Output:'format valid',Duration:'0.3s',Status:'ok'}},
+ {label:'vault_set',kind:'tool',detail:{Args:'key="stripe_verify"',Output:'value •••••• → stored',Duration:'0.3s',Status:'ok'}},
+ {label:'Result',kind:'output',detail:{Output:'Saved stripe_verify to alice’s vault.'}}];
+function showPDetail(n){const d=document.getElementById('pdetail');if(!d)return;
+  d.innerHTML='<h4>'+(n.kind==='tool'?'<span style="color:var(--a2);font-family:var(--mono)">mcp__pleiades__'+n.label+'</span>':n.label)+(n.detail.Status?'<span class="tagp tp-run" style="margin-left:auto">'+n.detail.Status+'</span>':'')+'</h4>'+
+    Object.entries(n.detail).filter(([k])=>k!=='Status').map(([k,v])=>'<div class="kv"><span class="k">'+k+'</span><span class="v" style="max-width:68%;text-align:right;word-break:break-word">'+v+'</span></div>').join('');}
+function configChar(name){const h=document.getElementById('cfg-h');if(h){h.innerHTML=name+' · configuration <span class="t">editing</span>';h.scrollIntoView({behavior:'smooth',block:'center'});}}
+function setPolicy(p){document.getElementById('ep-ask').classList.toggle('on',p==='ask');document.getElementById('ep-act').classList.toggle('on',p==='act');}
+hfSearch();loadLib();loadChars();loadCat();loadConn();spark();setInterval(spark,1500);
+</script>
+</body>
+</html>
