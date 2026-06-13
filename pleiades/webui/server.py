@@ -168,6 +168,15 @@ class WorkApprove(BaseModel):
     approve: bool = False
 
 
+class ClaudeModelBody(BaseModel):
+    model: str = ""
+
+
+class ClaudeChat(BaseModel):
+    message: str
+    model: Optional[str] = None
+
+
 class SettingsUpdate(BaseModel):
     # engine
     model_path: Optional[str] = None
@@ -970,6 +979,77 @@ def create_app() -> FastAPI:
     @app.get("/api/email/presets")
     def email_presets() -> dict:
         return config.EMAIL_PRESETS
+
+    # ----------------------------- Claude lab ------------------------------ #
+    # Claude (subscription) is used ONLY to build/debug/audit local tools.
+    _claude_cfg = Path.home() / ".pleiades" / "claude.json"
+
+    def _claude_model() -> str:
+        import json as _j
+        if _claude_cfg.is_file():
+            try:
+                return _j.loads(_claude_cfg.read_text()).get("model") or "claude-sonnet-4-6"
+            except Exception:
+                pass
+        return "claude-fable-5"
+
+    @app.get("/api/claude/status")
+    def claude_status() -> dict:
+        import json as _j, shutil as _sh
+        creds = Path.home() / ".claude" / ".credentials.json"
+        connected, sub = False, ""
+        if creds.is_file():
+            try:
+                o = _j.loads(creds.read_text()).get("claudeAiOauth") or {}
+                connected = bool(o.get("accessToken"))
+                sub = o.get("subscriptionType", "")
+            except Exception:
+                pass
+        try:
+            import claude_agent_sdk as _s
+            sdk = getattr(_s, "__version__", "?")
+        except Exception:
+            sdk = None
+        return {"connected": connected, "subscription": sub, "sdk": sdk,
+                "cli": bool(_sh.which("claude")),
+                "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "model": _claude_model(),
+                "models": ["claude-fable-5", "claude-opus-4-8",
+                           "claude-sonnet-4-6", "claude-haiku-4-5"],
+                "note": "Used only to build/audit your local tools — never a chat brain. Billed to your subscription."}
+
+    @app.post("/api/claude/model")
+    def claude_set_model(body: ClaudeModelBody) -> dict:
+        import json as _j
+        _claude_cfg.parent.mkdir(parents=True, exist_ok=True)
+        _claude_cfg.write_text(_j.dumps({"model": body.model}))
+        return {"ok": True, "model": body.model}
+
+    @app.post("/api/claude/chat")
+    def claude_chat(body: ClaudeChat) -> dict:
+        """Build/debug chat: Claude on your subscription, with the local tool belt."""
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return {"error": "ANTHROPIC_API_KEY is set — unset it to use your subscription, not the API."}
+        try:
+            from ..harness import Config as HCfg
+            from ..harness import builtins as _b  # noqa: F401  registers tools
+            from ..harness.claude_backend import run_claude
+        except Exception as e:
+            return {"error": f"Claude Agent SDK unavailable: {e}"}
+        cfg = HCfg.load()
+        cfg.exec_policy = "allow"
+        model = body.model or _claude_model()
+        try:
+            cfg.tiers["claude"].model = model
+        except Exception:
+            pass
+        try:
+            res = run_claude(body.message, cfg, tier_name="claude",
+                             add_dirs=[cfg.workspace_root])
+            return {"answer": res.answer, "turns": res.turns,
+                    "cost_usd": res.cost_usd, "error": res.error, "model": model}
+        except Exception as e:
+            return {"error": str(e)}
 
     # ----------------------------- chat sessions ---------------------------- #
     @app.get("/api/chats")

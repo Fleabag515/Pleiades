@@ -309,32 +309,26 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 
     <!-- CLAUDE LAB -->
     <section class="view" id="v-claude">
-      <h1 class="h1">Claude lab</h1><p class="sub">Your Claude subscription — used to build, debug, and stress-test your local tools. Optional debug brain, never the default.</p>
+      <h1 class="h1">Claude lab</h1><p class="sub">Your Claude subscription — used only to build, debug, and stress-test your local tools. Never a chat brain; local models stay default.</p>
       <div class="cl-grid">
         <div style="display:flex;flex-direction:column;gap:16px">
           <div class="card"><h3><span class="avatar">C</span> Account <span class="t">subscription</span></h3>
-            <div class="kv"><span class="k">status</span><span class="v" style="color:var(--good)">connected · Pro</span></div>
+            <div class="kv"><span class="k">status</span><span class="v" id="cl-status">checking…</span></div>
             <div class="kv"><span class="k">auth</span><span class="v">claude login (OAuth)</span></div>
-            <div class="field" style="margin-top:12px"><label>Model</label>
-              <select><option>claude-fable-5 (newest · Mythos-class)</option><option>claude-sonnet-4-6</option><option>claude-opus-4-8</option><option>claude-haiku-4-5</option></select></div>
-            <div style="display:flex;gap:8px;margin-top:4px"><button class="btn sm">Reconnect</button><button class="btn sm x">Disconnect</button></div>
-            <div class="kv" style="margin-top:10px"><span class="k">debug brain</span><span class="v"><span class="tagp tp-cl">enabled for debugging</span></span></div>
-            <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5">When on, you can pick <b style="color:var(--cl)">Claude · debug</b> as a character's brain to diagnose tool issues. Local models stay default.</div>
+            <div class="kv"><span class="k">Agent SDK</span><span class="v" id="cl-sdk">—</span></div>
+            <div class="field" style="margin-top:12px"><label>Model</label><select id="cl-model" onchange="claudeSetModel()"></select></div>
+            <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5" id="cl-note"></div>
           </div>
           <div class="card"><h3>Tool audit <span class="t">stress-test</span></h3>
-            <div class="kv"><span class="k">last run</span><span class="v">3 bugs · 5 smells</span></div>
-            <div class="kv"><span class="k">coverage</span><span class="v">75 / 75 tools</span></div>
-            <div style="display:flex;gap:8px;margin-top:12px"><button class="btn pri sm">Run audit</button><button class="btn sm">Open report</button><button class="btn sm">Differential</button></div>
+            <div style="font-size:12.5px;color:var(--muted);line-height:1.5">Claude exercises your local tool belt and proposes fixes. Run it from the CLI: <code>pleiades audit</code> — a UI runner is the next piece.</div>
           </div>
         </div>
         <div class="clchat">
-          <div class="hd"><span class="avatar">C</span> Build with Claude<span class="t" style="margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)">claude-fable-5</span></div>
+          <div class="hd"><span class="avatar">C</span> Build with Claude<span class="t" id="cl-hdr-model" style="margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)">—</span></div>
           <div class="body" id="clbody">
-            <div class="clmsg a"><b>Claude</b> — I can see your repo and the live tool belt. Want me to harden a tool's schema, write tests, or trace a failing connector?</div>
-            <div class="clmsg u">vault_set throws on keys with slashes — fix it and add a test</div>
-            <div class="clmsg a"><b>Claude</b> found it: <code>vault.set()</code> doesn't sanitize <code>/</code>. Patching the key validation + adding <code>test_vault_slash_key</code>. Run it?</div>
+            <div class="clmsg a"><b>Claude</b> — I can see your repo and the live tool belt. Ask me to harden a tool's schema, write a test, or trace a failing connector. Runs on your subscription.</div>
           </div>
-          <div class="foot"><input placeholder="Ask Claude to build or debug…"/><button class="btn pri">Send</button></div>
+          <div class="foot"><input id="cl-input" placeholder="Ask Claude to build or debug…" onkeydown="if(event.key==='Enter')claudeSend()"/><button class="btn pri" onclick="claudeSend()">Send</button></div>
         </div>
       </div>
     </section>
@@ -399,7 +393,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
   document.getElementById('main').classList.toggle('flush',v==='talk');
-  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk();}
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='claude')loadClaude();}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -731,7 +725,27 @@ async function setPolicy(p){document.getElementById('ep-ask').classList.toggle('
   try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_policy:p==='act'?'allow':'ask'})})}catch(e){}}
 async function loadPolicy(){try{const d=await api('/api/settings');const p=(d.settings&&d.settings.exec_policy)||'ask';const act=(p==='allow'||p==='act');
   document.getElementById('ep-ask').classList.toggle('on',!act);document.getElementById('ep-act').classList.toggle('on',act)}catch(e){}}
-loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
+async function loadClaude(){try{const d=await api('/api/claude/status');
+  document.getElementById('cl-status').innerHTML=d.connected?('<span style="color:var(--good)">connected · '+(d.subscription||'subscription')+'</span>'):'<span style="color:var(--bad)">not connected — run claude login</span>';
+  document.getElementById('cl-sdk').textContent=d.sdk?('v'+d.sdk):'not installed';
+  const sel=document.getElementById('cl-model');if(sel)sel.innerHTML=(d.models||[]).map(m=>'<option'+(m===d.model?' selected':'')+'>'+m+'</option>').join('');
+  const hdr=document.getElementById('cl-hdr-model');if(hdr)hdr.textContent=d.model||'';
+  const note=document.getElementById('cl-note');if(note)note.textContent=(d.note||'')+(d.api_key_set?'  ⚠ ANTHROPIC_API_KEY is set — unset it to bill your subscription, not the API.':'');
+}catch(e){}}
+async function claudeSetModel(){const m=document.getElementById('cl-model').value;const hdr=document.getElementById('cl-hdr-model');if(hdr)hdr.textContent=m;
+  try{await fetch('/api/claude/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m})})}catch(e){}}
+async function claudeSend(){const i=document.getElementById('cl-input');const t=(i.value||'').trim();if(!t)return;i.value='';
+  const body=document.getElementById('clbody');
+  const u=document.createElement('div');u.className='clmsg u';u.textContent=t;body.append(u);
+  const a=document.createElement('div');a.className='clmsg a';a.innerHTML='<b>Claude</b> <span style="color:var(--muted)">thinking… (on your subscription, with the tool belt)</span>';body.append(a);body.scrollTop=body.scrollHeight;
+  try{const m=document.getElementById('cl-model').value;
+    const r=await (await fetch('/api/claude/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,model:m})})).json();
+    if(r.error){a.innerHTML='<b>Claude</b> <span style="color:var(--bad)">'+escapeHtml(r.error)+'</span>';}
+    else{a.innerHTML='<b>Claude</b> '+escapeHtml(r.answer||'(no answer)').replace(/\n/g,'<br>')+(r.turns?'<div style="color:var(--faint);font-size:10.5px;margin-top:6px;font-family:var(--mono)">'+r.turns+' turns · $'+(r.cost_usd||0).toFixed(4)+' · '+(r.model||'')+'</div>':'');}
+  }catch(e){a.innerHTML='<b>Claude</b> <span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';}
+  body.scrollTop=body.scrollHeight;
+}
+loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);loadClaude();hfSearch();loadLib();
 </script>
 </body>
 </html>
