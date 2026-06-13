@@ -95,10 +95,15 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 .autofit{border:1px solid var(--a2);border-radius:14px;background:linear-gradient(180deg,rgba(98,224,216,.06),transparent);padding:16px}
 .autofit .hd{display:flex;align-items:center;gap:10px;margin-bottom:6px}.autofit .hd .big{font-size:15px;font-weight:700}
 .slider{display:flex;align-items:center;gap:12px;margin:14px 0}.slider input[type=range]{flex:1}
-.quants{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-.quant{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-family:var(--mono);font-size:12px;background:var(--surf)}
-.quant.pick{border-color:var(--a2);background:var(--surf2)}
+.qaxis{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1px 4px}
+.quants{display:flex;flex-direction:column;gap:6px;margin:4px 0;padding:8px;border-radius:12px;border:1px solid var(--line);background:linear-gradient(180deg,rgba(98,224,216,.10),rgba(139,155,255,.10))}
+.quant{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-family:var(--mono);font-size:12px;background:var(--surf);cursor:pointer;transition:.12s}
+.quant:hover{border-color:var(--a2);transform:translateX(2px)}
+.quant:hover .dlico{color:var(--a2)}
+.quant.pick{border-color:var(--a2);box-shadow:0 0 0 1px var(--a2)}
+.quant.over{opacity:.85}
 .quant .nm{font-weight:600;min-width:74px}.quant .sz{color:var(--muted);min-width:56px}.quant .fit{font-size:11px}.quant .tps{margin-left:auto;color:var(--a2);font-weight:600}.quant.over .tps{color:var(--warn)}
+.quant .dlico{color:var(--faint);font-weight:700;margin-left:4px}
 .prog{height:8px;border-radius:99px;background:var(--surf3);overflow:hidden;margin-top:10px;display:none}.prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--a1),var(--a2));transition:width .2s}
 .place{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--muted)}.layer{height:14px;border-radius:3px}
 
@@ -476,8 +481,7 @@ async function vaultAdd(){const k=val('vk'),v=val('vv');if(!k||!v)return;
 async function vaultDel(key){await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/vault/'+encodeURIComponent(key),{method:'DELETE'});openVault()}
 
 /* ───── Foundry (live · wired to backend) ───── */
-let pref=2, curRepo='';
-const PREF=['speed','speed','balanced','quality','quality'];
+let curRepo='';
 const fmtGB=b=>(b/1073741824).toFixed(1)+' GB';
 async function api(path){const r=await fetch(path);if(!r.ok){let t='';try{t=(await r.json()).detail||''}catch(e){}throw new Error(t||('HTTP '+r.status))}return r.json()}
 async function hfSearch(){
@@ -496,19 +500,21 @@ async function hfSearch(){
 async function fit(repo){
   curRepo=repo;const pane=document.getElementById('fitpane');
   pane.innerHTML='<div class="autofit"><div style="color:var(--muted);font-size:13px">Reading the model header & matching quants to your hardware…</div></div>';
-  try{const d=await api('/api/models/quant-options?repo='+encodeURIComponent(repo)+'&preference='+PREF[pref]);
+  try{const d=await api('/api/models/quant-options?repo='+encodeURIComponent(repo)+'&preference=balanced');
     const hw=d.hardware||{},rec=d.recommended;const reco=(d.options||[]).find(o=>o.quant===rec);
     const fitLabel=o=>o.fits_fully?(o.n_gpu_layers<0?'full GPU':o.n_gpu_layers+' layers GPU'):(o.feasible?o.strategy.replace(/_/g,' '):'too big');
     pane.innerHTML='<div class="autofit">'+
-      '<div class="hd"><span class="tagp tp-best">BEST FOR YOUR HARDWARE</span><span class="big">'+(rec||'—')+'</span></div>'+
-      '<div style="font-size:12.5px;color:var(--muted)">'+repo.split('/').pop()+' · '+(d.n_layers||'?')+' layers'+(d.is_moe?' · MoE':'')+' on '+(hw.gpu||'CPU')+(hw.vram_total?' ('+fmtGB(hw.vram_total)+(hw.vendor?', '+hw.vendor:'')+')':'')+'</div>'+
-      '<div class="slider"><span style="font-size:11px;color:var(--muted)">speed</span><input type="range" min="0" max="4" value="'+pref+'" oninput="pref=+this.value;fit(curRepo)"/><span style="font-size:11px;color:var(--muted)">quality</span></div>'+
-      '<div class="quants">'+(d.options||[]).map(o=>'<div class="quant '+(o.quant===rec?'pick':'')+' '+(o.fits_fully?'':'over')+'">'+
+      '<div class="hd"><span class="tagp tp-best">RECOMMENDED</span><span class="big">'+(rec||'—')+'</span><span style="margin-left:auto;font-size:11px;color:var(--faint)">click a quant to download</span></div>'+
+      '<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px">'+repo.split('/').pop()+' · '+(d.n_layers||'?')+' layers'+(d.is_moe?' · MoE':'')+' on '+(hw.gpu||'CPU')+(hw.vram_total?' ('+fmtGB(hw.vram_total)+(hw.vendor?', '+hw.vendor:'')+')':'')+'</div>'+
+      '<div class="qaxis">↑ faster · smaller</div>'+
+      '<div class="quants">'+(d.options||[]).map(o=>'<div class="quant '+(o.quant===rec?'pick':'')+' '+(o.fits_fully?'':'over')+'" title="Download '+o.quant+' ('+fmtGB(o.size)+')" onclick="dl(\''+o.quant+'\',\''+repo+'\')">'+
         '<span class="nm">'+o.quant+'</span><span class="sz">'+fmtGB(o.size)+'</span>'+
         '<span class="fit tagp '+(o.fits_fully?'tp-gpu':'tp-warn')+'">'+fitLabel(o)+'</span>'+
-        '<span class="tps">~'+o.est_tps+' tps</span></div>').join('')+'</div>'+
+        '<span class="tps">~'+o.est_tps+' tps</span>'+
+        (o.quant===rec?'<span class="tagp tp-best" style="margin-left:8px">best</span>':'')+
+        '<span class="dlico">⇣</span></div>').join('')+'</div>'+
+      '<div class="qaxis">↓ higher quality · larger</div>'+
       (reco?'<div class="place">'+reco.reason+'</div>':'')+
-      '<button class="btn pri" style="margin-top:13px" '+(rec?'onclick="dl(\''+rec+'\',\''+repo+'\')"':'disabled')+'>⇣ Download '+(rec||'')+' — optimal for your machine</button>'+
       '<div class="prog" id="prog"><i id="progi"></i></div><div id="dlmsg" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div></div>';
   }catch(e){pane.innerHTML='<div class="autofit"><div style="color:var(--bad);font-size:13px">Could not analyze: '+e.message+'</div></div>'}
 }
