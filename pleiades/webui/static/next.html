@@ -338,7 +338,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
       <div class="talk">
         <div class="modes">
           <span class="ttl">Talk · alice</span>
-          <div class="seg"><button data-m="stream" onclick="setMode('stream')">Stream</button><button class="on" data-m="pipeline" onclick="setMode('pipeline')">Pipeline</button><button data-m="mind" onclick="setMode('mind')">Mind</button></div>
+          <div class="seg"><button class="on" data-m="stream" onclick="setMode('stream')">Stream</button><button data-m="pipeline" onclick="setMode('pipeline')">Pipeline</button><button data-m="mind" onclick="setMode('mind')">Mind</button></div>
           <div class="sp"></div>
           <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">character</span>
             <select id="talk-char" style="width:auto"></select></div>
@@ -598,16 +598,23 @@ async function searxctl(dir,label){try{const bs=document.querySelectorAll('#conn
   await fetch('/api/search/'+dir,{method:'POST'});setTimeout(loadConn,2000)}catch(e){loadConn()}}
 
 /* ───── TALK: modes + demo run ───── */
-let mode='pipeline';
+let mode='stream';
+let lastRun=null, ran=false;
 function setMode(m){mode=m;document.querySelectorAll('.modes .seg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));renderRun();}
-const RUN={
-  think:[[0.0,'Goal','Find newest verification email → save code to vault'],[1.1,'Plan','search → open → extract → vault_set'],[3.0,'Observe','Stripe message is newest of 3'],[5.0,'Decide','Code 481920 valid → store']],
-  tools:[[1.4,'search_inbox',0.4,'3 results'],[2.6,'read_email',0.6,'Stripe · 481920'],[4.0,'dispatch_subagent',0.3,'format valid'],[5.4,'vault_set',0.3,'stored']],
-  out:[[6.0,'Done. Saved stripe_verify to alice’s vault.']],
-  threads:[[0,0],[1,1],[1,2],[2,3]] /* [thoughtIdx,toolIdx] causal links */
-};
-let ran=false;
-function runDemo(){ran=true;document.getElementById('r-tok').textContent='3,480';document.getElementById('r-tools').textContent='4';document.getElementById('r-turns').textContent='3';renderRun(true);}
+function runDemo(){
+  lastRun={taskText:'check the inbox for a verification code and store it in the vault',
+    think:[[0.0,'Task','check inbox → store the code in the vault']],
+    tools:[[1.4,'search_inbox',0.4,'3 results',true,'query="verification code"'],
+           [2.6,'read_email',0.6,'From: Stripe · code 481920',true,'id=msg_88c2'],
+           [4.0,'dispatch_subagent',0.3,'format valid',true,'task="validate 6-digit"'],
+           [5.4,'vault_set',0.3,'value •••••• → stored',true,'key="stripe_verify"']],
+    out:[[6.2,'Done. Saved stripe_verify to the vault.']],
+    threads:[[0,0],[0,1]],meta:{turns:3,demo:true}};
+  ran=true;const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
+  set('r-tok','3,480');set('r-tools','4');set('r-turns','3');
+  if(mode==='stream')mode='pipeline',document.querySelectorAll('.modes .seg button').forEach(b=>b.classList.toggle('on',b.dataset.m==='pipeline'));
+  renderRun();
+}
 let talkChats={};
 function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 async function loadTalk(){try{const d=await api('/api/profiles');const sel=document.getElementById('talk-char');if(!sel)return;
@@ -628,7 +635,9 @@ async function talkSend(){
   runBox.innerHTML='<div class="rh"><span>⚙</span> tools</div>';const runBody=document.createElement('div');runBody.className='rb';runBox.append(runBody);
   const textEl=document.createElement('div');textEl.className='amsg';
   wrap.append(runBox);wrap.append(textEl);s.append(wrap);s.scrollTop=s.scrollHeight;
-  let acc='';
+  const t0=Date.now();
+  const run={taskText:text,think:[[0,'Task',text]],tools:[],out:[],threads:[],meta:{turns:0}};
+  let acc='';let curIdx=-1,curStart=0;
   try{
     const r=await fetch('/api/chats/'+encodeURIComponent(chatId)+'/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
     if(!r.body)throw new Error('no stream');
@@ -636,74 +645,73 @@ async function talkSend(){
     while(true){const {value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
       let nl;while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
         let ev;try{ev=JSON.parse(line)}catch(e){continue}
+        const tnow=(Date.now()-t0)/1000;
         if(ev.type==='token'||ev.type==='chunk'){acc+=ev.text||'';textEl.textContent=acc}
         else if(ev.type==='tool_call'){runBox.style.display='';const st=document.createElement('div');st.className='tstep';
-          st.innerHTML='<div class="sh"><span class="dot" style="background:var(--warn);box-shadow:none"></span><span class="nm">'+escapeHtml(ev.name||'tool')+'</span><span class="st">running…</span></div>';runBody.append(st)}
-        else if(ev.type==='tool_result'){const st=runBody.lastChild;if(st){const d=st.querySelector('.dot');if(d){d.style.background='var(--good)';d.style.boxShadow='0 0 7px var(--good)'}const t=st.querySelector('.st');if(t)t.textContent=ev.ok===false?'error':'ok'}}
-        else if(ev.type==='done'){const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};set('r-tok',(ev.tokens||0).toLocaleString());set('r-tools',runBody.children.length);const rt=document.getElementById('r-turns');if(rt)rt.textContent=(parseInt(rt.textContent)||0)+1}
+          st.innerHTML='<div class="sh"><span class="dot" style="background:var(--warn);box-shadow:none"></span><span class="nm">'+escapeHtml(ev.name||'tool')+'</span><span class="st">running…</span></div>';runBody.append(st);
+          curStart=tnow;run.tools.push([tnow,ev.name||'tool',null,null,null,(ev.args?JSON.stringify(ev.args).slice(0,160):'')]);curIdx=run.tools.length-1;run.threads.push([0,curIdx])}
+        else if(ev.type==='tool_result'){const st=runBody.lastChild;if(st){const d=st.querySelector('.dot');if(d){d.style.background='var(--good)';d.style.boxShadow='0 0 7px var(--good)'}const tt=st.querySelector('.st');if(tt)tt.textContent=ev.ok===false?'error':'ok'}
+          if(curIdx>=0&&run.tools[curIdx]){run.tools[curIdx][2]=+(tnow-curStart).toFixed(1);run.tools[curIdx][3]=(ev.output||'').slice(0,160);run.tools[curIdx][4]=ev.ok!==false}}
+        else if(ev.type==='done'){const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};set('r-tok',(ev.tokens||0).toLocaleString());set('r-tools',run.tools.length);const rt=document.getElementById('r-turns');if(rt)rt.textContent=(parseInt(rt.textContent)||0)+1;run.meta.turns=1}
         else if(ev.type==='error'){textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(ev.error||'error')+'</span>'}
         s.scrollTop=s.scrollHeight}
     }
-    if(!acc && !runBody.children.length){textEl.innerHTML='<span style="color:var(--muted)">(no response)</span>'}
+    if(!acc && !run.tools.length){textEl.innerHTML='<span style="color:var(--muted)">(no response)</span>'}
   }catch(e){textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>'}
+  run.out=[[((Date.now()-t0)/1000)||1,acc||'(done)']];ran=true;lastRun=run;
+  if(mode!=='stream')renderRun();
 }
-function renderRun(fresh){
-  const s=document.getElementById('talkscroll');
-  document.querySelectorAll('.runblock,.mind,.pipewrap,.runmsg').forEach(e=>e.remove());
-  if(!ran)return;
+function pipeNodes(){const r=lastRun;if(!r)return[];const ns=[{label:'Task',kind:'input',detail:{Input:r.taskText||''}}];
+  r.tools.forEach(t=>ns.push({label:t[1],kind:'tool',detail:{Args:t[5]||'(none)',Output:t[3]||'',Duration:(t[2]!=null?t[2]+'s':'—'),Status:t[4]===false?'error':'ok'}}));
+  ns.push({label:'Result',kind:'output',detail:{Output:(r.out[0]&&r.out[0][1])||''}});return ns;}
+function buildPipeline(s){const w=document.createElement('div');w.className='pipewrap modeblock';
+  w.innerHTML='<div class="pflow" id="pflow"></div><div class="pdetail" id="pdetail"><div style="color:var(--muted);font-size:12px">Click any node to inspect its args, output, and timing.</div></div>';
+  s.append(w);const flow=w.querySelector('#pflow');const nodes=pipeNodes();let delay=120;
+  nodes.forEach((n,i)=>{const seg=document.createElement('div');seg.className='pseg';
+    if(i>0){const ar=document.createElement('div');ar.className='parrow';seg.append(ar);const d=delay;setTimeout(()=>ar.classList.add('in'),d);delay+=110}
+    const nd=document.createElement('div');nd.className='pnode2'+(n.kind==='tool'?' tool':'');
+    nd.innerHTML=(n.kind==='tool'?'<span class="dot"></span>':'<div class="k">'+n.kind+'</div>')+n.label;
+    nd.onclick=()=>{document.querySelectorAll('.pnode2').forEach(x=>x.classList.remove('sel'));nd.classList.add('sel');showPDetail(n)};
+    seg.append(nd);flow.append(seg);const d2=delay;setTimeout(()=>nd.classList.add('in'),d2);delay+=260});
+}
+function buildMind(s){const r=lastRun;const SC=86,W=Math.max(820,(((r.out[0]&&r.out[0][0])||6)*SC)+240);
+  const lane=(tag)=>'<div class="lane"><span class="tag">'+tag+'</span></div>';
+  const m=document.createElement('div');m.className='mind modeblock';
+  m.innerHTML='<div class="legend"><span><i style="background:var(--a1)"></i>thought</span><span><i style="background:var(--a2)"></i>tool</span><span><i style="background:var(--good)"></i>output</span><span style="margin-left:auto;color:var(--faint)">time →</span></div>'+
+    '<div class="lanes"><div class="lanewrap" id="lw" style="width:'+W+'px"><svg id="threads" width="'+W+'" height="240"></svg>'+lane('Thought')+lane('Tools')+lane('Output')+'<div class="playhead" id="ph"></div></div></div>'+
+    '<div class="mindbar"><button class="btn sm pl" onclick="playMind()">▶ replay</button><span style="font-size:11px;color:var(--muted)">'+((r.think.length<=1&&!r.meta.demo)?'local models don’t expose a reasoning stream — Task, tools and output are real; the Claude debug brain adds a full thought lane':'thought → tool → output; threads show what caused what')+'</span></div>';
+  s.append(m);const lw=document.getElementById('lw');
+  const place=(b,laneIdx)=>{b.style.left=(70+b.dataset.t*SC)+'px';b.style.top=(24+laneIdx*74)+'px'};
+  r.think.forEach((t,i)=>{const b=document.createElement('div');b.className='beat th';b.id='th'+i;b.dataset.t=t[0];b.innerHTML='<div class="l">'+t[1]+'</div>'+escapeHtml(String(t[2]).slice(0,90));lw.append(b);place(b,0)});
+  r.tools.forEach((t,i)=>{const b=document.createElement('div');b.className='beat to';b.id='to'+i;b.dataset.t=t[0];b.innerHTML='<div class="l">tool'+(t[2]!=null?' · '+t[2]+'s':'')+'</div>'+escapeHtml(t[1]);lw.append(b);place(b,1)});
+  r.out.forEach((t,i)=>{const b=document.createElement('div');b.className='beat ou';b.id='ou'+i;b.dataset.t=t[0];b.innerHTML='<div class="l">output</div>'+escapeHtml(String(t[1]).slice(0,90));lw.append(b);place(b,2)});
+  drawThreads(SC);playMind();
+}
+function renderRun(){const s=document.getElementById('talkscroll');
+  document.querySelectorAll('.modeblock').forEach(e=>e.remove());
+  if(!ran||!lastRun)return;
   if(mode==='stream'){
-    const b=document.createElement('div');b.className='runblock';
-    b.innerHTML=`<div class="rh"><span>✓</span>run · 4 tools · 3 turns · qwen2.5-coder</div><div class="rb">
-      ${RUN.tools.map(t=>`<div class="tstep"><div class="sh"><span class="dot"></span><span class="nm">mcp__pleiades__${t[1]}</span><span class="st">ok · ${t[2]}s</span></div></div>`).join('')}</div>`;
-    s.append(b);
-    const a=document.createElement('div');a.className='tmsg runmsg';a.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">a</span>alice</div>'+RUN.out[0][1];s.append(a);
-  } else if(mode==='pipeline'){
-    const w=document.createElement('div');w.className='pipewrap';
-    w.innerHTML='<div class="pflow" id="pflow"></div><div class="pdetail" id="pdetail"><div style="color:var(--muted);font-size:12px">Building the run… click any node to inspect its args, output, and timing.</div></div>';
-    s.append(w);
-    const flow=w.querySelector('#pflow');let delay=200;
-    PIPE.forEach((n,i)=>{
-      const seg=document.createElement('div');seg.className='pseg';
-      if(i>0){const ar=document.createElement('div');ar.className='parrow';seg.append(ar);const d=delay;setTimeout(()=>ar.classList.add('in'),d);delay+=120;}
-      const nd=document.createElement('div');nd.className='pnode2'+(n.kind==='tool'?' tool':'');
-      nd.innerHTML=(n.kind==='tool'?'<span class="dot"></span>':'<div class="k">'+n.kind+'</div>')+n.label;
-      nd.onclick=()=>{document.querySelectorAll('.pnode2').forEach(x=>x.classList.remove('sel'));nd.classList.add('sel');showPDetail(n)};
-      seg.append(nd);flow.append(seg);const d2=delay;setTimeout(()=>nd.classList.add('in'),d2);delay+=300;
-    });
-  } else { /* MIND */
-    const SC=86; // px per second
-    const W=860;
-    const lane=(tag)=>`<div class="lane"><span class="tag">${tag}</span></div>`;
-    const m=document.createElement('div');m.className='mind';
-    m.innerHTML=`<div class="legend"><span><i style="background:var(--a1)"></i>thought</span><span><i style="background:var(--a2)"></i>tool</span><span><i style="background:var(--good)"></i>output</span><span style="margin-left:auto;color:var(--faint)">time →</span></div>
-      <div class="lanes"><div class="lanewrap" id="lw" style="width:${W}px">
-        <svg id="threads" width="${W}" height="240"></svg>
-        ${lane('Thought')}${lane('Tools')}${lane('Output')}
-        <div class="playhead" id="ph"></div>
-      </div></div>
-      <div class="mindbar"><button class="btn sm pl" onclick="playMind()">▶ replay</button><span style="font-size:11px;color:var(--muted)">watch thought, tool, and output unfold on one timeline — threads show what caused what</span></div>`;
-    s.append(m);
-    const lw=document.getElementById('lw');
-    const place=(b,laneIdx)=>{b.style.left=(70+b.dataset.t*SC)+'px';b.style.top=(24+laneIdx*74)+'px';};
-    RUN.think.forEach((t,i)=>{const b=document.createElement('div');b.className='beat th';b.id='th'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">${t[1]}</div>${t[2]}`;lw.append(b);place(b,0)});
-    RUN.tools.forEach((t,i)=>{const b=document.createElement('div');b.className='beat to';b.id='to'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">tool · ${t[2]}s</div>${t[1]}`;lw.append(b);place(b,1)});
-    RUN.out.forEach((t,i)=>{const b=document.createElement('div');b.className='beat ou';b.id='ou'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">output</div>${t[1]}`;lw.append(b);place(b,2)});
-    drawThreads(SC);playMind();
-  }
+    if(lastRun.meta&&lastRun.meta.demo){const b=document.createElement('div');b.className='runblock modeblock';
+      b.innerHTML='<div class="rh"><span>✓</span> run · '+lastRun.tools.length+' tools</div><div class="rb">'+
+        lastRun.tools.map(t=>'<div class="tstep"><div class="sh"><span class="dot"></span><span class="nm">mcp__pleiades__'+t[1]+'</span><span class="st">ok · '+t[2]+'s</span></div></div>').join('')+'</div>';
+      s.append(b);const a=document.createElement('div');a.className='tmsg modeblock';a.textContent=lastRun.out[0][1];s.append(a)}
+    return}
+  if(mode==='pipeline'){buildPipeline(s)}else{buildMind(s)}
   s.scrollTop=s.scrollHeight;
 }
-function drawThreads(SC){const svg=document.getElementById('threads');if(!svg)return;
-  const ctr=(id,lane)=>{const e=document.getElementById(id);return{x:70+(+e.dataset.t)*SC+20,y:24+lane*74+20}};
-  svg.innerHTML=RUN.threads.map(([ti,toi])=>{const a=ctr('th'+ti,0),b=ctr('to'+toi,1);
-    return `<path d="M${a.x} ${a.y+18} C ${a.x} ${a.y+50}, ${b.x} ${b.y-30}, ${b.x} ${b.y-12}" stroke="var(--a1)" fill="none" opacity="0.4" stroke-width="1.4"/>`}).join('')
-    + RUN.tools.map((t,i)=>{const a=ctr('to'+i,1),b=ctr('ou0',2);return i===RUN.tools.length-1?`<path d="M${a.x} ${a.y+18} C ${a.x} ${a.y+50}, ${b.x} ${b.y-30}, ${b.x} ${b.y-12}" stroke="var(--good)" fill="none" opacity="0.4" stroke-width="1.4"/>`:''}).join('');}
+function drawThreads(SC){const svg=document.getElementById('threads');if(!svg||!lastRun)return;
+  const ctr=(id,lane)=>{const e=document.getElementById(id);if(!e)return null;return{x:70+(+e.dataset.t)*SC+20,y:24+lane*74+20}};
+  let paths=lastRun.threads.map(([ti,toi])=>{const a=ctr('th'+ti,0),b=ctr('to'+toi,1);if(!a||!b)return'';
+    return '<path d="M'+a.x+' '+(a.y+18)+' C '+a.x+' '+(a.y+50)+', '+b.x+' '+(b.y-30)+', '+b.x+' '+(b.y-12)+'" stroke="var(--a1)" fill="none" opacity="0.4" stroke-width="1.4"/>'}).join('');
+  if(lastRun.tools.length){const a=ctr('to'+(lastRun.tools.length-1),1),b=ctr('ou0',2);if(a&&b)paths+='<path d="M'+a.x+' '+(a.y+18)+' C '+a.x+' '+(a.y+50)+', '+b.x+' '+(b.y-30)+', '+b.x+' '+(b.y-12)+'" stroke="var(--good)" fill="none" opacity="0.4" stroke-width="1.4"/>'}
+  svg.innerHTML=paths;}
 let mt=null;
-function playMind(){const ph=document.getElementById('ph');if(!ph)return;const SC=86,W=860,DUR=6.6;
+function playMind(){const ph=document.getElementById('ph');if(!ph)return;const SC=86;const W=ph.parentElement?ph.parentElement.clientWidth:860;const DUR=((lastRun&&lastRun.out[0]&&lastRun.out[0][0])||6)+0.8;
   document.querySelectorAll('.beat').forEach(b=>b.classList.remove('lit'));
   let start=null;cancelAnimationFrame(mt);
-  function step(ts){if(!start)start=ts;const el=(ts-start)/1000*1.2;const x=70+el*SC;ph.style.left=Math.min(x,W-4)+'px';
+  function step(ts){if(!start)start=ts;const el=(ts-start)/1000*1.4;const x=70+el*SC;ph.style.left=Math.min(x,W-4)+'px';
     document.querySelectorAll('.beat').forEach(b=>{if(+b.dataset.t<=el)b.classList.add('lit')});
-    if(el<DUR+0.6)mt=requestAnimationFrame(step);}
+    if(el<DUR+0.6)mt=requestAnimationFrame(step)}
   mt=requestAnimationFrame(step);}
 
 /* sparkline */
