@@ -344,10 +344,9 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
             <select id="talk-char" style="width:auto"></select></div>
         </div>
         <div class="talkscroll" id="talkscroll">
-          <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">P</span>Pleiades</div>Pick a character and send a message — it runs on the local model with the full tool belt. The button below shows the Stream / Pipeline / Mind visualizations as a concept demo.</div>
-          <button class="btn" onclick="runDemo()">▶ demo: see Stream · Pipeline · Mind</button>
+          <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">P</span>Pleiades</div>Pick a character and send a message — it runs on the local model with the full tool belt. Switch <b>Stream / Pipeline / Mind</b> to see how each run unfolds.</div>
         </div>
-        <div class="composer"><input id="talkin" placeholder="Message alice — every tool always on…"/><button class="btn pri" onclick="talkSend()">↑</button></div>
+        <div class="composer"><input id="talkin" placeholder="Message — every tool always on… (Enter to send)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();talkSend()}"/><button class="btn pri" onclick="talkSend()">↑</button></div>
 
         <aside class="rail">
           <div class="rc"><h4>Model</h4>
@@ -642,11 +641,12 @@ async function talkSend(){
   wrap.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">'+character[0].toLowerCase()+'</span>'+character+'</div>';
   const runBox=document.createElement('div');runBox.className='runblock';runBox.style.display='none';
   runBox.innerHTML='<div class="rh"><span>⚙</span> tools</div>';const runBody=document.createElement('div');runBody.className='rb';runBox.append(runBody);
-  const textEl=document.createElement('div');textEl.className='amsg';
-  wrap.append(runBox);wrap.append(textEl);s.append(wrap);s.scrollTop=s.scrollHeight;
+  const thinkEl=document.createElement('div');thinkEl.className='amsg';thinkEl.style.cssText='color:var(--faint);font-size:12.5px;white-space:pre-wrap;display:none;border-left:2px solid var(--a1);padding-left:10px;margin-bottom:6px';
+  const textEl=document.createElement('div');textEl.className='amsg';textEl.innerHTML='<span style="color:var(--faint)">⏳ generating… (a large local model can take 30–60s for the first token)</span>';
+  wrap.append(runBox);wrap.append(thinkEl);wrap.append(textEl);s.append(wrap);s.scrollTop=s.scrollHeight;
   const t0=Date.now();
   const run={taskText:text,think:[[0,'Task',text]],tools:[],out:[],threads:[],meta:{turns:0}};
-  let acc='';let curIdx=-1,curStart=0;
+  let acc='';let curIdx=-1,curStart=0;let thinkAcc='';let firstReason=true;let started=false;
   try{
     const r=await fetch('/api/chats/'+encodeURIComponent(chatId)+'/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
     if(!r.body)throw new Error('no stream');
@@ -655,7 +655,8 @@ async function talkSend(){
       let nl;while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
         let ev;try{ev=JSON.parse(line)}catch(e){continue}
         const tnow=(Date.now()-t0)/1000;
-        if(ev.type==='token'||ev.type==='chunk'){acc+=ev.text||'';textEl.textContent=acc}
+        if(ev.type==='reasoning'){if(!started){started=true;textEl.textContent=''}thinkEl.style.display='';thinkAcc+=ev.text||'';thinkEl.textContent='💭 '+thinkAcc.slice(-900);if(firstReason){run.think.push([(Date.now()-t0)/1000,'Reasoning',(ev.text||'').slice(0,90)]);firstReason=false}}
+        else if(ev.type==='token'||ev.type==='chunk'){if(!started){started=true;textEl.textContent=''}acc+=ev.text||'';textEl.textContent=acc}
         else if(ev.type==='tool_call'){runBox.style.display='';const st=document.createElement('div');st.className='tstep';
           st.innerHTML='<div class="sh"><span class="dot" style="background:var(--warn);box-shadow:none"></span><span class="nm">'+escapeHtml(ev.name||'tool')+'</span><span class="st">running…</span></div>';runBody.append(st);
           curStart=tnow;run.tools.push([tnow,ev.name||'tool',null,null,null,(ev.args?JSON.stringify(ev.args).slice(0,160):'')]);curIdx=run.tools.length-1;run.threads.push([0,curIdx])}
@@ -698,7 +699,7 @@ function buildMind(s){const r=lastRun;const SC=86,W=Math.max(820,(((r.out[0]&&r.
 }
 function renderRun(){const s=document.getElementById('talkscroll');
   document.querySelectorAll('.modeblock').forEach(e=>e.remove());
-  if(!ran||!lastRun)return;
+  if(!ran||!lastRun){if(mode!=='stream'){const h=document.createElement('div');h.className='modeblock';h.style.cssText='color:var(--faint);font-size:12.5px;padding:8px 2px';h.textContent='Send a message — its run renders here as a '+mode+' view.';s.append(h)}return;}
   if(mode==='stream'){
     if(lastRun.meta&&lastRun.meta.demo){const b=document.createElement('div');b.className='runblock modeblock';
       b.innerHTML='<div class="rh"><span>✓</span> run · '+lastRun.tools.length+' tools</div><div class="rb">'+

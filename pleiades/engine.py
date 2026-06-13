@@ -347,6 +347,10 @@ class Engine:
                         delta = chunk.choices[0].delta
                         if delta is None:
                             continue
+                        rc = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                        if rc:
+                            t_first = t_first or _time.time()
+                            yield {"type": "reasoning", "text": rc}
                         if delta.content:
                             content += delta.content
                             n_tokens += 1
@@ -374,6 +378,9 @@ class Engine:
                     )
                     msg = resp.choices[0].message
                     content = msg.content or ""
+                    rc = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+                    if rc:
+                        yield {"type": "reasoning", "text": rc}
                     if content:
                         n_tokens += max(1, len(content) // 4)
                         now = _time.time()
