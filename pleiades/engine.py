@@ -26,15 +26,13 @@ from .tools import ToolBelt, ToolContext, build_default_belt
 MAX_TOOL_ITERATIONS = 8  # legacy; loops are now unbounded with periodic self-checks
 
 _REFLECTION = (
-    "\n\n[Self-check after {n} steps — this is NOT a stop command] Take a breath and "
-    "honestly evaluate your situation:\n"
-    "- What concrete progress have you actually made toward the goal so far?\n"
-    "- Are you repeating the same tool calls or actions without gaining new information "
-    "(i.e. going in circles)?\n"
-    "- If you are making real progress, keep going. If you are looping or stuck, CHANGE "
-    "your approach: re-read the goal, try a genuinely different strategy, or if the task "
-    "is truly complete (or actually impossible) then stop and report what you found. "
-    "Be honest with yourself instead of spinning."
+    "\n\n[Self-check after {n} steps — keep going; do NOT end your turn or stop here] "
+    "Quickly evaluate, then CONTINUE working:\n"
+    "- Are you making real progress, or repeating the same actions/tool calls (looping)?\n"
+    "- If you are looping or stuck, do NOT give up or finish — change strategy: re-read the "
+    "goal, try a different tool or angle, break the task down, or gather missing info.\n"
+    "- Only give a final answer once the goal is genuinely accomplished; otherwise take the "
+    "next concrete action toward it."
 )
 
 

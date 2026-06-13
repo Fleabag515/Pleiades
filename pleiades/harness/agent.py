@@ -82,15 +82,13 @@ _WARN_NOTICE = (
 )
 
 _REFLECTION = (
-    "\n\n[Self-check after {n} steps — this is NOT a stop command] Take a breath and "
-    "honestly evaluate your situation:\n"
-    "- What concrete progress have you actually made toward the goal so far?\n"
-    "- Are you repeating the same tool calls or actions without gaining new information "
-    "(i.e. going in circles)?\n"
-    "- If you are making real progress, keep going. If you are looping or stuck, CHANGE "
-    "your approach: re-read the goal, try a genuinely different strategy, or if the task "
-    "is truly complete (or actually impossible) then stop and report what you found. "
-    "Be honest with yourself instead of spinning."
+    "\n\n[Self-check after {n} steps — keep going; do NOT end your turn or stop here] "
+    "Quickly evaluate, then CONTINUE working:\n"
+    "- Are you making real progress, or repeating the same actions/tool calls (looping)?\n"
+    "- If you are looping or stuck, do NOT give up or finish — change strategy: re-read the "
+    "goal, try a different tool or angle, break the task down, or gather missing info.\n"
+    "- Only give a final answer once the goal is genuinely accomplished; otherwise take the "
+    "next concrete action toward it."
 )
 
 
@@ -187,6 +185,7 @@ class Agent:
         messages: list[dict] = [{"role": "user", "content": task}]
         answer = ""
         warned = False
+        fails = 0
         interval = max(0, getattr(self.cfg, "eval_interval", 40))
 
         step = 0
@@ -194,7 +193,24 @@ class Agent:
             if interval and step and step % interval == 0:
                 messages.append({"role": "user", "content": _REFLECTION.format(n=step)})
                 emit("reflect", {"step": step})
-            reply = self.llm.chat(messages, active, tier, system=system)
+            try:
+                reply = self.llm.chat(messages, active, tier, system=system)
+                fails = 0
+            except Exception as e:  # never error out — recover and keep working
+                fails += 1
+                emit("model_error", {"error": str(e), "fails": fails})
+                if fails >= 6:
+                    emit("done", answer)
+                    return AgentResult(
+                        answer=answer or f"(paused: model unavailable after {fails} attempts: {e})",
+                        steps=step + 1, transcript=messages)
+                import time as _t
+                _t.sleep(min(2 * fails, 8))
+                messages.append({"role": "user", "content":
+                    f"[system] The previous model call failed ({e}). Do not stop — wait, then "
+                    "retry a smaller, simpler step toward the goal."})
+                step += 1
+                continue
 
             # --- context manager: warn at 60%, squeeze old output at 75% ---
             frac = reply.usage.get("input_tokens", 0) / max(1, self.cfg.context_budget)
