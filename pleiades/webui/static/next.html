@@ -291,6 +291,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
             <div class="field"><label>Vault secrets <span style="color:var(--faint)">· Fernet-encrypted</span></label>
               <button class="btn" id="cf-vaultbtn" style="width:100%;display:flex;justify-content:space-between" onclick="openVault()">🔒 Manage secrets<span class="vc" style="color:var(--muted)">— ›</span></button>
             </div>
+            <div class="field"><label>Memory · Anamnesis</label><div id="cf-mem" style="font-size:12px;color:var(--muted);font-family:var(--mono)">—</div></div>
           </div>
         </div>
         <button class="btn pri" id="cf-save" style="margin-top:6px" onclick="saveChar()">Save character</button>
@@ -454,9 +455,14 @@ async function configChar(name){curChar=name;
     setVal('cf-den',pf.discord_enabled?'yes':'no');setVal('cf-dmention',pf.discord_require_mention?'yes':'no');
     setVal('cf-dchan',pf.discord_allowed_channels||'');
     const vb=document.getElementById('cf-vaultbtn');if(vb)vb.querySelector('.vc').textContent=(pf.vault?pf.vault.length:0)+' stored ›';
+    loadCharMemory(name);
     document.getElementById('cfg-h').scrollIntoView({behavior:'smooth',block:'start'});
   }catch(e){}
 }
+async function loadCharMemory(name){const el=document.getElementById('cf-mem');if(!el)return;el.textContent='loading…';
+  try{const d=await api('/api/profiles/'+encodeURIComponent(name)+'/anamnesis');const s=d.stats||{};
+    el.innerHTML=(d.char_status||'?')+' · '+(s.turns||0).toLocaleString()+' turns · '+(s.scenes||0)+' scenes · '+(s.engrams||0)+' engrams · '+(s.observations||0)+' obs';
+  }catch(e){el.textContent='memory unavailable (daemon down?)'}}
 async function saveChar(){if(!curChar)return;const btn=document.getElementById('cf-save');
   const body={email_address:val('cf-email'),imap_host:val('cf-imaph'),imap_port:+val('cf-imapp')||993,
     smtp_host:val('cf-smtph'),smtp_port:+val('cf-smtpp')||587,persona_source:val('cf-persona'),
