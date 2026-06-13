@@ -85,16 +85,25 @@ class Engine:
         dedicated server; otherwise use the default in-process engine (PLEIADES_MODEL_PATH).
         """
         model = getattr(profile, "model", "") or ""
-        if model:
-            from .models import ModelManager, ModelError
-            mm = ModelManager()
-            if mm.get(model):
-                try:
-                    if not mm.is_running(model):
-                        mm.start(model)        # auto-start the assigned model
-                    return mm.base_url(model)
-                except ModelError:
-                    pass  # fall back to the default engine below
+        from .models import ModelManager, ModelError
+        mm = ModelManager()
+        if model and mm.get(model):
+            try:
+                if not mm.is_running(model):
+                    mm.start(model)        # auto-start the assigned model
+                return mm.base_url(model)
+            except ModelError:
+                pass  # fall through
+        # No usable assigned model: prefer any registered model that is already
+        # running over the empty default in-process engine (which needs
+        # PLEIADES_MODEL_PATH). Keeps chat working when a model is up but the
+        # character's assignment is missing or stale.
+        try:
+            running = [m for m in mm.list() if m.get("running")]
+            if running:
+                return mm.base_url(running[0]["name"])
+        except Exception:
+            pass
         return ensure_inference(self.settings)
 
     @staticmethod

@@ -261,7 +261,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <!-- FOUNDRY -->
     <section class="view" id="v-foundry">
       <h1 class="h1">Model foundry</h1><p class="sub">Search any GGUF on Hugging Face. Pleiades picks the optimal quant for your exact hardware and downloads it.</p>
-      <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder"/><button class="btn pri" onclick="hfSearch()">Search</button></div>
+      <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder" onkeydown="if(event.key==='Enter')hfSearch()"/><button class="btn pri" onclick="hfSearch()">Search</button></div>
       <div class="row2" style="align-items:start;gap:18px"><div id="results"></div><div id="fitpane"></div></div>
       <h3 style="margin:24px 0 10px;font-size:13px;color:var(--muted)">Installed library</h3><div id="library"></div>
     </section>
@@ -420,7 +420,7 @@ async function loadDeck(){
       _srow(sv.inference.up,'Inference engine',':'+port(sv.inference.url)+' · '+sv.inference.state)+
       _srow(sv.anamnesis.up,'Anamnesis memory',':'+port(sv.anamnesis.url)+' · '+sv.anamnesis.characters+' chars')+
       _srow(sv.searxng.up,'SearXNG',':'+port(sv.searxng.url)+' · '+(sv.searxng.up?'running':'stopped')));
-    setHTML('deck-running', run.length?run.map(m=>'<div class="kv"><span class="k">'+m.name+'</span><span class="v" style="color:var(--a2)">:'+m.port+' · '+m.n_gpu_layers+' layers</span></div>').join(''):'<div style="color:var(--muted);font-size:12px">none running</div>');
+    setHTML('deck-running', run.length?run.map(m=>'<div class="kv"><span class="k">'+m.name+'</span><span class="v" style="display:flex;gap:8px;align-items:center;color:var(--a2)">:'+m.port+' <button class="btn sm" onclick="modelAct(\''+m.name+'\',\'stop\')">Stop</button></span></div>').join(''):'<div style="color:var(--muted);font-size:12px">none running</div>');
   }catch(e){setHTML('deck-metrics','<div class="card" style="color:var(--bad)">'+e.message+'</div>')}
 }
 let MODELS=[],curChar='';
@@ -438,8 +438,9 @@ async function loadChars(){
     if((d.profiles||[]).length && !curChar) configChar(d.profiles[0].name);
   }catch(e){document.getElementById('charcards').innerHTML='<div class="card" style="color:var(--bad)">'+e.message+'</div>'}
 }
+let curCharModel='';
 async function configChar(name){curChar=name;
-  try{const pf=await api('/api/profiles/'+encodeURIComponent(name));
+  try{const pf=await api('/api/profiles/'+encodeURIComponent(name));curCharModel=pf.model||'';
     document.getElementById('cfg-h').innerHTML=name+' · configuration <span class="t">editing</span>';
     const opts=['<option value="">default engine</option>'].concat(MODELS.map(m=>'<option '+(m.name===pf.model?'selected':'')+'>'+m.name+'</option>')).concat(['<option value="__claude"'+(pf.model==='__claude'?' selected':'')+'>Claude · debug only</option>']).join('');
     setHTML('cf-model',opts);
@@ -459,7 +460,7 @@ async function saveChar(){if(!curChar)return;const btn=document.getElementById('
     discord_allowed_channels:val('cf-dchan')};
   if(btn)btn.textContent='Saving…';
   try{await fetch('/api/profiles/'+encodeURIComponent(curChar),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const m=val('cf-model');await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m==='__claude'?'':m})});
+    const m=val('cf-model');const target=(m==='__claude'?'':m);if(target!==(curCharModel||'')){await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:target})});curCharModel=target;}
     if(btn)btn.textContent='✓ Saved';setTimeout(()=>{if(btn)btn.textContent='Save character'},1500);loadChars();
   }catch(e){if(btn)btn.textContent='Save failed'}
 }
@@ -515,13 +516,21 @@ async function fit(repo){
 async function dl(quant,repo){
   const p=document.getElementById('prog'),i=document.getElementById('progi'),m=document.getElementById('dlmsg');
   p.style.display='block';m.textContent='starting download…';
-  try{const r=await fetch('/api/models/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:repo,quant:quant})});if(!r.ok)throw new Error('HTTP '+r.status)}
-  catch(e){m.innerHTML='<span style="color:var(--bad)">failed to start: '+e.message+'</span>';return}
-  const poll=setInterval(async()=>{try{const st=await api('/api/models/fetch/status');
-    if(st.total){i.style.width=Math.round(st.done/st.total*100)+'%';m.textContent='downloading '+(st.file||'')+' · '+Math.round(st.done/st.total*100)+'%'}
-    if(st.status==='done'){clearInterval(poll);i.style.width='100%';m.innerHTML='✓ downloaded & registered. <b style="color:var(--a2)">Ready to run.</b>';loadLib()}
-    else if(st.status==='error'){clearInterval(poll);m.innerHTML='<span style="color:var(--bad)">error: '+(st.error||'')+'</span>'}
-  }catch(e){}},700);
+  try{const r=await fetch('/api/models/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:repo,quant:quant})});
+    if(r.status===409){m.textContent='a download is already running — attaching to it…';}
+    else if(!r.ok){let t='';try{t=(await r.json()).detail}catch(e){}throw new Error(t||('HTTP '+r.status))}
+  }catch(e){m.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';return}
+  pollFetch(p,i,m);
+}
+function pollFetch(p,i,m){
+  if(p)p.style.display='block';
+  if(window._dlpoll)clearInterval(window._dlpoll);
+  window._dlpoll=setInterval(async()=>{try{const st=await api('/api/models/fetch/status');
+    if(st.total){const pc=Math.round(st.done/st.total*100);if(i)i.style.width=pc+'%';if(m)m.textContent='downloading '+(st.file||'')+' · '+pc+'%'}
+    else if(st.status==='downloading'&&m){m.textContent='downloading '+(st.file||'')+'…'}
+    if(st.status==='done'){clearInterval(window._dlpoll);if(i)i.style.width='100%';if(m)m.innerHTML='✓ downloaded & registered. <b style="color:var(--a2)">Ready to run.</b>';loadLib()}
+    else if(st.status==='error'){clearInterval(window._dlpoll);if(m)m.innerHTML='<span style="color:var(--bad)">error: '+escapeHtml(st.error||'')+'</span>'}
+  }catch(e){}},800);
 }
 async function loadLib(){const box=document.getElementById('library');
   try{const d=await api('/api/models');const running=new Set((d.running||[]).map(m=>m.name));
@@ -533,7 +542,7 @@ async function loadLib(){const box=document.getElementById('library');
         '<button class="btn sm" onclick="modelAct(\''+m.name+'\',\''+(run?'stop':'start')+'\')">'+(run?'Stop':'Start')+'</button></div>';box.append(e)});
   }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+e.message+'</div>'}
 }
-async function modelAct(name,act){try{await fetch('/api/models/'+encodeURIComponent(name)+'/'+act,{method:'POST'});setTimeout(loadLib,600)}catch(e){}}
+async function modelAct(name,act){try{await fetch('/api/models/'+encodeURIComponent(name)+'/'+act,{method:'POST'});setTimeout(function(){loadLib();try{loadDeck()}catch(e){}},700)}catch(e){}}
 async function refreshState(){
   try{const h=await api('/api/hardware');const g=h.gpus&&h.gpus[0];
     if(g&&g.vram_total){const used=g.vram_total-g.vram_free;const pct=Math.round(used/g.vram_total*100);
