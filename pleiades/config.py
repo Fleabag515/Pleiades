@@ -201,7 +201,8 @@ class Settings:
     # --- Agent harness: execution policy + loop ---
     exec_policy: str = "ask"          # ask | allow | deny (read-only tools always run)
     workspace_root: str = "."
-    max_steps: int = 40
+    max_steps: int = 40           # hard cap for Claude-lab/subagents; the main loop is unbounded
+    eval_interval: int = 40       # inject a self-evaluation nudge every N agent turns (0 = off)
     max_subagent_depth: int = 3
     context_budget: int = 180_000
     tool_mode: str = "auto"           # auto | all | search
@@ -264,6 +265,7 @@ class Settings:
         s.embed_model = os.environ.get("PLEIADES_EMBED_MODEL", s.embed_model)
         if os.environ.get("PLEIADES_EXEC_POLICY"):
             s.exec_policy = os.environ["PLEIADES_EXEC_POLICY"]
+        s.eval_interval = _int("PLEIADES_EVAL_INTERVAL", s.eval_interval)
 
         # The "openai" backend defaults to our local inference engine.
         if not s.openai_host:

@@ -81,6 +81,18 @@ _WARN_NOTICE = (
     "(remember) soon, and keep tool outputs small (use line ranges/filters)."
 )
 
+_REFLECTION = (
+    "\n\n[Self-check after {n} steps — this is NOT a stop command] Take a breath and "
+    "honestly evaluate your situation:\n"
+    "- What concrete progress have you actually made toward the goal so far?\n"
+    "- Are you repeating the same tool calls or actions without gaining new information "
+    "(i.e. going in circles)?\n"
+    "- If you are making real progress, keep going. If you are looping or stuck, CHANGE "
+    "your approach: re-read the goal, try a genuinely different strategy, or if the task "
+    "is truly complete (or actually impossible) then stop and report what you found. "
+    "Be honest with yourself instead of spinning."
+)
+
 
 def squeeze_messages(messages: list[dict], keep_last: int = 4,
                      clip: int = 400) -> int:
@@ -175,8 +187,13 @@ class Agent:
         messages: list[dict] = [{"role": "user", "content": task}]
         answer = ""
         warned = False
+        interval = max(0, getattr(self.cfg, "eval_interval", 40))
 
-        for step in range(self.cfg.max_steps):
+        step = 0
+        while True:
+            if interval and step and step % interval == 0:
+                messages.append({"role": "user", "content": _REFLECTION.format(n=step)})
+                emit("reflect", {"step": step})
             reply = self.llm.chat(messages, active, tier, system=system)
 
             # --- context manager: warn at 60%, squeeze old output at 75% ---
@@ -212,10 +229,7 @@ class Agent:
                 results.append((call, out, err))
 
             messages.extend(self._result_turns(reply.backend, results))
-
-        emit("done", answer)
-        return AgentResult(answer=answer or "(step limit reached)",
-                           steps=self.cfg.max_steps, transcript=messages)
+            step += 1
 
     def _active_tools(self) -> list[Tool]:
         """Which tools to expose this turn. In search mode, only discovery tools

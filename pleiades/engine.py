@@ -23,7 +23,20 @@ from .inference import ensure_inference
 from .profiles import Profile, ProfileManager
 from .tools import ToolBelt, ToolContext, build_default_belt
 
-MAX_TOOL_ITERATIONS = 8
+MAX_TOOL_ITERATIONS = 8  # legacy; loops are now unbounded with periodic self-checks
+
+_REFLECTION = (
+    "\n\n[Self-check after {n} steps — this is NOT a stop command] Take a breath and "
+    "honestly evaluate your situation:\n"
+    "- What concrete progress have you actually made toward the goal so far?\n"
+    "- Are you repeating the same tool calls or actions without gaining new information "
+    "(i.e. going in circles)?\n"
+    "- If you are making real progress, keep going. If you are looping or stuck, CHANGE "
+    "your approach: re-read the goal, try a genuinely different strategy, or if the task "
+    "is truly complete (or actually impossible) then stop and report what you found. "
+    "Be honest with yourself instead of spinning."
+)
+
 
 # Persona-agnostic operating contract injected into the chat path when the caller
 # supplies no system prompt of its own. Anamnesis injects the character's persona
@@ -268,7 +281,12 @@ class Engine:
 
         tools = belt.openai_schema()
 
-        for _ in range(MAX_TOOL_ITERATIONS):
+        interval = max(0, getattr(self.settings, "eval_interval", 40))
+        round_i = 0
+        while True:
+            if interval and round_i and round_i % interval == 0:
+                messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
+            round_i += 1
             resp = client.chat.completions.create(
                 model=self._model_for(profile),
                 messages=messages,
@@ -331,7 +349,13 @@ class Engine:
             tools = belt.openai_schema()
             import time as _time
 
-            for _ in range(MAX_TOOL_ITERATIONS):
+            interval = max(0, getattr(self.settings, "eval_interval", 40))
+            round_i = 0
+            while True:
+                if interval and round_i and round_i % interval == 0:
+                    messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
+                    yield {"type": "reasoning", "text": "[self-check] evaluating progress and checking for loops…"}
+                round_i += 1
                 content = ""
                 calls: dict[int, dict] = {}
                 streamed = True
