@@ -192,6 +192,16 @@ class SettingsUpdate(BaseModel):
     default_tier: Optional[str] = None
     exec_policy: Optional[str] = None
     max_steps: Optional[int] = None
+    eval_interval: Optional[int] = None
+    flash_attn: Optional[str] = None
+    kv_cache_type: Optional[str] = None
+    n_batch: Optional[int] = None
+    n_ubatch: Optional[int] = None
+    mlock: Optional[bool] = None
+    draft_model_path: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    ollama_cloud_url: Optional[str] = None
+    ollama_cloud_api_key: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -403,12 +413,23 @@ def create_app() -> FastAPI:
             "anamnesis_control_url": "PLEIADES_ANAMNESIS_CONTROL_URL",
             "searxng_url": "PLEIADES_SEARXNG_URL",
             "exec_policy": "PLEIADES_EXEC_POLICY",
+            "eval_interval": "PLEIADES_EVAL_INTERVAL",
+            "flash_attn": "PLEIADES_FLASH_ATTN",
+            "kv_cache_type": "PLEIADES_KV_CACHE_TYPE",
+            "n_batch": "PLEIADES_N_BATCH",
+            "n_ubatch": "PLEIADES_N_UBATCH",
+            "draft_model_path": "PLEIADES_DRAFT_MODEL",
+            "openrouter_api_key": "OPENROUTER_API_KEY",
+            "ollama_cloud_url": "OLLAMA_CLOUD_URL",
+            "ollama_cloud_api_key": "OLLAMA_CLOUD_API_KEY",
         }
         updates: dict[str, str] = {}
         for field_name, env_name in env_map.items():
             val = getattr(body, field_name)
             if val is not None:
                 updates[env_name] = str(val)
+        if body.mlock is not None:
+            updates["PLEIADES_MLOCK"] = "true" if body.mlock else "false"
         if updates:
             _write_env(updates)
         return get_settings()

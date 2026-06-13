@@ -240,6 +240,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <div class="nav" data-v="claude"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 5l1.5 3.5L17 12l-3.5 1.5L12 17l-1.5-3.5L7 12l3.5-1.5z"/></svg>Claude lab<span class="ct">Pro</span></div>
     <div class="nl">Operate</div>
     <div class="nav" data-v="talk"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>Talk</div>
+    <div class="nav" data-v="settings"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.7-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L14 2.6h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L3.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.7 2 3.5 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.5zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>Settings</div>
     <div class="foot"><span class="dot up"></span>127.0.0.1 · local only</div>
   </aside>
 
@@ -378,6 +379,37 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
       </div>
     </section>
 
+    <section class="view" id="v-settings">
+      <h1 class="h1">Settings</h1><p class="sub">Engine, agent loop, services, and optional cloud providers. Local inference is the default brain.</p>
+      <div class="row2" style="align-items:start;gap:18px">
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="card"><h3>Local engine <span class="t">llama.cpp</span></h3>
+            <div class="field"><label>Default model path (GGUF)</label><input id="se-model_path"/></div>
+            <div class="row2"><div class="field"><label>Context (n_ctx)</label><input id="se-n_ctx"/></div><div class="field"><label>GPU layers</label><input id="se-n_gpu_layers"/></div></div>
+            <div class="row2"><div class="field"><label>Flash attention</label><select id="se-flash_attn"><option>auto</option><option>on</option><option>off</option></select></div><div class="field"><label>KV-cache quant (compaction)</label><select id="se-kv_cache_type"><option value="">f16 (default)</option><option value="q8_0">q8_0 (~½ memory)</option><option value="q4_0">q4_0 (~¼)</option></select></div></div>
+            <div class="row2"><div class="field"><label>Batch size (-b)</label><input id="se-n_batch" placeholder="0 = default"/></div><div class="field"><label>Keep weights in RAM (mlock)</label><select id="se-mlock"><option value="false">no</option><option value="true">yes</option></select></div></div>
+            <div class="field"><label>Speculative draft model (GGUF path)</label><input id="se-draft_model_path" placeholder="optional — a tiny model to speed up a huge one"/></div>
+          </div>
+          <div class="card"><h3>Agent loop</h3>
+            <div class="row2"><div class="field"><label>Exec policy</label><select id="se-exec_policy"><option>ask</option><option value="allow">act</option><option>deny</option></select></div><div class="field"><label>Self-check every N turns</label><input id="se-eval_interval" placeholder="40"/></div></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="card"><h3>Services</h3>
+            <div class="field"><label>Anamnesis control URL</label><input id="se-anamnesis_control_url"/></div>
+            <div class="field"><label>SearXNG URL</label><input id="se-searxng_url"/></div>
+          </div>
+          <div class="card"><h3>Cloud providers <span class="t">optional</span></h3>
+            <div style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.5">Local GGUF stays the default. These let a character use a hosted model — routed through Anamnesis, so memory still applies. Keys are stored locally in <code>.env</code>.</div>
+            <div class="field"><label>OpenRouter API key</label><input id="se-openrouter_api_key" type="password" placeholder="sk-or-..."/></div>
+            <div class="row2"><div class="field"><label>Ollama Cloud URL</label><input id="se-ollama_cloud_url"/></div><div class="field"><label>Ollama Cloud key</label><input id="se-ollama_cloud_api_key" type="password"/></div></div>
+          </div>
+        </div>
+      </div>
+      <button class="btn pri" id="se-save" style="margin-top:14px" onclick="saveSettings()">Save settings</button>
+      <span id="se-msg" style="margin-left:12px;font-size:12.5px;color:var(--muted)"></span>
+    </section>
+
   </main>
 </div>
 
@@ -398,7 +430,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
   document.getElementById('main').classList.toggle('flush',v==='talk');
-  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='claude')loadClaude();}
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='claude')loadClaude(); if(v==='settings')loadSettings();}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -790,6 +822,31 @@ async function claudeSend(){const i=document.getElementById('cl-input');const t=
     if(!acc&&!thinkAcc&&pend.parentNode){pend.textContent='(no output)'}
   }catch(e){clear();txt.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>'}
 }
+async function loadSettings(){try{const d=await api('/api/settings');const s=d.settings||{};
+  const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!=null&&v!=='***')e.value=v};
+  set('se-model_path',s.model_path);set('se-n_ctx',s.n_ctx);set('se-n_gpu_layers',s.n_gpu_layers);
+  set('se-flash_attn',s.flash_attn||'auto');set('se-kv_cache_type',s.kv_cache_type||'');
+  set('se-n_batch',s.n_batch||'');set('se-mlock',s.mlock?'true':'false');set('se-draft_model_path',s.draft_model_path||'');
+  set('se-exec_policy',(s.exec_policy==='allow'?'allow':s.exec_policy)||'ask');set('se-eval_interval',s.eval_interval);
+  set('se-anamnesis_control_url',s.anamnesis_control_url);set('se-searxng_url',s.searxng_url);
+  set('se-ollama_cloud_url',s.ollama_cloud_url);
+  const ph=(id,v)=>{const e=document.getElementById(id);if(e&&v==='***')e.placeholder='•••• set — leave blank to keep'};
+  ph('se-openrouter_api_key',s.openrouter_api_key);ph('se-ollama_cloud_api_key',s.ollama_cloud_api_key);
+}catch(e){}}
+async function saveSettings(){const msg=document.getElementById('se-msg');msg.textContent='saving…';
+  const v=id=>{const e=document.getElementById(id);return e?e.value:''};
+  const body={model_path:v('se-model_path'),n_gpu_layers:v('se-n_gpu_layers'),flash_attn:v('se-flash_attn'),
+    kv_cache_type:v('se-kv_cache_type'),mlock:v('se-mlock')==='true',draft_model_path:v('se-draft_model_path'),
+    exec_policy:v('se-exec_policy'),anamnesis_control_url:v('se-anamnesis_control_url'),searxng_url:v('se-searxng_url'),
+    ollama_cloud_url:v('se-ollama_cloud_url')};
+  const ni=(id,k)=>{const n=parseInt(v(id));if(!isNaN(n))body[k]=n};
+  ni('se-n_ctx','n_ctx');ni('se-n_batch','n_batch');ni('se-eval_interval','eval_interval');
+  const ork=v('se-openrouter_api_key');if(ork)body.openrouter_api_key=ork;
+  const olk=v('se-ollama_cloud_api_key');if(olk)body.ollama_cloud_api_key=olk;
+  Object.keys(body).forEach(k=>{if(body[k]==='')delete body[k]});
+  try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    msg.textContent='✓ saved · restart engine/models to apply engine changes';setTimeout(()=>{msg.textContent=''},5000)}
+  catch(e){msg.textContent='save failed: '+e.message}}
 loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);loadClaude();hfSearch();loadLib();
 </script>
 </body>

@@ -201,6 +201,10 @@ class Settings:
     tiers: dict = field(default_factory=dict)
     default_tier: str = "local"
     anthropic_api_key: str = ""
+    # --- Optional cloud model providers (not the main point; local is primary) ---
+    openrouter_api_key: str = ""
+    ollama_cloud_url: str = "https://ollama.com/v1"
+    ollama_cloud_api_key: str = ""
     ollama_host: str = "http://localhost:11434"
     # Where the "openai" backend posts. Blank -> derived from our inference engine in
     # load(); identity.bind_character() repoints it at a character's Anamnesis proxy.
@@ -275,6 +279,9 @@ class Settings:
         s.backend_base_url = os.environ.get("PLEIADES_BACKEND_BASE_URL", s.backend_base_url)
         s.backend_api_key = os.environ.get("PLEIADES_BACKEND_API_KEY", s.backend_api_key)
         s.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", s.anthropic_api_key)
+        s.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY", s.openrouter_api_key)
+        s.ollama_cloud_url = os.environ.get("OLLAMA_CLOUD_URL", s.ollama_cloud_url)
+        s.ollama_cloud_api_key = os.environ.get("OLLAMA_CLOUD_API_KEY", s.ollama_cloud_api_key)
         s.ollama_host = os.environ.get("OLLAMA_HOST", s.ollama_host)
         s.openai_host = os.environ.get("OPENAI_HOST", s.openai_host)
         s.embed_model = os.environ.get("PLEIADES_EMBED_MODEL", s.embed_model)
@@ -316,6 +323,10 @@ class Settings:
             d["anthropic_api_key"] = "***"
         if d.get("backend_api_key"):
             d["backend_api_key"] = "***"
+        if d.get("openrouter_api_key"):
+            d["openrouter_api_key"] = "***"
+        if d.get("ollama_cloud_api_key"):
+            d["ollama_cloud_api_key"] = "***"
         return d
 
 
