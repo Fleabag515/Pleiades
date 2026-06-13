@@ -179,6 +179,14 @@ class Settings:
     n_gpu_layers: "int | str" = "auto"
     chat_format: str = ""  # blank = let llama.cpp auto-detect
 
+    # --- Inference efficiency / compaction (native llama-server) ---
+    flash_attn: str = "auto"      # -fa: on|off|auto (auto = llama.cpp decides)
+    kv_cache_type: str = ""       # -ctk/-ctv KV-cache quant, e.g. "q8_0" — halves KV memory
+    n_batch: int = 0              # -b logical batch (0 = llama.cpp default 2048)
+    n_ubatch: int = 0             # -ub physical batch (0 = default 512)
+    mlock: bool = False           # --mlock: keep weights resident, avoid swap
+    draft_model_path: str = ""    # speculative decoding draft GGUF (huge model, fast)
+
     # --- Autofit: speed/quality preference for quant choice (speed|balanced|quality) ---
     autofit_preference: str = "balanced"
 
@@ -255,6 +263,13 @@ class Settings:
         s.n_ctx = _int("PLEIADES_N_CTX", s.n_ctx)
         s.n_gpu_layers = _layers("PLEIADES_N_GPU_LAYERS", s.n_gpu_layers)
         s.chat_format = os.environ.get("PLEIADES_CHAT_FORMAT", s.chat_format)
+        s.flash_attn = os.environ.get("PLEIADES_FLASH_ATTN", s.flash_attn)
+        s.kv_cache_type = os.environ.get("PLEIADES_KV_CACHE_TYPE", s.kv_cache_type)
+        s.n_batch = _int("PLEIADES_N_BATCH", s.n_batch)
+        s.n_ubatch = _int("PLEIADES_N_UBATCH", s.n_ubatch)
+        s.draft_model_path = os.environ.get("PLEIADES_DRAFT_MODEL", s.draft_model_path)
+        if os.environ.get("PLEIADES_MLOCK"):
+            s.mlock = os.environ["PLEIADES_MLOCK"].strip().lower() in ("1", "true", "yes")
         s.searxng_url = os.environ.get("PLEIADES_SEARXNG_URL", s.searxng_url)
         s.autofit_preference = os.environ.get("PLEIADES_AUTOFIT", s.autofit_preference)
         s.backend_base_url = os.environ.get("PLEIADES_BACKEND_BASE_URL", s.backend_base_url)

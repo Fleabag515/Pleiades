@@ -257,6 +257,20 @@ class ModelManager:
                    "-c", str(n_ctx), "-ngl", str(ngl), "-t", str(threads),
                    "--alias", m["name"],
                    "--jinja"]
+            from .config import Settings as _Settings
+            _eff = _Settings.load()
+            if _eff.flash_attn:
+                cmd += ["-fa", _eff.flash_attn]
+            if _eff.kv_cache_type:          # KV-cache compaction (e.g. q8_0)
+                cmd += ["-ctk", _eff.kv_cache_type, "-ctv", _eff.kv_cache_type]
+            if getattr(_eff, "n_batch", 0):
+                cmd += ["-b", str(_eff.n_batch)]
+            if getattr(_eff, "n_ubatch", 0):
+                cmd += ["-ub", str(_eff.n_ubatch)]
+            if getattr(_eff, "mlock", False):
+                cmd += ["--mlock"]
+            if getattr(_eff, "draft_model_path", "") and __import__("os").path.isfile(_eff.draft_model_path):
+                cmd += ["-md", _eff.draft_model_path]   # speculative decoding draft
             if forced is None and pl.n_cpu_moe and cps.moe_offload:
                 cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
             why = (f"runtime=llama-server strategy={pl.strategy} "
