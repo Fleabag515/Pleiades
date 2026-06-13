@@ -1051,6 +1051,61 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    @app.post("/api/claude/chat/stream")
+    def claude_chat_stream(body: ClaudeChat) -> StreamingResponse:
+        """Streaming build/debug chat (NDJSON token/reasoning/tool_call/done)."""
+        import json as _json
+        model = body.model or _claude_model()
+
+        def gen():
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                yield _json.dumps({"type": "error", "error": "ANTHROPIC_API_KEY is set — unset it to use your subscription."}) + "\n"
+                return
+            import asyncio, queue, threading
+            from ..harness import Config as HCfg
+            from ..harness import builtins as _b  # noqa: F401
+            try:
+                from ..harness.claude_backend import stream_claude_async
+            except Exception as e:
+                yield _json.dumps({"type": "error", "error": f"Agent SDK unavailable: {e}"}) + "\n"
+                return
+            cfg = HCfg.load()
+            cfg.exec_policy = "allow"
+            try:
+                cfg.tiers["claude"].model = model
+            except Exception:
+                pass
+            q: "queue.Queue" = queue.Queue()
+
+            def on_event(kind, payload):
+                if kind == "text":
+                    q.put({"type": "token", "text": payload})
+                elif kind == "reasoning":
+                    q.put({"type": "reasoning", "text": payload})
+                elif kind == "tool_call":
+                    q.put({"type": "tool_call", "name": payload})
+                elif kind == "done":
+                    q.put({"type": "done", "turns": payload.get("turns", 0),
+                           "cost_usd": payload.get("cost", 0.0)})
+
+            def worker():
+                try:
+                    asyncio.run(stream_claude_async(body.message, cfg,
+                                add_dirs=[cfg.workspace_root], on_event=on_event))
+                except Exception as e:
+                    q.put({"type": "error", "error": str(e)})
+                finally:
+                    q.put(None)
+
+            threading.Thread(target=worker, daemon=True).start()
+            while True:
+                item = q.get()
+                if item is None:
+                    break
+                yield _json.dumps(item) + "\n"
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
+
     # ----------------------------- chat sessions ---------------------------- #
     @app.get("/api/chats")
     def chats_list() -> dict:
