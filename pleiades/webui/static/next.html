@@ -267,7 +267,11 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <!-- FOUNDRY -->
     <section class="view" id="v-foundry">
       <h1 class="h1">Model foundry</h1><p class="sub">Search any GGUF on Hugging Face. Pleiades picks the optimal quant for your exact hardware and downloads it.</p>
-      <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder" onkeydown="if(event.key==='Enter')hfSearch()"/><button class="btn pri" onclick="hfSearch()">Search</button></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span class="seg2" id="src-seg"><button class="on" onclick="setSource('gguf')">GGUF (local)</button><button onclick="setSource('openrouter')">OpenRouter</button><button onclick="setSource('ollama')">Ollama Cloud</button></span>
+        <span id="src-char-wrap" style="display:none;margin-left:auto;font-size:11px;color:var(--muted)">assign to <select id="src-char" style="width:auto;display:inline-block"></select></span>
+      </div>
+      <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder" onkeydown="if(event.key==='Enter')foundrySearch()"/><button class="btn pri" onclick="foundrySearch()">Search</button></div>
       <div class="row2" style="align-items:start;gap:18px"><div id="results"></div><div id="fitpane"></div></div>
       <h3 style="margin:24px 0 10px;font-size:13px;color:var(--muted)">Installed library</h3><div id="library"></div>
     </section>
@@ -847,6 +851,40 @@ async function saveSettings(){const msg=document.getElementById('se-msg');msg.te
   try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     msg.textContent='✓ saved · restart engine/models to apply engine changes';setTimeout(()=>{msg.textContent=''},5000)}
   catch(e){msg.textContent='save failed: '+e.message}}
+let foundrySource='gguf';
+function setSource(src){foundrySource=src;
+  const order=['gguf','openrouter','ollama'];
+  document.querySelectorAll('#src-seg button').forEach((b,i)=>b.classList.toggle('on',order[i]===src));
+  const cw=document.getElementById('src-char-wrap');if(cw)cw.style.display=src==='gguf'?'none':'inline';
+  const i=document.getElementById('hfq');if(i)i.placeholder=src==='gguf'?'Search Hugging Face…':(src==='openrouter'?'Search OpenRouter models…':'Search Ollama Cloud models…');
+  if(src!=='gguf')loadFoundryChars();
+  foundrySearch();
+}
+async function loadFoundryChars(){try{const d=await api('/api/profiles');const sel=document.getElementById('src-char');if(!sel)return;const cur=sel.value;sel.innerHTML=(d.profiles||[]).map(p=>'<option>'+p.name+'</option>').join('')||'<option value="">no characters</option>';if(cur)sel.value=cur}catch(e){}}
+function foundrySearch(){return foundrySource==='gguf'?hfSearch():cloudSearch();}
+async function cloudSearch(){
+  const q=document.getElementById('hfq').value.trim();const box=document.getElementById('results');const pane=document.getElementById('fitpane');
+  pane.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">Cloud models use your '+foundrySource+' key (Settings) and route through Anamnesis for memory. Pick one to assign to a character.</div>';
+  box.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">Searching '+foundrySource+'…</div>';
+  try{const d=await api('/api/models/cloud-search?source='+foundrySource+'&q='+encodeURIComponent(q)+'&limit=40');
+    if(d.error){box.innerHTML='<div class="card" style="color:var(--warn);font-size:13px">'+escapeHtml(d.error)+'</div>';return}
+    if(!d.results||!d.results.length){box.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">No models found.</div>';return}
+    box.innerHTML='';
+    d.results.forEach(r=>{const e=document.createElement('div');e.className='result';
+      const bits=[];if(r.context)bits.push(Number(r.context).toLocaleString()+' ctx');if(r.prompt_price!=null)bits.push('$'+r.prompt_price+'/tok in');
+      e.innerHTML='<div><div class="ttl">'+escapeHtml(r.name||r.id)+'</div><div class="meta">'+escapeHtml(r.id)+(bits.length?' · '+bits.join(' · '):'')+'</div></div>'+
+        '<div class="right"><button class="btn sm">Use →</button></div>';
+      e.querySelector('button').onclick=()=>assignCloud(r.id);
+      box.append(e)});
+  }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+escapeHtml(e.message)+'</div>'}
+}
+async function assignCloud(modelId){const sel=document.getElementById('src-char');const char=sel&&sel.value;
+  if(!char){document.getElementById('fitpane').innerHTML='<div class="autofit"><div style="color:var(--warn)">Create a character first (Characters tab), then assign.</div></div>';return}
+  const src=foundrySource==='openrouter'?'openrouter':'ollama';
+  try{await fetch('/api/profiles/'+encodeURIComponent(char)+'/cloud-model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:src,model:modelId})});
+    document.getElementById('fitpane').innerHTML='<div class="autofit"><div class="hd"><span class="tagp tp-best">ASSIGNED</span><span class="big">'+escapeHtml(char)+'</span></div><div style="font-size:12.5px;color:var(--muted);margin-top:6px"><code>'+escapeHtml(modelId)+'</code> via '+src+', routed through Anamnesis. Talk to '+escapeHtml(char)+' to use it.</div></div>';
+  }catch(e){document.getElementById('fitpane').innerHTML='<div class="autofit"><div style="color:var(--bad)">assign failed: '+escapeHtml(e.message)+'</div></div>'}
+}
 loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);loadClaude();hfSearch();loadLib();
 </script>
 </body>
