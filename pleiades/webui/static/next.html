@@ -363,7 +363,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
           <div class="rc"><h4>Brain</h4><div id="rail-brain"><div class="kv"><span class="k">—</span></div></div>
             <h4 style="margin-top:12px">Throughput</h4><div class="spark" id="spark"></div>
           </div>
-          <div class="rc"><h4>Memory · Anamnesis</h4><div id="rail-mem"><div class="kv"><span class="k">select a character</span></div></div></div>
+          <div class="rc"><h4 style="display:flex;align-items:center">Memory · Anamnesis<button class="btn sm" style="margin-left:auto;padding:3px 9px" onclick="memInspect()">Inspect ›</button></h4><div id="rail-mem"><div class="kv"><span class="k">select a character</span></div></div></div>
           <div class="rc"><h4>Session</h4>
             <div class="kv"><span class="k">tokens</span><span class="v" id="r-tok">0</span></div>
             <div class="kv"><span class="k">tools run</span><span class="v" id="r-tools">0</span></div>
@@ -666,6 +666,21 @@ function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;
 async function loadTalk(){try{const d=await api('/api/profiles');const sel=document.getElementById('talk-char');if(!sel)return;
   const cur=sel.value;sel.innerHTML=(d.profiles||[]).map(pf=>'<option value="'+pf.name+'">'+pf.name+' · '+(pf.model||'default engine')+'</option>').join('')||'<option value="">no characters — create one</option>';
   if(cur)sel.value=cur;refreshTalkRail();}catch(e){}}
+async function memInspect(){const sel=document.getElementById('talk-char');const char=sel&&sel.value;if(!char){return}
+  showModal('<div class="mh">✦ '+char+' · memory inspector <span class="t" style="margin-left:8px;color:var(--faint);font-family:var(--mono);font-size:10.5px">Anamnesis</span><span class="x" onclick="closeModal()">✕</span></div><div class="mbody" id="mem-body" style="color:var(--muted)">loading…</div>');
+  try{const d=await api('/api/profiles/'+encodeURIComponent(char)+'/anamnesis/inspect?limit=15');
+    const lbl=t=>'<div style="margin:12px 0 6px;color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.6px">'+t+'</div>';
+    const none='<div style="color:var(--muted);font-size:12px">none yet</div>';
+    let html=lbl('Scenes — consolidated memory ('+d.scenes.length+')');
+    html+= d.scenes.length? d.scenes.map(s=>'<div class="kv"><span class="k"><b style="color:var(--text)">'+escapeHtml(s.title||'(untitled)')+'</b><div style="color:var(--muted);font-size:11.5px;margin-top:2px;white-space:normal">'+escapeHtml(s.summary)+'</div></span><span class="v">↺ '+s.recall+'</span></div>').join('') : none;
+    html+=lbl('Engrams — top facts');
+    html+= d.engrams.length? d.engrams.map(e=>'<div class="kv"><span class="k" style="font-size:12px;white-space:normal">'+escapeHtml(e.content)+'</span><span class="v"><span class="tagp tp-idle">'+escapeHtml(e.category||'')+'</span></span></div>').join('') : none;
+    html+=lbl('Observations — about you');
+    html+= d.observations.length? d.observations.map(o=>'<div class="kv"><span class="k" style="font-size:12px;white-space:normal"><b style="color:var(--a2);font-family:var(--mono);font-size:11px">'+escapeHtml(o.type||'')+'</b> '+escapeHtml(o.detail)+'</span></div>').join('') : none;
+    if(d.error)html+='<div style="color:var(--bad);font-size:12px;margin-top:8px">'+escapeHtml(d.error)+'</div>';
+    document.getElementById('mem-body').innerHTML=html;
+  }catch(e){document.getElementById('mem-body').innerHTML='<div style="color:var(--bad)">'+escapeHtml(e.message)+'</div>'}
+}
 async function refreshTalkRail(){
   const sel=document.getElementById('talk-char');const char=sel&&sel.value;if(!char)return;
   try{const [pf,st]=await Promise.all([api('/api/profiles/'+encodeURIComponent(char)),api('/api/status')]);

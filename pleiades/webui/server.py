@@ -834,6 +834,41 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Could not read memory: {exc}") from exc
 
     # ----------------------------- hardware -------------------------------- #
+    @app.get("/api/profiles/{name}/anamnesis/inspect")
+    def anamnesis_inspect(name: str, limit: int = 15) -> dict:
+        """Browse a character's self-organized memory: scenes, engrams, observations."""
+        db = _anamnesis_db_path(name)
+        if not db:
+            return {"scenes": [], "engrams": [], "observations": []}
+        import sqlite3
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            cur = con.cursor()
+
+            def rows(sql, args=()):
+                try:
+                    return cur.execute(sql, args).fetchall()
+                except Exception:
+                    return []
+
+            scenes = [{"title": t, "summary": (s or "")[:400], "recall": rc,
+                       "importance": round(ai or 0, 2)}
+                      for (t, s, rc, ai) in rows(
+                      "SELECT title, summary, recall_count, avg_importance FROM memscenes "
+                      "ORDER BY recall_count DESC, updated_at DESC LIMIT ?", (limit,))]
+            engrams = [{"content": (c or "")[:300], "category": cat,
+                        "importance": round(imp or 0, 2), "recall": rc}
+                       for (c, cat, imp, rc) in rows(
+                       "SELECT content, category, importance, recall_count FROM engrams "
+                       "ORDER BY importance DESC, recall_count DESC LIMIT ?", (limit,))]
+            obs = [{"type": ot, "detail": (d or "")[:300]} for (ot, d) in rows(
+                   "SELECT obs_type, detail FROM character_observations "
+                   "ORDER BY observed_at DESC LIMIT ?", (limit,))]
+            con.close()
+            return {"scenes": scenes, "engrams": engrams, "observations": obs}
+        except Exception as e:
+            return {"scenes": [], "engrams": [], "observations": [], "error": str(e)}
+
     @app.get("/api/hardware")
     def hardware_info() -> dict:
         from .. import hardware, runtime
