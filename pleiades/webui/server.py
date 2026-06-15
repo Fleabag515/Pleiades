@@ -177,6 +177,11 @@ class ClaudeChat(BaseModel):
     model: Optional[str] = None
 
 
+class CloudModelBody(BaseModel):
+    source: str
+    model: str
+
+
 class SettingsUpdate(BaseModel):
     # engine
     model_path: Optional[str] = None
@@ -992,6 +997,55 @@ def create_app() -> FastAPI:
                              "ram_available": hw.ram_available},
                 "recommended": rec.quant if rec else None,
                 "options": opts}
+
+    @app.get("/api/models/cloud-search")
+    def cloud_search(source: str, q: str = "", limit: int = 25) -> dict:
+        import httpx
+        s = config.Settings.load()
+        ql = (q or "").lower()
+        if source == "openrouter":
+            try:
+                r = httpx.get("https://openrouter.ai/api/v1/models", timeout=15)
+                data = r.json().get("data", [])
+            except Exception as e:
+                raise HTTPException(502, f"OpenRouter unreachable: {e}")
+            out = []
+            for m in data:
+                mid = m.get("id", "")
+                if ql and ql not in mid.lower() and ql not in (m.get("name", "").lower()):
+                    continue
+                pr = m.get("pricing", {}) or {}
+                out.append({"id": mid, "name": m.get("name", mid),
+                            "context": m.get("context_length"),
+                            "prompt_price": pr.get("prompt"),
+                            "completion_price": pr.get("completion")})
+            out.sort(key=lambda x: x["id"])
+            return {"source": "openrouter", "results": out[:limit]}
+        if source == "ollama":
+            base = (s.ollama_cloud_url or "https://ollama.com/v1").rstrip("/")
+            headers = {"Authorization": f"Bearer {s.ollama_cloud_api_key}"} if s.ollama_cloud_api_key else {}
+            try:
+                r = httpx.get(base + "/models", headers=headers, timeout=15)
+                data = r.json().get("data", [])
+                out = [{"id": m.get("id"), "name": m.get("id")} for m in data
+                       if not ql or ql in (m.get("id", "") or "").lower()]
+                return {"source": "ollama", "results": out[:limit]}
+            except Exception as e:
+                return {"source": "ollama", "results": [],
+                        "error": "Set an Ollama Cloud key/URL in Settings (or endpoint unreachable).",
+                        "detail": str(e)}
+        raise HTTPException(400, "source must be 'openrouter' or 'ollama'")
+
+    @app.post("/api/profiles/{name}/cloud-model")
+    def assign_cloud_model(name: str, body: CloudModelBody) -> dict:
+        try:
+            p = pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        prefix = "openrouter:" if body.source == "openrouter" else "ollama-cloud:"
+        p.model = prefix + body.model
+        pm._save(p)  # noqa: SLF001
+        return _profile_view(p)
 
     @app.post("/api/models/{name}/stop")
     def models_stop(name: str) -> dict:

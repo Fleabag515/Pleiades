@@ -89,40 +89,48 @@ class Engine:
         self.manager = manager or ProfileManager(self.settings, self.anamnesis)
 
     # -- wiring ------------------------------------------------------------- #
-    def _upstream_for(self, profile: Profile) -> str:
-        """The OpenAI-compatible URL to use for this character.
+    def _resolve_upstream(self, profile: Profile) -> dict:
+        """Resolve a character's brain -> upstream {baseUrl[, apiKey, model]}.
 
-        If the character has an assigned model (profile.model), run/return that model's
-        dedicated server; otherwise use the default in-process engine (PLEIADES_MODEL_PATH).
+        profile.model conventions:
+          ""                        -> default local in-process engine
+          "<registered name>"       -> that local GGUF model's server
+          "openrouter:<model_id>"   -> OpenRouter (OpenAI-compatible cloud)
+          "ollama-cloud:<model_id>" -> Ollama Cloud (OpenAI-compatible)
+        Cloud brains still flow THROUGH Anamnesis, so memory injection applies.
         """
         model = getattr(profile, "model", "") or ""
+        s = self.settings
+        if model.startswith("openrouter:"):
+            return {"baseUrl": "https://openrouter.ai/api/v1",
+                    "apiKey": s.openrouter_api_key, "model": model.split(":", 1)[1]}
+        if model.startswith("ollama-cloud:"):
+            return {"baseUrl": (s.ollama_cloud_url or "https://ollama.com/v1"),
+                    "apiKey": s.ollama_cloud_api_key, "model": model.split(":", 1)[1]}
         from .models import ModelManager, ModelError
         mm = ModelManager()
         if model and mm.get(model):
             try:
                 if not mm.is_running(model):
-                    mm.start(model)        # auto-start the assigned model
-                return mm.base_url(model)
+                    mm.start(model)
+                return {"baseUrl": mm.base_url(model), "model": profile.name}
             except ModelError:
-                pass  # fall through
-        # No usable assigned model: prefer any registered model that is already
-        # running over the empty default in-process engine (which needs
-        # PLEIADES_MODEL_PATH). Keeps chat working when a model is up but the
-        # character's assignment is missing or stale.
+                pass
         try:
             running = [m for m in mm.list() if m.get("running")]
             if running:
-                return mm.base_url(running[0]["name"])
+                return {"baseUrl": mm.base_url(running[0]["name"]), "model": profile.name}
         except Exception:
             pass
-        return ensure_inference(self.settings)
+        return {"baseUrl": ensure_inference(s), "model": profile.name}
 
-    @staticmethod
-    def _model_for(profile: Profile) -> str:
-        """Model identifier to send upstream. llama.cpp servers ignore it, but
-        Ollama-style upstreams validate strictly — the character's *name* is
-        not a model and 404s there. Prefer the assigned model."""
-        return getattr(profile, "model", "") or profile.name
+    def _upstream_for(self, profile: Profile) -> str:
+        return self._resolve_upstream(profile)["baseUrl"]
+
+    def _model_for(self, profile: Profile) -> str:
+        """Model id sent upstream (cloud validates it; llama.cpp ignores it)."""
+        return (self._resolve_upstream(profile).get("model")
+                or getattr(profile, "model", "") or profile.name)
 
     def _client_for(self, profile: Profile):
         """Bring up inference + the character proxy and return an OpenAI client + ctx."""
@@ -132,17 +140,17 @@ class Engine:
         # set_upstream survives daemons without a PATCH route (edits config.json on
         # disk + restarts the proxy) — otherwise a character created against a
         # different backend keeps its stale upstream forever.
-        upstream = self._upstream_for(profile)
+        up = self._resolve_upstream(profile)
+        upstream = {"baseUrl": up["baseUrl"]}
+        if up.get("apiKey"):
+            upstream["apiKey"] = up["apiKey"]
+        if up.get("model"):
+            upstream["model"] = up["model"]
         try:
-            self.anamnesis.set_upstream(profile.name, {"baseUrl": upstream})
+            self.anamnesis.set_upstream(profile.name, upstream)
         except Exception:
-            # Non-fatal: the character may not exist yet (created below).
             pass
-
-        # 2. Character proxy.
-        proxy_url = self.anamnesis.ensure_running(
-            profile.name, upstream={"baseUrl": upstream}
-        )
+        proxy_url = self.anamnesis.ensure_running(profile.name, upstream=upstream)
         client = OpenAI(base_url=proxy_url, api_key="pleiades")
 
         # 3. Tools, scoped to this character — the chat IS the agent, so the
