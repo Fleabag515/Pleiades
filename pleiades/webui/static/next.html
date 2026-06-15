@@ -352,7 +352,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
           <div class="seg"><button class="on" data-m="stream" onclick="setMode('stream')">Stream</button><button data-m="pipeline" onclick="setMode('pipeline')">Pipeline</button><button data-m="mind" onclick="setMode('mind')">Mind</button></div>
           <div class="sp"></div>
           <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">character</span>
-            <select id="talk-char" style="width:auto"></select></div>
+            <select id="talk-char" style="width:auto" onchange="refreshTalkRail()"></select></div>
         </div>
         <div class="talkscroll" id="talkscroll">
           <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">P</span>Pleiades</div>Pick a character and send a message — it runs on the local model with the full tool belt. Switch <b>Stream / Pipeline / Mind</b> to see how each run unfolds.</div>
@@ -360,20 +360,10 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
         <div class="composer"><input id="talkin" placeholder="Message — every tool always on… (Enter to send)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();talkSend()}"/><button class="btn pri" onclick="talkSend()">↑</button></div>
 
         <aside class="rail">
-          <div class="rc"><h4>Model</h4>
-            <div class="kv"><span class="k">qwen2.5-coder</span><span class="v tp-run tagp">running</span></div>
-            <div class="kv"><span class="k">port</span><span class="v">:8081</span></div>
-            <div class="kv"><span class="k">context</span><span class="v">8k / 8k</span></div>
-            <div class="kv"><span class="k">layers</span><span class="v" style="color:var(--gpu)">33/33 GPU</span></div>
+          <div class="rc"><h4>Brain</h4><div id="rail-brain"><div class="kv"><span class="k">—</span></div></div>
             <h4 style="margin-top:12px">Throughput</h4><div class="spark" id="spark"></div>
-            <div style="text-align:right;font-family:var(--mono);font-size:12px;color:var(--a2);margin-top:2px">62 tps</div>
           </div>
-          <div class="rc"><h4>Recent events</h4>
-            <div class="ev"><span class="d"></span>webhook · github push · 2m</div>
-            <div class="ev"><span class="d"></span>email · code received · 9m</div>
-            <div class="ev"><span class="d"></span>memory · checkpoint · 14m</div>
-            <div class="ev"><span class="d"></span>vault · stripe_verify · now</div>
-          </div>
+          <div class="rc"><h4>Memory · Anamnesis</h4><div id="rail-mem"><div class="kv"><span class="k">select a character</span></div></div></div>
           <div class="rc"><h4>Session</h4>
             <div class="kv"><span class="k">tokens</span><span class="v" id="r-tok">0</span></div>
             <div class="kv"><span class="k">tools run</span><span class="v" id="r-tools">0</span></div>
@@ -675,7 +665,24 @@ let talkChats={};
 function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 async function loadTalk(){try{const d=await api('/api/profiles');const sel=document.getElementById('talk-char');if(!sel)return;
   const cur=sel.value;sel.innerHTML=(d.profiles||[]).map(pf=>'<option value="'+pf.name+'">'+pf.name+' · '+(pf.model||'default engine')+'</option>').join('')||'<option value="">no characters — create one</option>';
-  if(cur)sel.value=cur;}catch(e){}}
+  if(cur)sel.value=cur;refreshTalkRail();}catch(e){}}
+async function refreshTalkRail(){
+  const sel=document.getElementById('talk-char');const char=sel&&sel.value;if(!char)return;
+  try{const [pf,st]=await Promise.all([api('/api/profiles/'+encodeURIComponent(char)),api('/api/status')]);
+    const brain=pf.model||'default engine';const running=(st.running_models||[]).find(m=>m.name===pf.model);
+    const cloud=(pf.model||'').includes(':');
+    setHTML('rail-brain','<div class="kv"><span class="k">character</span><span class="v">'+char+'</span></div>'+
+      '<div class="kv"><span class="k">brain</span><span class="v">'+(cloud?brain.split(':')[0]:brain)+'</span></div>'+
+      (cloud?'<div class="kv"><span class="k">model</span><span class="v" style="font-size:11px">'+brain.split(':').slice(1).join(':')+'</span></div>':(running?'<div class="kv"><span class="k">port</span><span class="v" style="color:var(--a2)">:'+running.port+'</span></div><div class="kv"><span class="k">layers</span><span class="v" style="color:var(--gpu)">'+running.n_gpu_layers+'</span></div>':'<div class="kv"><span class="k">status</span><span class="v">on-demand</span></div>')));
+  }catch(e){}
+  try{const a=await api('/api/profiles/'+encodeURIComponent(char)+'/anamnesis');const s=a.stats||{};
+    setHTML('rail-mem','<div class="kv"><span class="k">status</span><span class="v">'+(a.char_status||'?')+'</span></div>'+
+      '<div class="kv"><span class="k">turns</span><span class="v">'+(s.turns||0).toLocaleString()+'</span></div>'+
+      '<div class="kv"><span class="k">scenes</span><span class="v">'+(s.scenes||0)+'</span></div>'+
+      '<div class="kv"><span class="k">engrams</span><span class="v">'+(s.engrams||0)+'</span></div>'+
+      '<div class="kv"><span class="k">observations</span><span class="v">'+(s.observations||0)+'</span></div>');
+  }catch(e){setHTML('rail-mem','<div class="kv"><span class="k">memory</span><span class="v">unavailable</span></div>')}
+}
 async function talkSend(){
   const i=document.getElementById('talkin');const text=(i.value||'').trim();if(!text)return;
   const sel=document.getElementById('talk-char');const character=sel&&sel.value;
