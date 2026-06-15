@@ -1598,6 +1598,10 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     def index() -> Any:
+        # The new workstation UI is now the default; the old panel lives at /classic.
+        nx = STATIC_DIR / "next.html"
+        if nx.is_file():
+            return FileResponse(str(nx))
         idx = STATIC_DIR / "index.html"
         if idx.is_file():
             return FileResponse(str(idx))
@@ -1605,10 +1609,14 @@ def create_app() -> FastAPI:
 
     @app.get("/next")
     def index_next() -> Any:
-        nx = STATIC_DIR / "next.html"
-        if nx.is_file():
-            return FileResponse(str(nx))
-        return JSONResponse({"error": "next UI not present"}, status_code=404)
+        return index()
+
+    @app.get("/classic")
+    def index_classic() -> Any:
+        idx = STATIC_DIR / "index.html"
+        if idx.is_file():
+            return FileResponse(str(idx))
+        return JSONResponse({"error": "classic UI not present"}, status_code=404)
 
     return app
 
