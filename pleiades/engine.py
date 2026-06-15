@@ -23,8 +23,6 @@ from .inference import ensure_inference
 from .profiles import Profile, ProfileManager
 from .tools import ToolBelt, ToolContext, build_default_belt
 
-MAX_TOOL_ITERATIONS = 8  # legacy; loops are now unbounded with periodic self-checks
-
 _REFLECTION = (
     "\n\n[Self-check after {n} steps — keep going; do NOT end your turn or stop here] "
     "Quickly evaluate, then CONTINUE working:\n"
@@ -123,9 +121,6 @@ class Engine:
         except Exception:
             pass
         return {"baseUrl": ensure_inference(s), "model": profile.name}
-
-    def _upstream_for(self, profile: Profile) -> str:
-        return self._resolve_upstream(profile)["baseUrl"]
 
     def _model_for(self, profile: Profile) -> str:
         """Model id sent upstream (cloud validates it; llama.cpp ignores it)."""
@@ -328,8 +323,6 @@ class Engine:
                 messages.append(
                     {"role": "tool", "tool_call_id": tc.id, "content": result}
                 )
-
-        return "[engine] stopped after hitting the tool-call iteration cap."
 
     def stream_events(self, profile: Union[str, Profile], user_message: str,
                       *, system: Optional[str] = None):

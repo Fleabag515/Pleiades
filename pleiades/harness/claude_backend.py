@@ -193,8 +193,8 @@ async def stream_claude_async(task, cfg, *, tier_name="claude", add_dirs=None, o
 
     on_event(kind, payload): kind in {text, reasoning, tool_call, done}.
     """
-    from claude_agent_sdk import (query, ClaudeAgentOptions, AssistantMessage,
-                                  ResultMessage, ToolUseBlock, StreamEvent)
+    from claude_agent_sdk import (query, ClaudeAgentOptions,
+                                  ResultMessage, StreamEvent)
     belt = registry.all()
     server = build_pleiades_server(belt)
     tier = cfg.tier(tier_name)
