@@ -10,6 +10,7 @@ from . import Tool, ToolContext
 
 
 class SearchTool(Tool):
+    safe = True   # read-only
     name = "search"
     description = (
         "Search the web and return the most relevant results (title, URL, snippet). "

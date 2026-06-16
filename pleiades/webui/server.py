@@ -182,6 +182,11 @@ class CloudModelBody(BaseModel):
     model: str
 
 
+class ApiKeyBody(BaseModel):
+    provider: str   # "openrouter" | "ollama-cloud"
+    key: str
+
+
 class SettingsUpdate(BaseModel):
     # engine
     model_path: Optional[str] = None
@@ -204,9 +209,7 @@ class SettingsUpdate(BaseModel):
     n_ubatch: Optional[int] = None
     mlock: Optional[bool] = None
     draft_model_path: Optional[str] = None
-    openrouter_api_key: Optional[str] = None
     ollama_cloud_url: Optional[str] = None
-    ollama_cloud_api_key: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -220,6 +223,14 @@ def _reachable(url: str, path: str = "", timeout: float = 1.2) -> bool:
         return r.status_code < 500
     except Exception:
         return False
+
+
+# Multi-key cloud providers: env var name + Settings field per provider id,
+# shared by the add/remove key endpoints below.
+_KEY_PROVIDERS: dict[str, dict[str, str]] = {
+    "openrouter": {"env": "OPENROUTER_API_KEYS", "field": "openrouter_api_keys"},
+    "ollama-cloud": {"env": "OLLAMA_CLOUD_API_KEYS", "field": "ollama_cloud_api_keys"},
+}
 
 
 def _env_path() -> Path:
@@ -424,9 +435,7 @@ def create_app() -> FastAPI:
             "n_batch": "PLEIADES_N_BATCH",
             "n_ubatch": "PLEIADES_N_UBATCH",
             "draft_model_path": "PLEIADES_DRAFT_MODEL",
-            "openrouter_api_key": "OPENROUTER_API_KEY",
             "ollama_cloud_url": "OLLAMA_CLOUD_URL",
-            "ollama_cloud_api_key": "OLLAMA_CLOUD_API_KEY",
         }
         updates: dict[str, str] = {}
         for field_name, env_name in env_map.items():
@@ -437,6 +446,35 @@ def create_app() -> FastAPI:
             updates["PLEIADES_MLOCK"] = "true" if body.mlock else "false"
         if updates:
             _write_env(updates)
+        return get_settings()
+
+    @app.post("/api/settings/keys")
+    def add_settings_key(body: ApiKeyBody) -> dict:
+        info = _KEY_PROVIDERS.get(body.provider)
+        if not info:
+            raise HTTPException(400, f"Unknown provider '{body.provider}'")
+        key = (body.key or "").strip()
+        if not key:
+            raise HTTPException(400, "Key is empty")
+        s = config.Settings.load()
+        keys = list(getattr(s, info["field"]))
+        if key in keys:
+            raise HTTPException(409, "That key is already stored for this provider")
+        keys.append(key)
+        _write_env({info["env"]: ",".join(keys)})
+        return get_settings()
+
+    @app.delete("/api/settings/keys")
+    def remove_settings_key(provider: str, index: int) -> dict:
+        info = _KEY_PROVIDERS.get(provider)
+        if not info:
+            raise HTTPException(400, f"Unknown provider '{provider}'")
+        s = config.Settings.load()
+        keys = list(getattr(s, info["field"]))
+        if not (0 <= index < len(keys)):
+            raise HTTPException(404, "No key at that index")
+        keys.pop(index)
+        _write_env({info["env"]: ",".join(keys)})
         return get_settings()
 
     # ----------------------------- profiles -------------------------------- #
@@ -1050,15 +1088,18 @@ def create_app() -> FastAPI:
                 if ql and ql not in mid.lower() and ql not in (m.get("name", "").lower()):
                     continue
                 pr = m.get("pricing", {}) or {}
+                is_free = (pr.get("prompt") in ("0", 0, "0.0") and pr.get("completion") in ("0", 0, "0.0"))
                 out.append({"id": mid, "name": m.get("name", mid),
                             "context": m.get("context_length"),
                             "prompt_price": pr.get("prompt"),
-                            "completion_price": pr.get("completion")})
-            out.sort(key=lambda x: x["id"])
+                            "completion_price": pr.get("completion"),
+                            "is_free": is_free})
+            out.sort(key=lambda x: (0 if x.get("is_free") else 1, x["id"]))
             return {"source": "openrouter", "results": out[:limit]}
         if source == "ollama":
             base = (s.ollama_cloud_url or "https://ollama.com/v1").rstrip("/")
-            headers = {"Authorization": f"Bearer {s.ollama_cloud_api_key}"} if s.ollama_cloud_api_key else {}
+            _ok = s.ollama_cloud_api_keys[0] if getattr(s, "ollama_cloud_api_keys", None) else ""
+            headers = {"Authorization": f"Bearer {_ok}"} if _ok else {}
             try:
                 r = httpx.get(base + "/models", headers=headers, timeout=15)
                 data = r.json().get("data", [])
@@ -1617,6 +1658,67 @@ def create_app() -> FastAPI:
         if idx.is_file():
             return FileResponse(str(idx))
         return JSONResponse({"error": "classic UI not present"}, status_code=404)
+
+    # ── Anamnesis control ──────────────────────────────────────────────────────
+    @app.post("/api/anamnesis/{action}")
+    async def anamnesis_control(action: str):
+        import psutil, subprocess, signal as _signal
+        if action not in ("start", "stop"):
+            raise HTTPException(status_code=400, detail="action must be start or stop")
+        procs = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = ' '.join(proc.info.get('cmdline') or [])
+                if 'node' in (proc.info.get('name') or '').lower() and 'anamnesis' in cmdline:
+                    procs.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+        if action == "stop":
+            for proc in procs:
+                try: proc.send_signal(_signal.SIGTERM)
+                except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+            return {"ok": True, "action": "stop", "killed": len(procs)}
+        daemon = os.path.expanduser("~/.local/share/anamnesis/src/daemon.js")
+        if procs: return {"ok": True, "action": "start", "status": "already_running"}
+        if not os.path.exists(daemon):
+            raise HTTPException(status_code=404, detail=f"daemon not found: {daemon}")
+        subprocess.Popen(["node", daemon], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return {"ok": True, "action": "start", "status": "starting"}
+
+    # ── Rules & guidelines ─────────────────────────────────────────────────────
+    import json as _json, uuid as _uuid
+    _RULES_FILE = os.path.expanduser("~/.pleiades/rules.json")
+    def _load_rules():
+        try:
+            with open(_RULES_FILE) as _f: return _json.load(_f)
+        except FileNotFoundError: return []
+        except Exception: return []
+    def _save_rules(rules):
+        os.makedirs(os.path.dirname(_RULES_FILE), exist_ok=True)
+        with open(_RULES_FILE, 'w') as _f: _json.dump(rules, _f, indent=2)
+    @app.get("/api/rules")
+    async def get_rules():
+        return {"rules": _load_rules()}
+    @app.post("/api/rules")
+    async def create_rule(body: dict):
+        rules = _load_rules()
+        rule = {"id": _uuid.uuid4().hex[:8], "text": body.get("text",""),
+                "enabled": True, "pending": bool(body.get("pending", False))}
+        rules.append(rule); _save_rules(rules); return rule
+    @app.put("/api/rules/{rule_id}")
+    async def update_rule(rule_id: str, body: dict):
+        rules = _load_rules()
+        for r in rules:
+            if r["id"] == rule_id:
+                for k in ("text","enabled","pending"):
+                    if k in body: r[k] = body[k]
+                _save_rules(rules); return r
+        raise HTTPException(status_code=404, detail="rule not found")
+    @app.delete("/api/rules/{rule_id}")
+    async def delete_rule_ep(rule_id: str):
+        _save_rules([r for r in _load_rules() if r["id"] != rule_id])
+        return {"ok": True}
+
 
     return app
 

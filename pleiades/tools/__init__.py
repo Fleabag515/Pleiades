@@ -60,6 +60,7 @@ class Tool:
     name: str = ""
     description: str = ""
     parameters: dict = {}  # JSON schema for the arguments object
+    safe: bool = False      # True = read-only, never gated by exec_policy
 
     def run(self, ctx: ToolContext, **kwargs: Any) -> str:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -124,6 +125,19 @@ class ToolBelt:
         if not isinstance(args, dict):
             return (f"[error] arguments for {name} must be a JSON object. "
                     f"Expected parameters: {json.dumps(tool.parameters)}")
+        # exec_policy gate for side-effecting tools
+        if not tool.safe:
+            policy = ctx.settings.exec_policy
+            if policy == "deny":
+                return f"[error] tool '{name}' blocked by exec_policy=deny"
+            if policy == "ask":
+                short = json.dumps(args)[:120]
+                try:
+                    ans = input(f"  [approve] {name}({short}) [y/N] ").strip().lower()
+                except EOFError:
+                    ans = ""
+                if ans not in ("y", "yes"):
+                    return f"[cancelled] {name}"
         try:
             return tool.run(ctx, **args)
         except TypeError as e:
