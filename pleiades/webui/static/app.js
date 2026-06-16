@@ -1326,11 +1326,13 @@ async function renderModels() {
   const q = textInput("", { placeholder: "Search Hugging Face for GGUF models… (e.g. llama 3.2 instruct)", class: "input mono", style: "flex:1" });
   const results = el("div", { class: "card", style: "margin-bottom:18px", hidden: "hidden" });
   const doSearch = async () => {
-    if (!q.value.trim()) return;
+    const term = q.value.trim();
+    if (!term) { results.hidden = true; return; }
     results.hidden = false; results.innerHTML = ""; results.append(el("div", { class: "skeleton" }, "Searching…"));
     let r;
-    try { r = await api.get(`/api/models/hf-search?q=${encodeURIComponent(q.value.trim())}`); }
+    try { r = await api.get(`/api/models/hf-search?q=${encodeURIComponent(term)}`); }
     catch (e) { results.innerHTML = ""; results.append(el("div", { class: "svc-note", style: "padding:14px" }, String(e.message || e))); return; }
+    if (q.value.trim() !== term) return; // ponytail: a later keystroke already started a newer search
     results.innerHTML = "";
     if (!r.results.length) { results.append(el("div", { class: "svc-note", style: "padding:14px" }, "No GGUF repos found.")); return; }
     const list = el("div", { class: "list" });
@@ -1341,7 +1343,11 @@ async function renderModels() {
       el("button", { class: "btn sm primary", onclick: (e) => { e.target.disabled = true; startFetch(m.id); } }, "⇣ Download best fit"))));
     results.append(list);
   };
-  q.addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+  // ponytail: 300ms debounce on keystroke, not a literal per-character fetch —
+  // that would queue an HF API round trip per character typed.
+  let searchTimer = null;
+  q.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 300); });
+  q.addEventListener("keydown", e => { if (e.key === "Enter") { clearTimeout(searchTimer); doSearch(); } });
   c.append(el("div", { class: "inline-actions", style: "margin-bottom:14px" },
     q,
     el("button", { class: "btn", onclick: doSearch }, "Search"),

@@ -156,6 +156,34 @@ DEFAULT_TIERS: dict[str, dict] = {
 }
 
 
+def mask_key(key: str) -> str:
+    """Mask a secret, keeping only the last 4 characters visible (e.g. for
+    display in a key list so the user can tell which stored key is which
+    without ever re-exposing the full value)."""
+    key = key or ""
+    if len(key) <= 4:
+        return "\u2022" * len(key)
+    return "\u2022\u2022\u2022\u2022" + key[-4:]
+
+
+def _key_list(env_csv, current: list, legacy: str = "") -> list:
+    """Build a provider's key list: env CSV (if set) replaces it outright,
+    else the legacy singular env/config value (if any) is folded in ahead of
+    whatever's already there, deduped, order preserved."""
+    keys = list(current or [])
+    if legacy and legacy not in keys:
+        keys = [legacy] + keys
+    if env_csv is not None:
+        keys = [k.strip() for k in env_csv.split(",") if k.strip()]
+    seen: set = set()
+    out = []
+    for k in keys:
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
 @dataclass
 class Settings:
     """Project-wide settings — the single source of truth.
@@ -181,7 +209,11 @@ class Settings:
 
     # --- Inference efficiency / compaction (native llama-server) ---
     flash_attn: str = "auto"      # -fa: on|off|auto (auto = llama.cpp decides)
-    kv_cache_type: str = ""       # -ctk/-ctv KV-cache quant, e.g. "q8_0" — halves KV memory
+    kv_cache_type: str = "q8_0"   # -ctk/-ctv KV-cache quant — halves KV memory, ~lossless.
+                                   # ponytail: was "" (off) by default despite being fully
+                                   # wired in models.py; flips the literal "compact KV cache"
+                                   # ask on for everyone. Set PLEIADES_KV_CACHE_TYPE="" to
+                                   # restore full f16 KV if quality regressions ever show up.
     n_batch: int = 0              # -b logical batch (0 = llama.cpp default 2048)
     n_ubatch: int = 0             # -ub physical batch (0 = default 512)
     mlock: bool = False           # --mlock: keep weights resident, avoid swap
@@ -202,9 +234,11 @@ class Settings:
     default_tier: str = "local"
     anthropic_api_key: str = ""
     # --- Optional cloud model providers (not the main point; local is primary) ---
-    openrouter_api_key: str = ""
+    # Lists, not single strings: multiple keys per provider let the engine
+    # auto-route around a rate-limited/exhausted key (see engine.py _pick_key).
+    openrouter_api_keys: list = field(default_factory=list)
     ollama_cloud_url: str = "https://ollama.com/v1"
-    ollama_cloud_api_key: str = ""
+    ollama_cloud_api_keys: list = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
     # Where the "openai" backend posts. Blank -> derived from our inference engine in
     # load(); identity.bind_character() repoints it at a character's Anamnesis proxy.
@@ -256,6 +290,10 @@ class Settings:
                             s.tiers[tn] = Tier(**tv)
                         except TypeError:
                             pass
+                elif k == "openrouter_api_key" and v:
+                    s.openrouter_api_keys = _key_list(None, s.openrouter_api_keys, legacy=v)
+                elif k == "ollama_cloud_api_key" and v:
+                    s.ollama_cloud_api_keys = _key_list(None, s.ollama_cloud_api_keys, legacy=v)
                 elif hasattr(s, k):
                     setattr(s, k, v)
 
@@ -279,9 +317,15 @@ class Settings:
         s.backend_base_url = os.environ.get("PLEIADES_BACKEND_BASE_URL", s.backend_base_url)
         s.backend_api_key = os.environ.get("PLEIADES_BACKEND_API_KEY", s.backend_api_key)
         s.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", s.anthropic_api_key)
-        s.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY", s.openrouter_api_key)
+        s.openrouter_api_keys = _key_list(
+            os.environ.get("OPENROUTER_API_KEYS"), s.openrouter_api_keys,
+            legacy=os.environ.get("OPENROUTER_API_KEY"),
+        )
         s.ollama_cloud_url = os.environ.get("OLLAMA_CLOUD_URL", s.ollama_cloud_url)
-        s.ollama_cloud_api_key = os.environ.get("OLLAMA_CLOUD_API_KEY", s.ollama_cloud_api_key)
+        s.ollama_cloud_api_keys = _key_list(
+            os.environ.get("OLLAMA_CLOUD_API_KEYS"), s.ollama_cloud_api_keys,
+            legacy=os.environ.get("OLLAMA_CLOUD_API_KEY"),
+        )
         s.ollama_host = os.environ.get("OLLAMA_HOST", s.ollama_host)
         s.openai_host = os.environ.get("OPENAI_HOST", s.openai_host)
         s.embed_model = os.environ.get("PLEIADES_EMBED_MODEL", s.embed_model)
@@ -323,10 +367,8 @@ class Settings:
             d["anthropic_api_key"] = "***"
         if d.get("backend_api_key"):
             d["backend_api_key"] = "***"
-        if d.get("openrouter_api_key"):
-            d["openrouter_api_key"] = "***"
-        if d.get("ollama_cloud_api_key"):
-            d["ollama_cloud_api_key"] = "***"
+        d["openrouter_api_keys"] = [mask_key(k) for k in self.openrouter_api_keys]
+        d["ollama_cloud_api_keys"] = [mask_key(k) for k in self.ollama_cloud_api_keys]
         return d
 
 

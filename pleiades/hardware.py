@@ -481,18 +481,33 @@ def is_mmproj(filename: str) -> bool:
     return Path(filename).name.lower().startswith("mmproj")
 
 
+def is_mtp(filename: str) -> bool:
+    """Multi-token-prediction draft-head sidecars (*-MTP.gguf, mtp-*.gguf, or
+    files under an 'MTP/' folder) are not standalone models either.
+
+    Their filenames embed a real quant label (e.g. 'gemma-...-BF16-MTP.gguf')
+    but the file is a tiny ~1 GB draft head, not the full model. Left in the
+    candidate pool, a sidecar like that is far smaller than the real BF16/
+    F16/Q8_0 file of the same label, so the "keep the smallest file per
+    quant" dedup in group_split_ggufs picks the sidecar and reports its tiny
+    size + inflated tok/s estimate as if it were the real quant.
+    """
+    return "mtp" in Path(filename).name.lower()
+
+
 def group_split_ggufs(files: list[dict]) -> list[dict]:
     """Group multi-part GGUFs (-00001-of-00003.gguf) into one logical entry.
 
     Input/output dicts: {"name": str, "size": int} (+ "parts": [names] on groups).
-    Multimodal projector sidecars (mmproj-*) are excluded — they're companions
-    to a model, never the model.
+    Multimodal projector sidecars (mmproj-*) and multi-token-prediction
+    sidecars (*-MTP.gguf) are excluded — they're companions to a model,
+    never the model.
     """
     groups: dict[str, dict] = {}
     out: list[dict] = []
     for f in files:
         name = f["name"]
-        if not name.lower().endswith(".gguf") or is_mmproj(name):
+        if not name.lower().endswith(".gguf") or is_mmproj(name) or is_mtp(name):
             continue
         m = _SPLIT_RE.search(name)
         if not m:

@@ -23,6 +23,73 @@ from .inference import ensure_inference
 from .profiles import Profile, ProfileManager
 from .tools import ToolBelt, ToolContext, build_default_belt
 
+# --- Cloud-provider key rotation (OpenRouter / Ollama Cloud) ---------------- #
+# Process-local: resets on restart, which is fine — a fresh attempt on restart
+# is the right behavior anyway. Anamnesis's set_upstream() restarts a
+# character's proxy daemon whenever the upstream actually changes, so picking
+# is "sticky" (keeps the last-used key while it's healthy) to avoid restarting
+# the proxy on every single turn when nothing needs to change.
+_KEY_COOLDOWN: dict[str, float] = {}   # raw key -> unix ts when it's usable again
+_LAST_KEY: dict[str, str] = {}         # "provider:profile" -> last key picked
+
+
+def _provider_for(model: str) -> Optional[str]:
+    if model.startswith("openrouter:"):
+        return "openrouter"
+    if model.startswith("ollama-cloud:"):
+        return "ollama-cloud"
+    return None
+
+
+def _pick_key(provider: str, profile_name: str, keys: list) -> str:
+    """Pick a usable key for `provider`/`profile_name` from `keys`.
+
+    Sticks with the last key used for this profile while it's still healthy.
+    Skips keys currently in cooldown (recent 429/quota error). If every key is
+    cooling down, returns whichever frees up soonest — better to retry too
+    early than to refuse outright.
+    """
+    if not keys:
+        return ""
+    if len(keys) == 1:
+        return keys[0]
+    import time as _time
+    now = _time.time()
+    slot = f"{provider}:{profile_name}"
+    last = _LAST_KEY.get(slot)
+    if last in keys and _KEY_COOLDOWN.get(last, 0) <= now:
+        return last
+    healthy = [k for k in keys if _KEY_COOLDOWN.get(k, 0) <= now]
+    chosen = healthy[0] if healthy else min(keys, key=lambda k: _KEY_COOLDOWN.get(k, 0))
+    _LAST_KEY[slot] = chosen
+    return chosen
+
+
+def _mark_cooldown(key: str, seconds: float) -> None:
+    if key:
+        import time as _time
+        _KEY_COOLDOWN[key] = _time.time() + seconds
+
+
+def _cooldown_for(status: Optional[int]) -> float:
+    """How long to bench a key after an error, by HTTP status."""
+    if status == 429:
+        return 60.0          # rate limit — usually clears within a minute
+    if status in (402, 403):
+        return 6 * 3600.0    # quota exhausted / forbidden — won't clear itself soon
+    return 30.0
+
+
+def _retryable_key_error_status(exc: Exception) -> Optional[int]:
+    """HTTP status if `exc` looks like a rate-limit/quota error worth rotating
+    keys for, else None."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None) if resp is not None else None
+    return status if status in (429, 402, 403) else None
+
+
 _REFLECTION = (
     "\n\n[Self-check after {n} steps — keep going; do NOT end your turn or stop here] "
     "Quickly evaluate, then CONTINUE working:\n"
@@ -100,11 +167,13 @@ class Engine:
         model = getattr(profile, "model", "") or ""
         s = self.settings
         if model.startswith("openrouter:"):
+            key = _pick_key("openrouter", profile.name, s.openrouter_api_keys)
             return {"baseUrl": "https://openrouter.ai/api/v1",
-                    "apiKey": s.openrouter_api_key, "model": model.split(":", 1)[1]}
+                    "apiKey": key, "model": model.split(":", 1)[1]}
         if model.startswith("ollama-cloud:"):
+            key = _pick_key("ollama-cloud", profile.name, s.ollama_cloud_api_keys)
             return {"baseUrl": (s.ollama_cloud_url or "https://ollama.com/v1"),
-                    "apiKey": s.ollama_cloud_api_key, "model": model.split(":", 1)[1]}
+                    "apiKey": key, "model": model.split(":", 1)[1]}
         from .models import ModelManager, ModelError
         mm = ModelManager()
         if model and mm.get(model):
@@ -120,6 +189,20 @@ class Engine:
                 return {"baseUrl": mm.base_url(running[0]["name"]), "model": profile.name}
         except Exception:
             pass
+        # ponytail: legacy single-model bootstrap (PLEIADES_MODEL_PATH) used to launch
+        # through the dumb python-only InferenceServer — no MoE offload, no flash-attn,
+        # no kv-cache quant, no thread tuning. Register it with ModelManager instead so
+        # it gets the exact same autofit/native-runtime treatment as every other model:
+        # one optimized launch path, not two. ensure_inference now only backs `pleiades
+        # serve` (manual foreground debug command) — ceiling: raise it the same way if
+        # that command ever needs the smarter path too.
+        if s.model_path:
+            name = "default"
+            existing = mm.get(name)
+            if not existing or existing.get("path") != s.model_path:
+                mm.add(name, s.model_path, n_ctx=s.n_ctx, chat_format=s.chat_format)
+            mm.start(name)
+            return {"baseUrl": mm.base_url(name), "model": profile.name}
         return {"baseUrl": ensure_inference(s), "model": profile.name}
 
     def _model_for(self, profile: Profile) -> str:
@@ -127,14 +210,15 @@ class Engine:
         return (self._resolve_upstream(profile).get("model")
                 or getattr(profile, "model", "") or profile.name)
 
-    def _client_for(self, profile: Profile):
-        """Bring up inference + the character proxy and return an OpenAI client + ctx."""
-        from openai import OpenAI
+    def _point_upstream(self, profile: Profile) -> str:
+        """Resolve the upstream the character should use, point Anamnesis at it,
+        and return the character's proxy base URL.
 
-        # 1. Resolve the upstream the character should use, and point Anamnesis at it.
-        # set_upstream survives daemons without a PATCH route (edits config.json on
-        # disk + restarts the proxy) — otherwise a character created against a
-        # different backend keeps its stale upstream forever.
+        set_upstream() short-circuits (no restart) when the upstream hasn't
+        actually changed, and survives daemons without a PATCH route (edits
+        config.json on disk + restarts the proxy) — otherwise a character
+        created against a different backend keeps its stale upstream forever.
+        """
         up = self._resolve_upstream(profile)
         upstream = {"baseUrl": up["baseUrl"]}
         if up.get("apiKey"):
@@ -145,7 +229,58 @@ class Engine:
             self.anamnesis.set_upstream(profile.name, upstream)
         except Exception:
             pass
-        proxy_url = self.anamnesis.ensure_running(profile.name, upstream=upstream)
+        return self.anamnesis.ensure_running(profile.name, upstream=upstream)
+
+    def _new_client(self, profile: Profile):
+        """Re-resolve upstream (picks up any key rotation from a cooldown) and
+        hand back a fresh client. Cheap when the key hasn't actually changed —
+        _point_upstream's set_upstream() no-ops in that case."""
+        from openai import OpenAI
+        return OpenAI(base_url=self._point_upstream(profile), api_key="pleiades")
+
+    def _handle_upstream_error(self, profile: Profile, exc: Exception) -> bool:
+        """On a rate-limit/quota error from a multi-key cloud provider, bench
+        the key just used so the next pick skips it. Returns True if another
+        key is available to retry with right now."""
+        model = getattr(profile, "model", "") or ""
+        provider = _provider_for(model)
+        if not provider:
+            return False
+        status = _retryable_key_error_status(exc)
+        if status is None:
+            return False
+        keys = (self.settings.openrouter_api_keys if provider == "openrouter"
+                else self.settings.ollama_cloud_api_keys)
+        slot = f"{provider}:{profile.name}"
+        last = _LAST_KEY.get(slot)
+        if last:
+            _mark_cooldown(last, _cooldown_for(status))
+            _LAST_KEY.pop(slot, None)
+        import time as _time
+        now = _time.time()
+        return any(_KEY_COOLDOWN.get(k, 0) <= now for k in keys)
+
+    def _chat_create(self, client, profile: Profile, **kwargs):
+        """client.chat.completions.create with auto key-rotation: on a 429/402/403
+        from a multi-key cloud provider, bench that key and retry with a fresh
+        client bound to the next healthy one. Returns (result, client) — the
+        client that ultimately succeeded, so callers keep using it for the rest
+        of the turn."""
+        attempts = 0
+        while True:
+            try:
+                return client.chat.completions.create(**kwargs), client
+            except Exception as exc:
+                attempts += 1
+                if attempts > 4 or not self._handle_upstream_error(profile, exc):
+                    raise
+                client = self._new_client(profile)
+
+    def _client_for(self, profile: Profile):
+        """Bring up inference + the character proxy and return an OpenAI client + ctx."""
+        from openai import OpenAI
+
+        proxy_url = self._point_upstream(profile)
         client = OpenAI(base_url=proxy_url, api_key="pleiades")
 
         # 3. Tools, scoped to this character — the chat IS the agent, so the
@@ -288,7 +423,8 @@ class Engine:
             if interval and round_i and round_i % interval == 0:
                 messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
             round_i += 1
-            resp = client.chat.completions.create(
+            resp, client = self._chat_create(
+                client, profile,
                 model=self._model_for(profile),
                 messages=messages,
                 tools=tools or None,
@@ -359,7 +495,8 @@ class Engine:
                 calls: dict[int, dict] = {}
                 streamed = True
                 try:
-                    stream = client.chat.completions.create(
+                    stream, client = self._chat_create(
+                        client, profile,
                         model=self._model_for(profile), messages=messages,
                         tools=tools or None,
                         tool_choice="auto" if tools else None, stream=True,
@@ -394,7 +531,8 @@ class Engine:
                 if not streamed:
                     # Backend refused streaming (some llama.cpp builds reject
                     # stream+tools). One non-streamed request instead.
-                    resp = client.chat.completions.create(
+                    resp, client = self._chat_create(
+                        client, profile,
                         model=self._model_for(profile), messages=messages,
                         tools=tools or None,
                         tool_choice="auto" if tools else None,

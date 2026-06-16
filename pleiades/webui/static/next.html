@@ -221,6 +221,27 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 .pal{width:540px;max-width:92vw;background:var(--surf);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .pal input{border:0;border-bottom:1px solid var(--line);border-radius:0;font-size:15px;padding:15px}
 .pal .it{display:flex;gap:11px;align-items:center;padding:10px 14px;cursor:pointer}.pal .it:hover{background:var(--surf2)}
+
+/* pipeline-per-message */
+.pipe-think{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:4px 10px;margin-bottom:8px;font-size:12px}
+.pipe-think summary{cursor:pointer;color:var(--muted);list-style:none;padding:4px 0;user-select:none}
+.pipe-think summary::-webkit-details-marker{display:none}
+.pipe-think-body{color:var(--faint);font-size:11.5px;white-space:pre-wrap;padding:6px 0 4px;border-top:1px solid var(--line);margin-top:4px;max-height:180px;overflow-y:auto}
+.pipe-nodes{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0}
+.pipe-node{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:5px 12px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:border-color .15s,background .15s;white-space:nowrap}
+.pipe-node:hover,.pipe-node.sel{border-color:var(--a2);background:var(--surf)}
+.pipe-node.err{border-color:var(--bad)}.pipe-node.ok{border-color:var(--good)}
+.pipe-node.running{border-color:var(--warn);animation:ndblink .9s ease-in-out infinite alternate}
+@keyframes ndblink{from{opacity:.6}to{opacity:1}}
+.pipe-arrow{color:var(--muted);font-size:13px;user-select:none}
+.pipe-text{font-size:14px;line-height:1.65;white-space:pre-wrap;margin-top:6px}
+.pipe-detail{background:var(--surf);border:1px solid var(--a2);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:12px}
+.pipe-detail .k{color:var(--muted);min-width:64px;flex-shrink:0;font-size:11px}
+.pipe-detail .v{color:var(--text);word-break:break-all;font-family:var(--mono);font-size:11px}
+.pipe-detail .kv{display:flex;gap:8px;margin:4px 0;align-items:start}
+.rule-row{display:flex;align-items:start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.rule-row:last-child{border-bottom:none}
+.rule-pending{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -235,7 +256,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <div class="nl">Build</div>
     <div class="nav on" data-v="deck"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg>Command deck</div>
     <div class="nav" data-v="foundry"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>Model foundry<span class="ct">HF</span></div>
-    <div class="nav" data-v="characters"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>Characters<span class="ct">3</span></div>
+    <div class="nav" data-v="characters"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>Characters<span class="ct" id="nav-char-ct">—</span></div>
     <div class="nav" data-v="tools"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M22 19l-6-6 2-2-4-4-2 2-6-6-2 2 6 6-6 6 2 2 6-6 6 6z"/></svg>Tools &amp; connectors<span class="ct">75</span></div>
     <div class="nav" data-v="claude"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 5l1.5 3.5L17 12l-3.5 1.5L12 17l-1.5-3.5L7 12l3.5-1.5z"/></svg>Claude lab<span class="ct">Pro</span></div>
     <div class="nl">Operate</div>
@@ -278,10 +299,11 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 
     <!-- CHARACTERS -->
     <section class="view" id="v-characters">
-      <h1 class="h1">Characters</h1><p class="sub">A character binds one model + memory + email + vault + browser + Discord into one identity.</p>
+      <h1 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">Characters<button class="btn sm" onclick="newChar()" style="font-size:11px">+ New character</button></h1><p class="sub">A character binds one model + memory + email + vault + browser + Discord into one identity.</p>
       <div class="grid" style="grid-template-columns:1fr 1fr 1fr" id="charcards"></div>
       <div class="card" style="margin-top:16px">
         <h3 id="cfg-h">character · configuration <span class="t">editing</span></h3>
+        <div class="field" style="margin-bottom:12px"><label>Profile picture</label><div style="display:flex;gap:14px;align-items:center"><div style="position:relative;width:54px;height:54px;flex-shrink:0"><img id="cf-av-img" src="" style="width:54px;height:54px;border-radius:50%;object-fit:cover;display:none" onerror="this.style.display='none';document.getElementById('cf-av-fb').style.display='flex'"/><div id="cf-av-fb" class="avatar" style="width:54px;height:54px;font-size:20px;display:flex;position:absolute;inset:0">?</div></div><div style="display:flex;flex-direction:column;gap:5px"><input type="file" id="cf-pfp-input" accept="image/*" style="display:none" onchange="charPfpChanged(this)"/><button class="btn sm" onclick="document.getElementById('cf-pfp-input').click()">Upload photo</button><button class="btn sm" onclick="deleteCharPfp()">Remove</button></div></div></div>
         <div class="row2">
           <div>
             <div class="field"><label>Model</label><select id="cf-model"></select></div>
@@ -348,15 +370,12 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <section class="view flexcol" id="v-talk">
       <div class="talk">
         <div class="modes">
-          <span class="ttl">Talk · alice</span>
-          <div class="seg"><button class="on" data-m="stream" onclick="setMode('stream')">Stream</button><button data-m="pipeline" onclick="setMode('pipeline')">Pipeline</button><button data-m="mind" onclick="setMode('mind')">Mind</button></div>
+          <span class="ttl">Talk · <span id="talk-ttl">—</span></span><button class="btn sm" onclick="newTalkSession()" style="margin-left:6px;font-size:11px">+ New</button><select id="talk-sess" style="width:auto;margin-left:6px;font-size:11px" onchange="switchSession()"><option value="">— new chat —</option></select>
           <div class="sp"></div>
           <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">character</span>
-            <select id="talk-char" style="width:auto" onchange="refreshTalkRail()"></select></div>
+            <select id="talk-char" style="width:auto" onchange="charChanged()"></select></div>
         </div>
-        <div class="talkscroll" id="talkscroll">
-          <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">P</span>Pleiades</div>Pick a character and send a message — it runs on the local model with the full tool belt. Switch <b>Stream / Pipeline / Mind</b> to see how each run unfolds.</div>
-        </div>
+        <div class="talkscroll" id="talkscroll"></div>
         <div class="composer"><input id="talkin" placeholder="Message — every tool always on… (Enter to send)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();talkSend()}"/><button class="btn pri" onclick="talkSend()">↑</button></div>
 
         <aside class="rail">
@@ -377,31 +396,61 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
       <h1 class="h1">Settings</h1><p class="sub">Engine, agent loop, services, and optional cloud providers. Local inference is the default brain.</p>
       <div class="row2" style="align-items:start;gap:18px">
         <div style="display:flex;flex-direction:column;gap:14px">
-          <div class="card"><h3>Local engine <span class="t">llama.cpp</span></h3>
-            <div class="field"><label>Default model path (GGUF)</label><input id="se-model_path"/></div>
-            <div class="row2"><div class="field"><label>Context (n_ctx)</label><input id="se-n_ctx"/></div><div class="field"><label>GPU layers</label><input id="se-n_gpu_layers"/></div></div>
-            <div class="row2"><div class="field"><label>Flash attention</label><select id="se-flash_attn"><option>auto</option><option>on</option><option>off</option></select></div><div class="field"><label>KV-cache quant (compaction)</label><select id="se-kv_cache_type"><option value="">f16 (default)</option><option value="q8_0">q8_0 (~½ memory)</option><option value="q4_0">q4_0 (~¼)</option></select></div></div>
-            <div class="row2"><div class="field"><label>Batch size (-b)</label><input id="se-n_batch" placeholder="0 = default"/></div><div class="field"><label>Keep weights in RAM (mlock)</label><select id="se-mlock"><option value="false">no</option><option value="true">yes</option></select></div></div>
-            <div class="field"><label>Speculative draft model (GGUF path)</label><input id="se-draft_model_path" placeholder="optional — a tiny model to speed up a huge one"/></div>
-          </div>
-          <div class="card"><h3>Agent loop</h3>
+          <div class="card" id="engine-card">
+  <h3>Local engine <span class="t" style="color:var(--muted)">auto-managed</span></h3>
+  <div style="color:var(--muted);font-size:12.5px;line-height:1.6;margin-bottom:10px">
+    Pleiades selects optimal llama.cpp flags for your hardware automatically.
+  </div>
+  <div id="hw-msg" style="font-size:12px;color:var(--good);margin-bottom:8px"></div>
+  <button class="btn" onclick="applyHwPlan(this)" style="font-size:12px">⚙ Re-run hardware plan</button>
+  <input id="se-model_path" style="display:none"/>
+  <input id="se-n_ctx" style="display:none"/>
+  <input id="se-n_gpu_layers" style="display:none"/>
+  <select id="se-flash_attn" style="display:none"><option value="on">on</option><option value="off">off</option></select>
+  <select id="se-kv_cache_type" style="display:none"><option value="">f16</option><option value="q8_0">q8_0</option><option value="q4_0">q4_0</option></select>
+  <input id="se-draft_model" style="display:none"/>
+  <input id="se-draft_n_gpu_layers" style="display:none"/>
+</div>
+<div class="card"><h3>Agent loop</h3>
             <div class="row2"><div class="field"><label>Exec policy</label><select id="se-exec_policy"><option>ask</option><option value="allow">act</option><option>deny</option></select></div><div class="field"><label>Self-check every N turns</label><input id="se-eval_interval" placeholder="40"/></div></div>
+          <div style="margin-top:10px;display:flex;align-items:center;gap:10px"><button class="btn sm" onclick="saveAgentLoop()">Save</button><span id="se-loop-msg" style="font-size:12px;color:var(--muted)"></span></div>
           </div>
+          <div class="card">
+  <h3>Rules &amp; guidelines</h3>
+  <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">Per-turn instructions the model follows. Models can also propose rules pending your approval.</p>
+  <div id="rules-list" style="margin-bottom:12px"><div style="color:var(--muted);font-size:12.5px">Loading…</div></div>
+  <div style="display:flex;gap:8px">
+    <input id="rule-new" placeholder="Add a new rule…" style="flex:1;font-size:12.5px" onkeydown="if(event.key==='Enter')addRule()"/>
+    <button class="btn sm" onclick="addRule()">+ Add</button>
+  </div>
+</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:14px">
           <div class="card"><h3>Services</h3>
             <div class="field"><label>Anamnesis control URL</label><input id="se-anamnesis_control_url"/></div>
             <div class="field"><label>SearXNG URL</label><input id="se-searxng_url"/></div>
+          <div style="margin-top:10px;display:flex;align-items:center;gap:10px"><button class="btn sm" onclick="saveServices()">Save</button><span id="se-svc-msg" style="font-size:12px;color:var(--muted)"></span></div>
           </div>
           <div class="card"><h3>Cloud providers <span class="t">optional</span></h3>
-            <div style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.5">Local GGUF stays the default. These let a character use a hosted model — routed through Anamnesis, so memory still applies. Keys are stored locally in <code>.env</code>.</div>
-            <div class="field"><label>OpenRouter API key</label><input id="se-openrouter_api_key" type="password" placeholder="sk-or-..."/></div>
-            <div class="row2"><div class="field"><label>Ollama Cloud URL</label><input id="se-ollama_cloud_url"/></div><div class="field"><label>Ollama Cloud key</label><input id="se-ollama_cloud_api_key" type="password"/></div></div>
+            <div style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.5">Local GGUF stays the default. These let a character use a hosted model — routed through Anamnesis, so memory still applies. Keys are stored locally in <code>.env</code>.</div>
+            <div id="cp-key-list" style="margin-bottom:12px"></div>
+            <div id="cp-add-row" style="display:none;gap:6px;align-items:center;margin-bottom:8px">
+              <select id="cp-provider" style="font-size:12.5px;width:auto;flex:0 0 130px">
+                <option value="or">OpenRouter</option>
+                <option value="ol">Ollama Cloud</option>
+              </select>
+              <input id="cp-new-key" type="password" placeholder="API key…" style="flex:1;font-size:12.5px"/>
+              <button type="button" class="btn sm" onclick="revealTog('cp-new-key',this)" title="Show/hide key" style="flex:0 0 auto">👁</button>
+              <button class="btn sm" onclick="addCpKey()" id="cp-add-confirm-btn">Add</button>
+              <button class="btn sm" onclick="cancelCpAdd()">✕</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button class="btn sm" id="cp-add-btn" onclick="showCpAdd()">+ Add key</button>
+              <span id="cp-msg" style="font-size:12px;color:var(--muted)"></span>
+            </div>
           </div>
         </div>
       </div>
-      <button class="btn pri" id="se-save" style="margin-top:14px" onclick="saveSettings()">Save settings</button>
-      <span id="se-msg" style="margin-left:12px;font-size:12.5px;color:var(--muted)"></span>
     </section>
 
   </main>
@@ -424,7 +473,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
   document.getElementById('main').classList.toggle('flush',v==='talk');
-  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='claude')loadClaude(); if(v==='settings')loadSettings();}
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='claude')loadClaude(); if(v==='settings'){loadSettings();loadRules();}}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -440,7 +489,7 @@ function _card(t,n,col,u,sub){return '<div class="card"><h3>'+t+'</h3><div class
 function _srow(up,name,v){return '<div class="kv"><span class="k"><span class="dot '+(up?'up':'warn')+'" style="display:inline-block;margin-right:7px"></span>'+name+'</span><span class="v">'+v+'</span></div>'}
 async function loadDeck(){
   try{const [st,hw,md]=await Promise.all([api('/api/status'),api('/api/hardware'),api('/api/models')]);
-    const g=hw.gpus&&hw.gpus[0];const c=st.counts;const run=md.running||[];
+    const g=hw.gpus&&hw.gpus[0];const c=st.counts;const run=md.running||[];{const nct=document.getElementById('nav-char-ct');if(nct)nct.textContent=c.profiles||'0';}
     setHTML('deck-metrics',
       _card('GPU', g?(g.vram_total/1073741824).toFixed(0):'—','var(--gpu)', g?'GB · '+g.name:'no GPU', g?(fmtGB(g.vram_total-g.vram_free)+' used'):'')+
       _card('System RAM',(hw.ram_total/1073741824).toFixed(0),'','GB · '+((hw.ram_total-hw.ram_available)/1073741824).toFixed(0)+' used',hw.cpu_threads+' CPU threads')+
@@ -460,13 +509,19 @@ async function loadChars(){
     MODELS=md.models||[];const box=document.getElementById('charcards');box.innerHTML='';
     (d.profiles||[]).forEach(pf=>{const conn=[pf.has_email?'✉':'',pf.discord_enabled?'◈':'','✦'].filter(Boolean).join('  ');
       const e=document.createElement('div');e.className='card';
-      e.innerHTML='<h3>'+pf.name+'<span class="tagp '+(pf.model?'tp-run':'tp-idle')+'" style="margin-left:auto">'+(pf.model?'configured':'no model')+'</span></h3>'+
-        '<div class="kv"><span class="k">model</span><span class="v">'+(pf.model||'default engine')+'</span></div>'+
+      const avUrl='/api/profiles/'+encodeURIComponent(pf.name)+'/avatar?_='+Date.now();
+      e.innerHTML='<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">'+
+        '<div style="position:relative;width:40px;height:40px;flex-shrink:0">'+
+        '<img src="'+avUrl+'" style="width:40px;height:40px;border-radius:50%;object-fit:cover" onerror="this.style.display=\'none\'"/>'+
+        '<div class="avatar" style="position:absolute;inset:0;width:40px;height:40px;font-size:15px">'+pf.name.charAt(0).toUpperCase()+'</div></div>'+
+        '<div style="flex:1"><div style="font-weight:600">'+pf.name+'</div>'+
+        '<div style="font-size:11.5px;color:var(--muted)">'+(pf.model||'default engine')+'</div></div>'+
+        '<span class="tagp '+(pf.model?'tp-run':'tp-idle')+'">'+(pf.model?'configured':'no model')+'</span></div>'+
         '<div class="kv"><span class="k">connectors</span><span class="v">'+conn+'</span></div>'+
         '<button class="btn sm" style="margin-top:10px" onclick="configChar(\''+pf.name+'\')">Configure</button>';box.append(e)});
     if(d.orphans&&d.orphans.length){const e=document.createElement('div');e.className='card';e.style.borderStyle='dashed';
       e.innerHTML='<h3>Adoptable<span class="tagp tp-warn" style="margin-left:auto">'+d.orphans.length+'</span></h3><div class="kv"><span class="k">Anamnesis chars</span><span class="v">'+d.orphans.join(', ')+'</span></div><div style="color:var(--muted);font-size:11.5px;margin-top:8px">not yet Pleiades profiles</div>';box.append(e)}
-    if((d.profiles||[]).length && !curChar) configChar(d.profiles[0].name);
+    /* no auto-select */
   }catch(e){document.getElementById('charcards').innerHTML='<div class="card" style="color:var(--bad)">'+e.message+'</div>'}
 }
 let curCharModel='';
@@ -482,6 +537,12 @@ async function configChar(name){curChar=name;
     setVal('cf-dchan',pf.discord_allowed_channels||'');
     const vb=document.getElementById('cf-vaultbtn');if(vb)vb.querySelector('.vc').textContent=(pf.vault?pf.vault.length:0)+' stored ›';
     loadCharMemory(name);
+    const avImg=document.getElementById('cf-av-img');const avFb=document.getElementById('cf-av-fb');
+    if(avImg){avImg.src='/api/profiles/'+encodeURIComponent(name)+'/avatar?_='+Date.now();
+      avImg.style.display='block';
+      avImg.onload=()=>{if(avFb)avFb.style.display='none';};
+      avImg.onerror=()=>{avImg.style.display='none';if(avFb)avFb.style.display='flex';};}
+    if(avFb)avFb.textContent=name.charAt(0).toUpperCase();
     document.getElementById('cfg-h').scrollIntoView({behavior:'smooth',block:'start'});
   }catch(e){}
 }
@@ -576,7 +637,9 @@ async function loadLib(){const box=document.getElementById('library');
     d.models.forEach(m=>{const run=running.has(m.name)||m.running;const e=document.createElement('div');e.className='result';
       e.innerHTML='<div><div class="ttl">'+m.name+'</div><div class="meta">'+((m.path||'').split('/').pop())+' · '+m.n_gpu_layers+' gpu-layers'+(m.port?' · :'+m.port:'')+'</div></div>'+
         '<div class="right" style="display:flex;gap:8px;align-items:center"><span class="tagp '+(run?'tp-run':'tp-idle')+'">'+(run?'running':'idle')+'</span>'+
-        '<button class="btn sm" onclick="modelAct(\''+m.name+'\',\''+(run?'stop':'start')+'\')">'+(run?'Stop':'Start')+'</button></div>';box.append(e)});
+        '<button class="btn sm" onclick="modelAct(\''+m.name+'\',\''+( run?'stop':'start')+'\')">'+(run?'Stop':'Start')+'</button>'+
+        (!run?'<button class="btn sm" style="color:var(--bad);margin-left:4px" onclick="deleteModel(\''+m.name+'\')" title="Remove">&#x2715;</button>':'')+
+        '</div>';box.append(e)});
   }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+e.message+'</div>'}
 }
 async function modelAct(name,act){try{await fetch('/api/models/'+encodeURIComponent(name)+'/'+act,{method:'POST'});setTimeout(function(){loadLib();try{loadDeck()}catch(e){}},700)}catch(e){}}
@@ -621,193 +684,186 @@ function loadCat(){const box=document.getElementById('catalog');box.innerHTML=''
 /* ───── Connectors with action buttons ───── */
 async function loadConn(){
   let up={};try{const st=await api('/api/status');up=st.services||{}}catch(e){}
-  const sx=!!(up.searxng&&up.searxng.up),an=!!(up.anamnesis&&up.anamnesis.up),inf=!!(up.inference&&up.inference.up);
-  const C=[
-    ['✉','Email · IMAP/SMTP','per-character inbox; receive verification codes','run','per-character',null],
-    ['◈','Discord','host a character as a bot','run','per-character',null],
-    ['◐','Camoufox browser','headed, anti-fingerprint profile','run','ready',null],
-    ['⌕','SearXNG','local web search (docker)',sx?'run':'warn',sx?'running':'stopped','searx'],
-    ['✦','Anamnesis','canonical memory proxy',an?'run':'warn',an?':9000':'down',null]];
+  const sx=!!(up.searxng&&up.searxng.up),an=!!(up.anamnesis&&up.anamnesis.up);
   const box=document.getElementById('connectors');box.innerHTML='';
-  C.forEach(([ic,nm,ds,st,tag,kind])=>{const e=document.createElement('div');e.className='conn';
-    const acts=st==='run'?['Stop','Debug','Settings','Edit']:['Start','Fix','Settings','Edit'];
+  [['&#x2709;','Email · IMAP/SMTP','per-character inbox + send'],
+   ['◈','Discord','host a character as a bot'],
+   ['◐','Camoufox browser','headed, anti-fingerprint browsing']
+  ].forEach(([ic,nm,ds])=>{
+    const e=document.createElement('div');e.className='conn';
     e.innerHTML='<div class="ci">'+ic+'</div><div class="info"><div class="nm">'+nm+'</div><div class="ds">'+ds+'</div></div>'+
-      '<span class="tagp '+(st==='run'?'tp-run':'tp-warn')+'">'+tag+'</span><div class="acts"></div>';
-    const ah=e.querySelector('.acts');
-    acts.forEach(a=>{const b=document.createElement('button');b.className='btn sm';b.textContent=a;
-      if(kind==='searx'&&a==='Start')b.onclick=()=>searxctl('up','Start');
-      else if(kind==='searx'&&a==='Stop')b.onclick=()=>searxctl('down','Stop');
-      ah.append(b)});
-    box.append(e)});
+      '<span class="tagp tp-idle">per-character</span>'+
+      '<div class="acts"><button class="btn sm" onclick="go(\'characters\')">&#x2192; Characters</button></div>';
+    box.append(e);
+  });
+  (()=>{const e=document.createElement('div');e.className='conn';
+    e.innerHTML='<div class="ci">&#x2315;</div><div class="info"><div class="nm">SearXNG</div><div class="ds">local web search</div></div>'+
+      '<span class="tagp '+(sx?'tp-run':'tp-warn')+'">'+(sx?'running':'stopped')+'</span><div class="acts"></div>';
+    const b=document.createElement('button');b.className='btn sm';b.textContent=sx?'Stop':'Start';
+    b.onclick=()=>searxctl(sx?'down':'up',b);e.querySelector('.acts').append(b);box.append(e);
+  })();
+  (()=>{const e=document.createElement('div');e.className='conn';
+    e.innerHTML='<div class="ci">&#x2736;</div><div class="info"><div class="nm">Anamnesis</div><div class="ds">canonical memory proxy · '+(an?':9000':'down')+'</div></div>'+
+      '<span class="tagp '+(an?'tp-run':'tp-warn')+'">'+(an?'running':'stopped')+'</span><div class="acts"></div>';
+    const b=document.createElement('button');b.className='btn sm';b.textContent=an?'Stop':'Start';
+    b.onclick=()=>anamctl(an?'stop':'start',b);e.querySelector('.acts').append(b);box.append(e);
+  })();
 }
 async function searxctl(dir,label){try{const bs=document.querySelectorAll('#connectors .acts button');bs.forEach(b=>{if(b.textContent===label)b.textContent='…'});
   await fetch('/api/search/'+dir,{method:'POST'});setTimeout(loadConn,2000)}catch(e){loadConn()}}
 
-/* ───── TALK: modes + demo run ───── */
-let mode='stream';
-let lastRun=null, ran=false;
-function setMode(m){mode=m;document.querySelectorAll('.modes .seg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));renderRun();}
-function runDemo(){
-  lastRun={taskText:'check the inbox for a verification code and store it in the vault',
-    think:[[0.0,'Task','check inbox → store the code in the vault']],
-    tools:[[1.4,'search_inbox',0.4,'3 results',true,'query="verification code"'],
-           [2.6,'read_email',0.6,'From: Stripe · code 481920',true,'id=msg_88c2'],
-           [4.0,'dispatch_subagent',0.3,'format valid',true,'task="validate 6-digit"'],
-           [5.4,'vault_set',0.3,'value •••••• → stored',true,'key="stripe_verify"']],
-    out:[[6.2,'Done. Saved stripe_verify to the vault.']],
-    threads:[[0,0],[0,1]],meta:{turns:3,demo:true}};
-  ran=true;const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
-  set('r-tok','3,480');set('r-tools','4');set('r-turns','3');
-  if(mode==='stream')mode='pipeline',document.querySelectorAll('.modes .seg button').forEach(b=>b.classList.toggle('on',b.dataset.m==='pipeline'));
-  renderRun();
-}
-let talkChats={};
+/* TALK */
+let curChatId=null;
 function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
-async function loadTalk(){try{const d=await api('/api/profiles');const sel=document.getElementById('talk-char');if(!sel)return;
-  const cur=sel.value;sel.innerHTML=(d.profiles||[]).map(pf=>'<option value="'+pf.name+'">'+pf.name+' · '+(pf.model||'default engine')+'</option>').join('')||'<option value="">no characters — create one</option>';
-  if(cur)sel.value=cur;refreshTalkRail();}catch(e){}}
-async function memInspect(){const sel=document.getElementById('talk-char');const char=sel&&sel.value;if(!char){return}
-  showModal('<div class="mh">✦ '+char+' · memory inspector <span class="t" style="margin-left:8px;color:var(--faint);font-family:var(--mono);font-size:10.5px">Anamnesis</span><span class="x" onclick="closeModal()">✕</span></div><div class="mbody" id="mem-body" style="color:var(--muted)">loading…</div>');
-  try{const d=await api('/api/profiles/'+encodeURIComponent(char)+'/anamnesis/inspect?limit=15');
-    const lbl=t=>'<div style="margin:12px 0 6px;color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.6px">'+t+'</div>';
-    const none='<div style="color:var(--muted);font-size:12px">none yet</div>';
-    let html=lbl('Scenes — consolidated memory ('+d.scenes.length+')');
-    html+= d.scenes.length? d.scenes.map(s=>'<div class="kv"><span class="k"><b style="color:var(--text)">'+escapeHtml(s.title||'(untitled)')+'</b><div style="color:var(--muted);font-size:11.5px;margin-top:2px;white-space:normal">'+escapeHtml(s.summary)+'</div></span><span class="v">↺ '+s.recall+'</span></div>').join('') : none;
-    html+=lbl('Engrams — top facts');
-    html+= d.engrams.length? d.engrams.map(e=>'<div class="kv"><span class="k" style="font-size:12px;white-space:normal">'+escapeHtml(e.content)+'</span><span class="v"><span class="tagp tp-idle">'+escapeHtml(e.category||'')+'</span></span></div>').join('') : none;
-    html+=lbl('Observations — about you');
-    html+= d.observations.length? d.observations.map(o=>'<div class="kv"><span class="k" style="font-size:12px;white-space:normal"><b style="color:var(--a2);font-family:var(--mono);font-size:11px">'+escapeHtml(o.type||'')+'</b> '+escapeHtml(o.detail)+'</span></div>').join('') : none;
-    if(d.error)html+='<div style="color:var(--bad);font-size:12px;margin-top:8px">'+escapeHtml(d.error)+'</div>';
-    document.getElementById('mem-body').innerHTML=html;
-  }catch(e){document.getElementById('mem-body').innerHTML='<div style="color:var(--bad)">'+escapeHtml(e.message)+'</div>'}
+async function loadTalk(){
+  try{const d=await api('/api/profiles');
+    const sel=document.getElementById('talk-char');if(!sel)return;
+    const cur=sel.value;
+    sel.innerHTML=(d.profiles||[]).map(pf=>'<option value="'+pf.name+'">'+pf.name+' · '+(pf.model||'default engine')+'</option>').join('')||'<option value="">no characters</option>';
+    if(cur)sel.value=cur;
+    const ttl=document.getElementById('talk-ttl');if(ttl)ttl.textContent=sel.value||'—';
+    await loadSessions();refreshTalkRail();
+    const cs=document.getElementById('talk-char');if(cs)cs.disabled=!!curChatId;
+  }catch(e){}
 }
+async function charChanged(){
+  curChatId=null;
+  const s=document.getElementById('talkscroll');if(s)s.innerHTML='';
+  const cs=document.getElementById('talk-char');if(cs){cs.disabled=false;cs.title='';}
+  const sess=document.getElementById('talk-sess');if(sess)sess.innerHTML='<option value="">— new chat —</option>';
+  refreshTalkRail();loadSessions();
+}
+async function loadSessions(){
+  const sel=document.getElementById('talk-char');const char=sel&&sel.value;
+  const sess=document.getElementById('talk-sess');if(!char||!sess)return;
+  try{const d=await api('/api/chats');
+    const mine=(d.chats||[]).filter(c=>c.character===char);
+    sess.innerHTML='<option value="">— new chat —</option>'+mine.map(c=>'<option value="'+c.id+'">'+escapeHtml((c.title||'(new chat)').slice(0,45))+'</option>').join('');
+    if(curChatId)sess.value=curChatId;
+  }catch(e){}
+}
+async function newTalkSession(){
+  curChatId=null;const s=document.getElementById('talkscroll');if(s)s.innerHTML='';
+  const sess=document.getElementById('talk-sess');if(sess)sess.value='';
+  const cs=document.getElementById('talk-char');if(cs){cs.disabled=false;cs.title='';}
+}
+async function switchSession(){
+  const sess=document.getElementById('talk-sess');const id=sess&&sess.value;
+  const s=document.getElementById('talkscroll');if(s)s.innerHTML='';curChatId=id||null;
+}
+async function memInspect(){}
 async function refreshTalkRail(){
-  const sel=document.getElementById('talk-char');const char=sel&&sel.value;if(!char)return;
-  try{const [pf,st]=await Promise.all([api('/api/profiles/'+encodeURIComponent(char)),api('/api/status')]);
-    const brain=pf.model||'default engine';const running=(st.running_models||[]).find(m=>m.name===pf.model);
-    const cloud=(pf.model||'').includes(':');
+  const sel=document.getElementById('talk-char');const char=sel&&sel.value;
+  const ttl=document.getElementById('talk-ttl');if(ttl)ttl.textContent=char||'—';
+  if(!char)return;
+  try{const[pf,st]=await Promise.all([api('/api/profiles/'+encodeURIComponent(char)),api('/api/status')]);
+    const brain=pf.model||'default engine';const running=(st.running_models||[]).find(m=>m.name===pf.model);const cloud=(pf.model||'').includes(':');
     setHTML('rail-brain','<div class="kv"><span class="k">character</span><span class="v">'+char+'</span></div>'+
       '<div class="kv"><span class="k">brain</span><span class="v">'+(cloud?brain.split(':')[0]:brain)+'</span></div>'+
-      (cloud?'<div class="kv"><span class="k">model</span><span class="v" style="font-size:11px">'+brain.split(':').slice(1).join(':')+'</span></div>':(running?'<div class="kv"><span class="k">port</span><span class="v" style="color:var(--a2)">:'+running.port+'</span></div><div class="kv"><span class="k">layers</span><span class="v" style="color:var(--gpu)">'+running.n_gpu_layers+'</span></div>':'<div class="kv"><span class="k">status</span><span class="v">on-demand</span></div>')));
+      (cloud?'<div class="kv"><span class="k">model</span><span class="v" style="font-size:11px">'+brain.split(':').slice(1).join(':')+'</span></div>':
+        (running?'<div class="kv"><span class="k">port</span><span class="v" style="color:var(--a2)">:'+running.port+'</span></div>':
+          '<div class="kv"><span class="k">status</span><span class="v">on-demand</span></div>')));
   }catch(e){}
   try{const a=await api('/api/profiles/'+encodeURIComponent(char)+'/anamnesis');const s=a.stats||{};
     setHTML('rail-mem','<div class="kv"><span class="k">status</span><span class="v">'+(a.char_status||'?')+'</span></div>'+
       '<div class="kv"><span class="k">turns</span><span class="v">'+(s.turns||0).toLocaleString()+'</span></div>'+
-      '<div class="kv"><span class="k">scenes</span><span class="v">'+(s.scenes||0)+'</span></div>'+
-      '<div class="kv"><span class="k">engrams</span><span class="v">'+(s.engrams||0)+'</span></div>'+
-      '<div class="kv"><span class="k">observations</span><span class="v">'+(s.observations||0)+'</span></div>');
+      '<div class="kv"><span class="k">engrams</span><span class="v">'+(s.engrams||0)+'</span></div>');
   }catch(e){setHTML('rail-mem','<div class="kv"><span class="k">memory</span><span class="v">unavailable</span></div>')}
+}
+function buildToolNodes(tools){
+  const nodes=document.createElement('div');nodes.className='pipe-nodes';
+  tools.forEach((t,i)=>{
+    if(i>0){const ar=document.createElement('div');ar.className='pipe-arrow';ar.textContent='→';nodes.append(ar);}
+    const nd=document.createElement('div');nd.className='pipe-node'+(t.ok===false?' err':t.ok===true?' ok':'');nd.textContent=t.name||'tool';nodes.append(nd);
+  });return nodes;
+}
+function showNodeDetail(det,t){
+  det.style.display='';
+  det.innerHTML='<div class="kv"><span class="k">tool</span><span class="v" style="color:var(--a2)">'+escapeHtml(t.name||'')+'</span></div>'+
+    (t.args?'<div class="kv"><span class="k">args</span><span class="v">'+escapeHtml(String(t.args).slice(0,400))+'</span></div>':'')+
+    (t.output!=null?'<div class="kv"><span class="k">output</span><span class="v">'+escapeHtml(String(t.output).slice(0,400))+'</span></div>':'')+
+    '<div class="kv"><span class="k">status</span><span class="v" style="color:'+(t.ok===false?'var(--bad)':'var(--good)')+'">'+
+    (t.ok===false?'error':t.ok===true?'ok':'—')+'</span></div>';
 }
 async function talkSend(){
   const i=document.getElementById('talkin');const text=(i.value||'').trim();if(!text)return;
   const sel=document.getElementById('talk-char');const character=sel&&sel.value;
   const s=document.getElementById('talkscroll');
-  if(!character){const w=document.createElement('div');w.className='tmsg';w.innerHTML='<div class="amsg" style="color:var(--bad)">No character selected. Create one in Characters first.</div>';s.append(w);return}
+  if(!character){const w=document.createElement('div');w.className='tmsg';
+    w.innerHTML='<div style="color:var(--bad);font-size:13px;padding:8px 0">No character selected — create one first.</div>';
+    s.append(w);return;}
   i.value='';
-  const u=document.createElement('div');u.className='tmsg u';u.innerHTML='<div class="bub">'+escapeHtml(text)+'</div>';s.append(u);
-  try{if(!talkChats[character]){const c=await (await fetch('/api/chats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character})})).json();talkChats[character]=c.id||c.chat_id||c.name}}catch(e){}
-  const chatId=talkChats[character];
+  const u=document.createElement('div');u.className='tmsg u';
+  u.innerHTML='<div class="bub">'+escapeHtml(text)+'</div>';s.append(u);
+  if(!curChatId){
+    try{const r=await fetch('/api/chats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character})});
+      const c=await r.json();curChatId=c.id||c.chat_id;
+      const cs=document.getElementById('talk-char');if(cs){cs.disabled=true;cs.title='Start a new session (→ + New) to switch characters';}
+      setTimeout(()=>{loadSessions();const ss=document.getElementById('talk-sess');if(ss&&curChatId)ss.value=curChatId;},400);
+    }catch(e){const w=document.createElement('div');w.className='tmsg';
+      w.innerHTML='<div style="color:var(--bad)">Failed to create session: '+escapeHtml(e.message)+'</div>';s.append(w);return;}
+  }
   const wrap=document.createElement('div');wrap.className='tmsg';
-  wrap.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">'+character[0].toLowerCase()+'</span>'+character+'</div>';
-  const runBox=document.createElement('div');runBox.className='runblock';runBox.style.display='none';
-  runBox.innerHTML='<div class="rh"><span>⚙</span> tools</div>';const runBody=document.createElement('div');runBody.className='rb';runBox.append(runBody);
-  const thinkEl=document.createElement('div');thinkEl.className='amsg';thinkEl.style.cssText='color:var(--faint);font-size:12.5px;white-space:pre-wrap;display:none;border-left:2px solid var(--a1);padding-left:10px;margin-bottom:6px';
-  const textEl=document.createElement('div');textEl.className='amsg';textEl.innerHTML='<span style="color:var(--faint)">⏳ generating… (a large local model can take 30–60s for the first token)</span>';
-  wrap.append(runBox);wrap.append(thinkEl);wrap.append(textEl);s.append(wrap);s.scrollTop=s.scrollHeight;
-  const t0=Date.now();
-  const run={taskText:text,think:[[0,'Task',text]],tools:[],out:[],threads:[],meta:{turns:0}};
-  let acc='';let curIdx=-1,curStart=0;let thinkAcc='';let firstReason=true;let started=false;
+  wrap.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">'+
+    escapeHtml(character[0].toLowerCase())+'</span>'+escapeHtml(character)+'</div>';
+  const thinkEl=document.createElement('details');thinkEl.className='pipe-think';thinkEl.style.display='none';
+  const thinkSum=document.createElement('summary');thinkSum.textContent='💭 thinking…';thinkEl.append(thinkSum);
+  const thinkBody=document.createElement('div');thinkBody.className='pipe-think-body';thinkEl.append(thinkBody);
+  const nodesEl=document.createElement('div');nodesEl.className='pipe-nodes';nodesEl.style.display='none';
+  const detailEl=document.createElement('div');detailEl.className='pipe-detail';detailEl.style.display='none';
+  const textEl=document.createElement('div');textEl.className='pipe-text';
+  textEl.innerHTML='<span style="color:var(--faint)">⏳ generating…</span>';
+  wrap.append(thinkEl,nodesEl,detailEl,textEl);s.append(wrap);s.scrollTop=s.scrollHeight;
+  let acc='',thinkAcc='',hadError=false,started=false;const liveTools=[];let liveTool=null;
   try{
-    const r=await fetch('/api/chats/'+encodeURIComponent(chatId)+'/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
-    if(!r.body)throw new Error('no stream');
-    const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
-    while(true){const {value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
-      let nl;while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
+    const res=await fetch('/api/chats/'+encodeURIComponent(curChatId)+'/message',
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+    if(!res.body)throw new Error('no stream');
+    const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
+    while(true){
+      const{value,done}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});let nl;
+      while((nl=buf.indexOf('\n'))>=0){
+        const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
         let ev;try{ev=JSON.parse(line)}catch(e){continue}
-        const tnow=(Date.now()-t0)/1000;
-        if(ev.type==='reasoning'){if(!started){started=true;textEl.textContent=''}thinkEl.style.display='';thinkAcc+=ev.text||'';thinkEl.textContent='💭 '+thinkAcc.slice(-900);if(firstReason){run.think.push([(Date.now()-t0)/1000,'Reasoning',(ev.text||'').slice(0,90)]);firstReason=false}}
-        else if(ev.type==='token'||ev.type==='chunk'){if(!started){started=true;textEl.textContent=''}acc+=ev.text||'';textEl.textContent=acc}
-        else if(ev.type==='tool_call'){runBox.style.display='';const st=document.createElement('div');st.className='tstep';
-          st.innerHTML='<div class="sh"><span class="dot" style="background:var(--warn);box-shadow:none"></span><span class="nm">'+escapeHtml(ev.name||'tool')+'</span><span class="st">running…</span></div>';runBody.append(st);
-          curStart=tnow;run.tools.push([tnow,ev.name||'tool',null,null,null,(ev.args?JSON.stringify(ev.args).slice(0,160):'')]);curIdx=run.tools.length-1;run.threads.push([0,curIdx])}
-        else if(ev.type==='tool_result'){const st=runBody.lastChild;if(st){const d=st.querySelector('.dot');if(d){d.style.background='var(--good)';d.style.boxShadow='0 0 7px var(--good)'}const tt=st.querySelector('.st');if(tt)tt.textContent=ev.ok===false?'error':'ok'}
-          if(curIdx>=0&&run.tools[curIdx]){run.tools[curIdx][2]=+(tnow-curStart).toFixed(1);run.tools[curIdx][3]=(ev.output||'').slice(0,160);run.tools[curIdx][4]=ev.ok!==false}}
-        else if(ev.type==='done'){const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};set('r-tok',(ev.tokens||0).toLocaleString());set('r-tools',run.tools.length);const rt=document.getElementById('r-turns');if(rt)rt.textContent=(parseInt(rt.textContent)||0)+1;run.meta.turns=1}
-        else if(ev.type==='error'){textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(ev.error||'error')+'</span>'}
-        s.scrollTop=s.scrollHeight}
+        if(ev.type==='reasoning'){
+          if(!started){started=true;textEl.textContent='';}
+          thinkEl.style.display='';thinkAcc+=ev.text||'';thinkBody.textContent=thinkAcc.slice(-1200);
+        }else if(ev.type==='token'||ev.type==='chunk'){
+          if(!started){started=true;textEl.textContent='';}acc+=ev.text||'';textEl.textContent=acc;
+        }else if(ev.type==='tool_call'){
+          if(!started){started=true;textEl.textContent='';}nodesEl.style.display='';
+          if(nodesEl.children.length){const ar=document.createElement('div');ar.className='pipe-arrow';ar.textContent='→';nodesEl.append(ar);}
+          const nd=document.createElement('div');nd.className='pipe-node running';nd.textContent=ev.name||'tool';
+          const tool={name:ev.name||'tool',args:typeof ev.args==='object'?JSON.stringify(ev.args,null,2):(ev.args||''),output:null,ok:null,nodeEl:nd};
+          nd.onclick=()=>{document.querySelectorAll('.pipe-node').forEach(n=>n.classList.remove('sel'));nd.classList.add('sel');showNodeDetail(detailEl,tool);};
+          nodesEl.append(nd);liveTools.push(tool);liveTool=tool;
+        }else if(ev.type==='tool_result'){
+          if(liveTool){liveTool.output=ev.output||'';liveTool.ok=ev.ok!==false;
+            const nd=liveTool.nodeEl;nd.classList.remove('running');nd.classList.add(ev.ok===false?'err':'ok');liveTool=null;}
+        }else if(ev.type==='done'){
+          const sv=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
+          sv('r-tok',(ev.tokens||0).toLocaleString());sv('r-tools',liveTools.length);
+          const rt=document.getElementById('r-turns');if(rt)rt.textContent=(parseInt(rt.textContent)||0)+1;
+          setTimeout(loadSessions,600);
+        }else if(ev.type==='error'){
+          hadError=true;
+          textEl.innerHTML='<span style="color:var(--bad)">⚠ '+escapeHtml(ev.error||'error')+
+            ' <span style="color:var(--muted);font-size:11px">(check a model is assigned to this character)</span></span>';
+        }
+        s.scrollTop=s.scrollHeight;
+      }
     }
-    if(!acc && !run.tools.length){textEl.innerHTML='<span style="color:var(--muted)">(no response)</span>'}
-  }catch(e){textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>'}
-  run.out=[[((Date.now()-t0)/1000)||1,acc||'(done)']];ran=true;lastRun=run;
-  if(mode!=='stream')renderRun();
+    if(!acc&&!liveTools.length&&!hadError)
+      textEl.innerHTML='<span style="color:var(--muted)">(no response — verify a model is assigned to this character)</span>';
+  }catch(e){if(!hadError)textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';}
+  if(!thinkAcc)thinkEl.style.display='none';
+  else thinkSum.textContent='💭 thinking ('+Math.round(thinkAcc.length/4)+' tok)';
 }
-function pipeNodes(){const r=lastRun;if(!r)return[];const ns=[{label:'Task',kind:'input',detail:{Input:r.taskText||''}}];
-  r.tools.forEach(t=>ns.push({label:t[1],kind:'tool',detail:{Args:t[5]||'(none)',Output:t[3]||'',Duration:(t[2]!=null?t[2]+'s':'—'),Status:t[4]===false?'error':'ok'}}));
-  ns.push({label:'Result',kind:'output',detail:{Output:(r.out[0]&&r.out[0][1])||''}});return ns;}
-function buildPipeline(s){const w=document.createElement('div');w.className='pipewrap modeblock';
-  w.innerHTML='<div class="pflow" id="pflow"></div><div class="pdetail" id="pdetail"><div style="color:var(--muted);font-size:12px">Click any node to inspect its args, output, and timing.</div></div>';
-  s.append(w);const flow=w.querySelector('#pflow');const nodes=pipeNodes();let delay=120;
-  nodes.forEach((n,i)=>{const seg=document.createElement('div');seg.className='pseg';
-    if(i>0){const ar=document.createElement('div');ar.className='parrow';seg.append(ar);const d=delay;setTimeout(()=>ar.classList.add('in'),d);delay+=110}
-    const nd=document.createElement('div');nd.className='pnode2'+(n.kind==='tool'?' tool':'');
-    nd.innerHTML=(n.kind==='tool'?'<span class="dot"></span>':'<div class="k">'+n.kind+'</div>')+n.label;
-    nd.onclick=()=>{document.querySelectorAll('.pnode2').forEach(x=>x.classList.remove('sel'));nd.classList.add('sel');showPDetail(n)};
-    seg.append(nd);flow.append(seg);const d2=delay;setTimeout(()=>nd.classList.add('in'),d2);delay+=260});
-}
-function buildMind(s){const r=lastRun;const SC=86,W=Math.max(820,(((r.out[0]&&r.out[0][0])||6)*SC)+240);
-  const lane=(tag)=>'<div class="lane"><span class="tag">'+tag+'</span></div>';
-  const m=document.createElement('div');m.className='mind modeblock';
-  m.innerHTML='<div class="legend"><span><i style="background:var(--a1)"></i>thought</span><span><i style="background:var(--a2)"></i>tool</span><span><i style="background:var(--good)"></i>output</span><span style="margin-left:auto;color:var(--faint)">time →</span></div>'+
-    '<div class="lanes"><div class="lanewrap" id="lw" style="width:'+W+'px"><svg id="threads" width="'+W+'" height="240"></svg>'+lane('Thought')+lane('Tools')+lane('Output')+'<div class="playhead" id="ph"></div></div></div>'+
-    '<div class="mindbar"><button class="btn sm pl" onclick="playMind()">▶ replay</button><span style="font-size:11px;color:var(--muted)">'+((r.think.length<=1&&!r.meta.demo)?'local models don’t expose a reasoning stream — Task, tools and output are real; the Claude debug brain adds a full thought lane':'thought → tool → output; threads show what caused what')+'</span></div>';
-  s.append(m);const lw=document.getElementById('lw');
-  const place=(b,laneIdx)=>{b.style.left=(70+b.dataset.t*SC)+'px';b.style.top=(24+laneIdx*74)+'px'};
-  r.think.forEach((t,i)=>{const b=document.createElement('div');b.className='beat th';b.id='th'+i;b.dataset.t=t[0];b.innerHTML='<div class="l">'+t[1]+'</div>'+escapeHtml(String(t[2]).slice(0,90));lw.append(b);place(b,0)});
-  r.tools.forEach((t,i)=>{const b=document.createElement('div');b.className='beat to';b.id='to'+i;b.dataset.t=t[0];b.innerHTML='<div class="l">tool'+(t[2]!=null?' · '+t[2]+'s':'')+'</div>'+escapeHtml(t[1]);lw.append(b);place(b,1)});
-  r.out.forEach((t,i)=>{const b=document.createElement('div');b.className='beat ou';b.id='ou'+i;b.dataset.t=t[0];b.innerHTML='<div class="l">output</div>'+escapeHtml(String(t[1]).slice(0,90));lw.append(b);place(b,2)});
-  drawThreads(SC);playMind();
-}
-function renderRun(){const s=document.getElementById('talkscroll');
-  document.querySelectorAll('.modeblock').forEach(e=>e.remove());
-  if(!ran||!lastRun){if(mode!=='stream'){const h=document.createElement('div');h.className='modeblock';h.style.cssText='color:var(--faint);font-size:12.5px;padding:8px 2px';h.textContent='Send a message — its run renders here as a '+mode+' view.';s.append(h)}return;}
-  if(mode==='stream'){
-    if(lastRun.meta&&lastRun.meta.demo){const b=document.createElement('div');b.className='runblock modeblock';
-      b.innerHTML='<div class="rh"><span>✓</span> run · '+lastRun.tools.length+' tools</div><div class="rb">'+
-        lastRun.tools.map(t=>'<div class="tstep"><div class="sh"><span class="dot"></span><span class="nm">mcp__pleiades__'+t[1]+'</span><span class="st">ok · '+t[2]+'s</span></div></div>').join('')+'</div>';
-      s.append(b);const a=document.createElement('div');a.className='tmsg modeblock';a.textContent=lastRun.out[0][1];s.append(a)}
-    return}
-  if(mode==='pipeline'){buildPipeline(s)}else{buildMind(s)}
-  s.scrollTop=s.scrollHeight;
-}
-function drawThreads(SC){const svg=document.getElementById('threads');if(!svg||!lastRun)return;
-  const ctr=(id,lane)=>{const e=document.getElementById(id);if(!e)return null;return{x:70+(+e.dataset.t)*SC+20,y:24+lane*74+20}};
-  let paths=lastRun.threads.map(([ti,toi])=>{const a=ctr('th'+ti,0),b=ctr('to'+toi,1);if(!a||!b)return'';
-    return '<path d="M'+a.x+' '+(a.y+18)+' C '+a.x+' '+(a.y+50)+', '+b.x+' '+(b.y-30)+', '+b.x+' '+(b.y-12)+'" stroke="var(--a1)" fill="none" opacity="0.4" stroke-width="1.4"/>'}).join('');
-  if(lastRun.tools.length){const a=ctr('to'+(lastRun.tools.length-1),1),b=ctr('ou0',2);if(a&&b)paths+='<path d="M'+a.x+' '+(a.y+18)+' C '+a.x+' '+(a.y+50)+', '+b.x+' '+(b.y-30)+', '+b.x+' '+(b.y-12)+'" stroke="var(--good)" fill="none" opacity="0.4" stroke-width="1.4"/>'}
-  svg.innerHTML=paths;}
-let mt=null;
-function playMind(){const ph=document.getElementById('ph');if(!ph)return;const SC=86;const W=ph.parentElement?ph.parentElement.clientWidth:860;const DUR=((lastRun&&lastRun.out[0]&&lastRun.out[0][0])||6)+0.8;
-  document.querySelectorAll('.beat').forEach(b=>b.classList.remove('lit'));
-  let start=null;cancelAnimationFrame(mt);
-  function step(ts){if(!start)start=ts;const el=(ts-start)/1000*1.4;const x=70+el*SC;ph.style.left=Math.min(x,W-4)+'px';
-    document.querySelectorAll('.beat').forEach(b=>{if(+b.dataset.t<=el)b.classList.add('lit')});
-    if(el<DUR+0.6)mt=requestAnimationFrame(step)}
-  mt=requestAnimationFrame(step);}
-
 /* sparkline */
 function spark(){const s=document.getElementById('spark');if(!s)return;s.innerHTML='';for(let i=0;i<28;i++){const h=30+Math.random()*60;s.append(Object.assign(document.createElement('i'),{style:`height:${h}%`}))}}
 
-const PIPE=[
- {label:'Task',kind:'input',detail:{Input:'check the inbox for a verification code and store it in the vault'}},
- {label:'Plan',kind:'plan',detail:{Steps:'search → open → extract → vault_set',Turns:'3'}},
- {label:'search_inbox',kind:'tool',detail:{Args:'query="verification code"',Output:'3 results',Duration:'0.4s',Status:'ok'}},
- {label:'read_email',kind:'tool',detail:{Args:'id=msg_88c2',Output:'From: Stripe · "Your code is 481920"',Duration:'0.6s',Status:'ok'}},
- {label:'subagent',kind:'tool',detail:{Args:'task="validate 6-digit"',Output:'format valid',Duration:'0.3s',Status:'ok'}},
- {label:'vault_set',kind:'tool',detail:{Args:'key="stripe_verify"',Output:'value •••••• → stored',Duration:'0.3s',Status:'ok'}},
- {label:'Result',kind:'output',detail:{Output:'Saved stripe_verify to alice’s vault.'}}];
-function showPDetail(n){const d=document.getElementById('pdetail');if(!d)return;
-  d.innerHTML='<h4>'+(n.kind==='tool'?'<span style="color:var(--a2);font-family:var(--mono)">mcp__pleiades__'+n.label+'</span>':n.label)+(n.detail.Status?'<span class="tagp tp-run" style="margin-left:auto">'+n.detail.Status+'</span>':'')+'</h4>'+
-    Object.entries(n.detail).filter(([k])=>k!=='Status').map(([k,v])=>'<div class="kv"><span class="k">'+k+'</span><span class="v" style="max-width:68%;text-align:right;word-break:break-word">'+v+'</span></div>').join('');}
+
 /* configChar: defined live above */
 async function setPolicy(p){document.getElementById('ep-ask').classList.toggle('on',p==='ask');document.getElementById('ep-act').classList.toggle('on',p==='act');
   try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_policy:p==='act'?'allow':'ask'})})}catch(e){}}
@@ -851,28 +907,68 @@ async function claudeSend(){const i=document.getElementById('cl-input');const t=
 async function loadSettings(){try{const d=await api('/api/settings');const s=d.settings||{};
   const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!=null&&v!=='***')e.value=v};
   set('se-model_path',s.model_path);set('se-n_ctx',s.n_ctx);set('se-n_gpu_layers',s.n_gpu_layers);
-  set('se-flash_attn',s.flash_attn||'auto');set('se-kv_cache_type',s.kv_cache_type||'');
+  set('se-flash_attn',s.flash_attn||'auto');set('se-kv_cache_type',s.kv_cache_type||'q8_0');
   set('se-n_batch',s.n_batch||'');set('se-mlock',s.mlock?'true':'false');set('se-draft_model_path',s.draft_model_path||'');
   set('se-exec_policy',(s.exec_policy==='allow'?'allow':s.exec_policy)||'ask');set('se-eval_interval',s.eval_interval);
   set('se-anamnesis_control_url',s.anamnesis_control_url);set('se-searxng_url',s.searxng_url);
-  set('se-ollama_cloud_url',s.ollama_cloud_url);
-  const ph=(id,v)=>{const e=document.getElementById(id);if(e&&v==='***')e.placeholder='•••• set — leave blank to keep'};
-  ph('se-openrouter_api_key',s.openrouter_api_key);ph('se-ollama_cloud_api_key',s.ollama_cloud_api_key);
+  renderCpKeyList(s.openrouter_api_keys||[],s.ollama_cloud_api_keys||[]);
 }catch(e){}}
-async function saveSettings(){const msg=document.getElementById('se-msg');msg.textContent='saving…';
-  const v=id=>{const e=document.getElementById(id);return e?e.value:''};
-  const body={model_path:v('se-model_path'),n_gpu_layers:v('se-n_gpu_layers'),flash_attn:v('se-flash_attn'),
-    kv_cache_type:v('se-kv_cache_type'),mlock:v('se-mlock')==='true',draft_model_path:v('se-draft_model_path'),
-    exec_policy:v('se-exec_policy'),anamnesis_control_url:v('se-anamnesis_control_url'),searxng_url:v('se-searxng_url'),
-    ollama_cloud_url:v('se-ollama_cloud_url')};
-  const ni=(id,k)=>{const n=parseInt(v(id));if(!isNaN(n))body[k]=n};
-  ni('se-n_ctx','n_ctx');ni('se-n_batch','n_batch');ni('se-eval_interval','eval_interval');
-  const ork=v('se-openrouter_api_key');if(ork)body.openrouter_api_key=ork;
-  const olk=v('se-ollama_cloud_api_key');if(olk)body.ollama_cloud_api_key=olk;
+const _v=id=>{const e=document.getElementById(id);return e?e.value:''};
+async function _savePatch(body,msgId,okText){
+  const msg=document.getElementById(msgId);if(msg)msg.textContent='saving…';
   Object.keys(body).forEach(k=>{if(body[k]==='')delete body[k]});
   try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    msg.textContent='✓ saved · restart engine/models to apply engine changes';setTimeout(()=>{msg.textContent=''},5000)}
-  catch(e){msg.textContent='save failed: '+e.message}}
+    if(msg){msg.textContent=okText||'✓ saved';setTimeout(()=>{msg.textContent=''},4000)}}
+  catch(e){if(msg)msg.textContent='failed: '+e.message}}
+async function saveAgentLoop(){
+  const b={exec_policy:_v('se-exec_policy')};
+  const n=parseInt(_v('se-eval_interval'));if(!isNaN(n))b.eval_interval=n;
+  await _savePatch(b,'se-loop-msg','✓ saved');}
+async function saveServices(){
+  await _savePatch({anamnesis_control_url:_v('se-anamnesis_control_url'),searxng_url:_v('se-searxng_url')},'se-svc-msg','✓ saved');}
+function renderCpKeyList(orKeys,olKeys){
+  const box=document.getElementById('cp-key-list');if(!box)return;
+  const section=(label,provider,keys)=>{
+    if(!keys||!keys.length){
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0"><span style="font-size:12px;color:var(--muted);width:90px;flex-shrink:0">'+label+'</span><span style="color:var(--muted);font-size:12.5px">not set</span></div>';
+    }
+    return keys.map((val,i)=>
+      '<div style="display:flex;align-items:center;gap:8px;padding:5px 0"><span style="font-size:12px;color:var(--muted);width:90px;flex-shrink:0">'+(i===0?label:'')+'</span><span style="font-family:var(--mono);font-size:12.5px">'+escapeHtml(val)+'</span><button class="btn sm x" onclick="deleteCpKey(\''+provider+'\','+i+')" style="margin-left:auto">× Remove</button></div>'
+    ).join('');
+  };
+  box.innerHTML=section('OpenRouter','openrouter',orKeys)+section('Ollama Cloud','ollama-cloud',olKeys);
+}
+function showCpAdd(){const r=document.getElementById('cp-add-row');if(r)r.style.display='flex';const k=document.getElementById('cp-new-key');if(k){k.value='';k.focus();}}
+function cancelCpAdd(){const r=document.getElementById('cp-add-row');if(r)r.style.display='none';const k=document.getElementById('cp-new-key');if(k)k.value='';}
+async function addCpKey(){
+  const prov=document.getElementById('cp-provider').value;
+  const provider=prov==='or'?'openrouter':'ollama-cloud';
+  const key=(document.getElementById('cp-new-key').value||'').trim();
+  const msg=document.getElementById('cp-msg');if(!key){if(msg)msg.textContent='enter a key first';return;}
+  const btn=document.getElementById('cp-add-confirm-btn');if(btn){btn.disabled=true;btn.textContent='…';}
+  if(msg)msg.textContent='';
+  try{
+    if(provider==='openrouter'){
+      const r=await fetch('https://openrouter.ai/api/v1/auth/key',{headers:{Authorization:'Bearer '+key}});
+      if(!r.ok){if(msg)msg.textContent='invalid key ('+r.status+')';if(btn){btn.disabled=false;btn.textContent='Add';}return;}
+    }
+    const res=await fetch('/api/settings/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider,key})});
+    if(!res.ok){const j=await res.json().catch(()=>({}));if(msg)msg.textContent=j.detail||('failed ('+res.status+')');if(btn){btn.disabled=false;btn.textContent='Add';}return;}
+    if(msg)msg.textContent='✓ key saved';
+    cancelCpAdd();loadSettings();
+  }catch(e){if(msg)msg.textContent='failed: '+e.message;}
+  if(btn){btn.disabled=false;btn.textContent='Add';}
+}
+async function deleteCpKey(provider,index){
+  if(!confirm('Remove this '+(provider==='openrouter'?'OpenRouter':'Ollama Cloud')+' key?'))return;
+  const msg=document.getElementById('cp-msg');if(msg)msg.textContent='removing…';
+  try{
+    const res=await fetch('/api/settings/keys?provider='+encodeURIComponent(provider)+'&index='+index,{method:'DELETE'});
+    if(!res.ok){const j=await res.json().catch(()=>({}));if(msg)msg.textContent=j.detail||('failed ('+res.status+')');return;}
+    if(msg){msg.textContent='✓ removed';setTimeout(()=>{msg.textContent=''},4000);}
+  }catch(e){if(msg)msg.textContent='failed: '+e.message;}
+  loadSettings();
+}
 let foundrySource='gguf';
 function setSource(src){foundrySource=src;
   const order=['gguf','openrouter','ollama'];
@@ -892,10 +988,19 @@ async function cloudSearch(){
     if(d.error){box.innerHTML='<div class="card" style="color:var(--warn);font-size:13px">'+escapeHtml(d.error)+'</div>';return}
     if(!d.results||!d.results.length){box.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">No models found.</div>';return}
     box.innerHTML='';
-    d.results.forEach(r=>{const e=document.createElement('div');e.className='result';
+    const __sorted=(d.results||[]).slice().sort((a,b)=>{
+    const fa=(a.is_free||a.prompt_price==='0'||a.prompt_price===0);
+    const fb=(b.is_free||b.prompt_price==='0'||b.prompt_price===0);
+    return (fa?0:1)-(fb?0:1);
+  });
+  __sorted.forEach(r=>{const e=document.createElement('div');e.className='result';
       const bits=[];if(r.context)bits.push(Number(r.context).toLocaleString()+' ctx');if(r.prompt_price!=null)bits.push('$'+r.prompt_price+'/tok in');
-      e.innerHTML='<div><div class="ttl">'+escapeHtml(r.name||r.id)+'</div><div class="meta">'+escapeHtml(r.id)+(bits.length?' · '+bits.join(' · '):'')+'</div></div>'+
-        '<div class="right"><button class="btn sm">Use →</button></div>';
+      const free=(r.is_free||r.prompt_price==='0'||r.prompt_price===0);
+    e.innerHTML='<div><div class="ttl">'+escapeHtml(r.name||r.id)+
+      (free?' <span class="tagp tp-best" style="font-size:10px;padding:2px 7px">FREE</span>':'')+
+      '</div><div class="meta">'+escapeHtml(r.id)+(bits.length&&!free?' · '+bits.join(' · '):'')+
+      '</div></div><div class="right"><button class="btn sm'+(free?' pri':'')+'">'+
+      (free?'★ Free →':'Use →')+'</button></div>';
       e.querySelector('button').onclick=()=>assignCloud(r.id);
       box.append(e)});
   }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+escapeHtml(e.message)+'</div>'}
@@ -907,6 +1012,85 @@ async function assignCloud(modelId){const sel=document.getElementById('src-char'
     document.getElementById('fitpane').innerHTML='<div class="autofit"><div class="hd"><span class="tagp tp-best">ASSIGNED</span><span class="big">'+escapeHtml(char)+'</span></div><div style="font-size:12.5px;color:var(--muted);margin-top:6px"><code>'+escapeHtml(modelId)+'</code> via '+src+', routed through Anamnesis. Talk to '+escapeHtml(char)+' to use it.</div></div>';
   }catch(e){document.getElementById('fitpane').innerHTML='<div class="autofit"><div style="color:var(--bad)">assign failed: '+escapeHtml(e.message)+'</div></div>'}
 }
+
+function revealTog(id,btn){const e=document.getElementById(id);if(!e)return;e.type=e.type==='password'?'text':'password';if(btn)btn.textContent=e.type==='password'?'👁':'🙈';}
+function newChar(){
+  showModal('<div class="mh">+ New character<span class="x" onclick="closeModal()">✕</span></div>'+
+    '<div class="mbody">'+
+    '<div class="field"><label>Name</label><input id="nc-name" placeholder="e.g. Alice" style="width:100%"/></div>'+
+    '<div class="field"><label>Email (optional)</label><input id="nc-email" placeholder="alice@example.com" style="width:100%"/></div>'+
+    '<button class="btn pri" style="width:100%;margin-top:8px" onclick="doNewChar()">Create character →</button></div>');
+  setTimeout(()=>{const e=document.getElementById('nc-name');if(e)e.focus();},50);
+}
+async function doNewChar(){
+  const name=(val('nc-name')||'').trim();if(!name){alert('Name is required');return;}
+  try{await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email_address:val('nc-email')||''})});
+    closeModal();curChar=name;loadChars();}catch(e){alert('Failed: '+e.message);}
+}
+async function applyHwPlan(btn){
+  if(btn){btn.disabled=true;btn.textContent='⚙ detecting…';}const msg=document.getElementById('hw-msg');if(msg)msg.textContent='';
+  try{const hw=await api('/api/hardware');const g=hw.gpus&&hw.gpus[0];const vram=g?g.vram_total:0;
+    const n_ctx=vram>22e9?8192:vram>10e9?4096:2048;
+    setVal('se-n_gpu_layers','-1');setVal('se-n_ctx',String(n_ctx));
+    setVal('se-kv_cache_type','q8_0');setVal('se-flash_attn','on');
+    if(msg)msg.textContent='saving…';
+    await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({n_gpu_layers:-1,n_ctx,kv_cache_type:'q8_0',flash_attn:'on'})});
+    if(msg)msg.textContent='✓ plan applied & saved — restart engine to take effect';
+  }catch(e){if(msg)msg.textContent='detection failed: '+(e.message||e);}
+  if(btn){btn.disabled=false;btn.textContent='⚙ Re-run hardware plan';}
+}
+async function deleteModel(name){
+  if(!confirm('Remove "'+name+'" from library?\n(GGUF file on disk is NOT deleted.)'))return;
+  try{await fetch('/api/models/'+encodeURIComponent(name),{method:'DELETE'});loadLib();}catch(e){}
+}
+async function searxctl(dir,btn){
+  if(btn){btn.disabled=true;btn.textContent='…';}
+  try{await fetch('/api/search/'+dir,{method:'POST'});}catch(e){}
+  setTimeout(()=>{if(btn)btn.disabled=false;loadConn();},2500);
+}
+async function anamctl(action,btn){
+  if(btn){btn.disabled=true;btn.textContent='…';}
+  try{await fetch('/api/anamnesis/'+action,{method:'POST'});}catch(e){}
+  setTimeout(()=>{if(btn)btn.disabled=false;loadConn();},2500);
+}
+async function loadRules(){
+  const box=document.getElementById('rules-list');if(!box)return;
+  try{const d=await api('/api/rules');
+    if(!d.rules||!d.rules.length){box.innerHTML='<div style="color:var(--muted);font-size:12.5px">No rules yet.</div>';return;}
+    box.innerHTML='';
+    d.rules.forEach(r=>{const row=document.createElement('div');row.className='rule-row';
+      row.innerHTML='<label style="display:flex;gap:6px;flex:1;cursor:pointer;align-items:start">'+
+        '<input type="checkbox"'+(r.enabled?' checked':'')+' onchange="toggleRule(\''+r.id+'\',this.checked)" style="margin-top:3px"/>'+
+        '<span class="'+(r.pending?'rule-pending':'')+'">'+escapeHtml(r.text)+
+        (r.pending?' <span class="tagp" style="background:var(--warn);color:#000;font-size:10px;padding:1px 6px">pending</span>':'')+
+        '</span></label><div style="display:flex;gap:6px;flex-shrink:0">'+
+        (r.pending?'<button class="btn sm" style="color:var(--good)" onclick="approveRule(\''+r.id+'\')">✓</button>':'')+
+        '<button class="btn sm" style="color:var(--bad)" onclick="deleteRule(\''+r.id+'\')">✕</button></div>';
+      box.append(row);});
+  }catch(e){box.innerHTML='<div style="color:var(--bad)">'+escapeHtml(e.message||'error')+'</div>';}
+}
+async function addRule(){
+  const inp=document.getElementById('rule-new');const text=(inp?inp.value:'').trim();if(!text)return;
+  try{await fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});if(inp)inp.value='';loadRules();}catch(e){}
+}
+async function deleteRule(id){try{await fetch('/api/rules/'+id,{method:'DELETE'});loadRules();}catch(e){}}
+async function approveRule(id){
+  try{await fetch('/api/rules/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pending:false,enabled:true})});loadRules();}catch(e){}
+}
+async function toggleRule(id,enabled){
+  try{await fetch('/api/rules/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});}catch(e){}
+}
+async function charPfpChanged(input){
+  const file=input.files[0];if(!file||!curChar)return;
+  const reader=new FileReader();
+  reader.onload=async function(){
+    try{await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/avatar',
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:reader.result})});
+      configChar(curChar);loadChars();}catch(e){alert('Upload failed: '+e.message);}};
+  reader.readAsDataURL(file);}
+async function deleteCharPfp(){if(!curChar)return;
+  try{await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/avatar',{method:'DELETE'});
+    configChar(curChar);loadChars();}catch(e){}}
 loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);loadClaude();hfSearch();loadLib();
 </script>
 </body>
