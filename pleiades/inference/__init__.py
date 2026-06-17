@@ -83,28 +83,38 @@ class InferenceServer:
             raise InferenceError(
                 "PLEIADES_MODEL_PATH is not set. Point it at a .gguf model file."
             )
-        from ..hardware import resolve_layers
+        import os
 
+        from ..hardware import resolve_context, resolve_layers
+
+        n_ctx, n_ctx_max, ctx_why = resolve_context(self.settings.n_ctx,
+                                                    self.settings.model_path)
         layers, why = resolve_layers(self.settings.n_gpu_layers,
-                                     self.settings.model_path, self.settings.n_ctx)
+                                     self.settings.model_path, n_ctx)
+        print(f"[pleiades] inference: context — {ctx_why}")
         print(f"[pleiades] inference: n_gpu_layers={layers} — {why}")
+        if os.environ.get("PLEIADES_ENGINE", "elastic").lower() == "llama_cpp":
+            # escape hatch: bundled llama-cpp-python server (fixed window)
+            cmd = [
+                sys.executable, "-m", "llama_cpp.server",
+                "--model", self.settings.model_path,
+                "--host", self.host, "--port", str(self.port),
+                "--n_ctx", str(n_ctx),
+                "--n_gpu_layers", str(layers),
+            ]
+            if self.settings.chat_format:
+                cmd += ["--chat_format", self.settings.chat_format]
+            return cmd
+        # our elastic server: weights stay loaded, KV resizes in place
         cmd = [
-            sys.executable,
-            "-m",
-            "llama_cpp.server",
-            "--model",
-            self.settings.model_path,
-            "--host",
-            self.host,
-            "--port",
-            str(self.port),
-            "--n_ctx",
-            str(self.settings.n_ctx),
-            "--n_gpu_layers",
-            str(layers),
+            sys.executable, "-m", "pleiades.inference.server",
+            "--model", self.settings.model_path,
+            "--host", self.host, "--port", str(self.port),
+            "--n-ctx", str(n_ctx), "--n-ctx-max", str(n_ctx_max),
+            "--n-gpu-layers", str(layers),
         ]
         if self.settings.chat_format:
-            cmd += ["--chat_format", self.settings.chat_format]
+            cmd += ["--chat-format", self.settings.chat_format]
         return cmd
 
     def start(self, *, wait: bool = True, timeout: float = 120.0) -> str:
