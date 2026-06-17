@@ -133,6 +133,7 @@ class Tier:
 
     backend: str          # "openai" (llama.cpp) | "anthropic" (API) | "claude-code" (subscription) | "ollama"
     model: str
+    base_url: str = ""    # per-tier OpenAI-compatible endpoint; blank -> cfg.openai_host
     effort: str = "high"  # anthropic only: low|medium|high|max
     max_tokens: int = 8192
 

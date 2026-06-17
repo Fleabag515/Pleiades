@@ -198,7 +198,8 @@ class LLM:
         if tools:
             body["tools"] = [t.openai_schema() for t in tools]
 
-        data = self._post(f"{self.cfg.openai_host}/chat/completions", body)
+        _host = (tier.base_url or self.cfg.openai_host).rstrip("/")
+        data = self._post(f"{_host}/chat/completions", body)
         u = data.get("usage", {}) or {}
         usage = {"input_tokens": u.get("prompt_tokens", 0) or 0,
                  "output_tokens": u.get("completion_tokens", 0) or 0}
