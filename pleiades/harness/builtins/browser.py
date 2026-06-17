@@ -219,37 +219,55 @@ def browser_click(target: str) -> str:
 
 @tool(tags=("browser", "web"))
 def browser_fill(selector: str, value: str) -> str:
-    """Type a value into an input field. For passwords or payment fields, stop and let the user fill them in the visible window instead.
+    """Type a value into an input field. Tries the selector as a CSS selector first, then as a visible label/placeholder text. For passwords or payment fields, stop and let the user fill them in the visible window instead.
 
-    selector: CSS selector of the input.
-    value: text to type.
+    selector: CSS selector (e.g. "#email", "input[name=username]") OR visible label/placeholder text (e.g. "Email address", "Search"). If unsure, use the label text — it is tried automatically.
+    value: the text to type into the field (replaces any existing content).
     """
     page = _B["page"]
     if page is None:
         return "No page open. Use browser_open first."
+    # Try CSS selector first; fall back to locating by label/placeholder text
+    css_error = ""
     try:
         page.fill(selector, value, timeout=8000)
-    except Exception as e:
-        hint = _hint("Input fields I can see (retry with one of these selectors):",
+        return f"Filled {selector!r}."
+    except Exception as ex:
+        css_error = str(ex)
+    # Try by label text or placeholder
+    try:
+        loc = page.get_by_label(selector, exact=False).first
+        loc.fill(value, timeout=8000)
+        return f"Filled field labelled {selector!r}."
+    except Exception:
+        pass
+    try:
+        loc = page.get_by_placeholder(selector, exact=False).first
+        loc.fill(value, timeout=8000)
+        return f"Filled field with placeholder {selector!r}."
+    except Exception as ex:
+        hint = _hint("Input fields on this page (use one of these selectors):",
                      _input_fields(page))
-        return f"Error filling {selector!r}: {e}{hint}"
-    return f"Filled {selector!r}."
+        return f"Error filling {selector!r}: {css_error or ex}{hint}"
 
 
 @tool(safe=True, tags=("browser", "web", "read"))
 def browser_screenshot(path: str = "screenshot.png") -> str:
-    """Save a screenshot of the current page (useful to show the user a challenge or result).
+    """Save a screenshot of the current browser page as a PNG file — useful for showing the user what the page looks like or capturing a result.
 
-    path: output PNG path.
+    path: output file path for the PNG (relative paths are relative to the current working directory; e.g. "screenshot.png" or "/tmp/page.png").
     """
     page = _B["page"]
     if page is None:
         return "No page open. Use browser_open first."
+    from pathlib import Path as _Path
+    out = _Path(path).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
     try:
-        page.screenshot(path=path, full_page=False)
+        page.screenshot(path=str(out), full_page=False)
     except Exception as e:
-        return f"Error: {e}"
-    return f"Saved screenshot to {path} (backend: {_B['backend']})"
+        return f"Error taking screenshot: {e}"
+    return f"Screenshot saved to {out} (backend: {_B['backend']})"
 
 
 @tool(safe=True, tags=("browser", "web", "read"))
@@ -299,10 +317,10 @@ def browser_back() -> str:
 
 @tool(safe=True, tags=("browser", "web", "read"))
 def browser_wait_for(selector: str, timeout_ms: int = 15000) -> str:
-    """Wait for an element to appear — use this on JS-heavy pages where content loads after the initial response, before reading or clicking.
+    """Wait for a CSS element to appear on the page — use on JS-heavy pages before reading or clicking content that loads asynchronously.
 
-    selector: CSS selector to wait for.
-    timeout_ms: how long to wait before giving up (default 15000).
+    selector: CSS selector of the element to wait for (e.g. "#results", ".product-list", "table").
+    timeout_ms: maximum wait time in MILLISECONDS (not seconds). Default 15000 = 15 seconds. Use 30000 for slow pages.
     """
     page = _B["page"]
     if page is None:
@@ -310,8 +328,8 @@ def browser_wait_for(selector: str, timeout_ms: int = 15000) -> str:
     try:
         page.wait_for_selector(selector, timeout=max(1000, int(timeout_ms)))
     except Exception as e:
-        return f"{selector!r} did not appear within {timeout_ms}ms: {e}"
-    return f"{selector!r} is present."
+        return f"{selector!r} did not appear within {timeout_ms / 1000:.1f}s: {e}"
+    return f"{selector!r} is present on the page."
 
 
 @tool(tags=("browser", "web"))

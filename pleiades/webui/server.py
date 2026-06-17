@@ -168,6 +168,25 @@ class WorkApprove(BaseModel):
     approve: bool = False
 
 
+class ClaudeModelBody(BaseModel):
+    model: str = ""
+
+
+class ClaudeChat(BaseModel):
+    message: str
+    model: Optional[str] = None
+
+
+class CloudModelBody(BaseModel):
+    source: str
+    model: str
+
+
+class ApiKeyBody(BaseModel):
+    provider: str   # "openrouter" | "ollama-cloud"
+    key: str
+
+
 class SettingsUpdate(BaseModel):
     # engine
     model_path: Optional[str] = None
@@ -183,6 +202,14 @@ class SettingsUpdate(BaseModel):
     default_tier: Optional[str] = None
     exec_policy: Optional[str] = None
     max_steps: Optional[int] = None
+    eval_interval: Optional[int] = None
+    flash_attn: Optional[str] = None
+    kv_cache_type: Optional[str] = None
+    n_batch: Optional[int] = None
+    n_ubatch: Optional[int] = None
+    mlock: Optional[bool] = None
+    draft_model_path: Optional[str] = None
+    ollama_cloud_url: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +223,14 @@ def _reachable(url: str, path: str = "", timeout: float = 1.2) -> bool:
         return r.status_code < 500
     except Exception:
         return False
+
+
+# Multi-key cloud providers: env var name + Settings field per provider id,
+# shared by the add/remove key endpoints below.
+_KEY_PROVIDERS: dict[str, dict[str, str]] = {
+    "openrouter": {"env": "OPENROUTER_API_KEYS", "field": "openrouter_api_keys"},
+    "ollama-cloud": {"env": "OLLAMA_CLOUD_API_KEYS", "field": "ollama_cloud_api_keys"},
+}
 
 
 def _env_path() -> Path:
@@ -394,14 +429,52 @@ def create_app() -> FastAPI:
             "anamnesis_control_url": "PLEIADES_ANAMNESIS_CONTROL_URL",
             "searxng_url": "PLEIADES_SEARXNG_URL",
             "exec_policy": "PLEIADES_EXEC_POLICY",
+            "eval_interval": "PLEIADES_EVAL_INTERVAL",
+            "flash_attn": "PLEIADES_FLASH_ATTN",
+            "kv_cache_type": "PLEIADES_KV_CACHE_TYPE",
+            "n_batch": "PLEIADES_N_BATCH",
+            "n_ubatch": "PLEIADES_N_UBATCH",
+            "draft_model_path": "PLEIADES_DRAFT_MODEL",
+            "ollama_cloud_url": "OLLAMA_CLOUD_URL",
         }
         updates: dict[str, str] = {}
         for field_name, env_name in env_map.items():
             val = getattr(body, field_name)
             if val is not None:
                 updates[env_name] = str(val)
+        if body.mlock is not None:
+            updates["PLEIADES_MLOCK"] = "true" if body.mlock else "false"
         if updates:
             _write_env(updates)
+        return get_settings()
+
+    @app.post("/api/settings/keys")
+    def add_settings_key(body: ApiKeyBody) -> dict:
+        info = _KEY_PROVIDERS.get(body.provider)
+        if not info:
+            raise HTTPException(400, f"Unknown provider '{body.provider}'")
+        key = (body.key or "").strip()
+        if not key:
+            raise HTTPException(400, "Key is empty")
+        s = config.Settings.load()
+        keys = list(getattr(s, info["field"]))
+        if key in keys:
+            raise HTTPException(409, "That key is already stored for this provider")
+        keys.append(key)
+        _write_env({info["env"]: ",".join(keys)})
+        return get_settings()
+
+    @app.delete("/api/settings/keys")
+    def remove_settings_key(provider: str, index: int) -> dict:
+        info = _KEY_PROVIDERS.get(provider)
+        if not info:
+            raise HTTPException(400, f"Unknown provider '{provider}'")
+        s = config.Settings.load()
+        keys = list(getattr(s, info["field"]))
+        if not (0 <= index < len(keys)):
+            raise HTTPException(404, "No key at that index")
+        keys.pop(index)
+        _write_env({info["env"]: ",".join(keys)})
         return get_settings()
 
     # ----------------------------- profiles -------------------------------- #
@@ -799,6 +872,41 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Could not read memory: {exc}") from exc
 
     # ----------------------------- hardware -------------------------------- #
+    @app.get("/api/profiles/{name}/anamnesis/inspect")
+    def anamnesis_inspect(name: str, limit: int = 15) -> dict:
+        """Browse a character's self-organized memory: scenes, engrams, observations."""
+        db = _anamnesis_db_path(name)
+        if not db:
+            return {"scenes": [], "engrams": [], "observations": []}
+        import sqlite3
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            cur = con.cursor()
+
+            def rows(sql, args=()):
+                try:
+                    return cur.execute(sql, args).fetchall()
+                except Exception:
+                    return []
+
+            scenes = [{"title": t, "summary": (s or "")[:400], "recall": rc,
+                       "importance": round(ai or 0, 2)}
+                      for (t, s, rc, ai) in rows(
+                      "SELECT title, summary, recall_count, avg_importance FROM memscenes "
+                      "ORDER BY recall_count DESC, updated_at DESC LIMIT ?", (limit,))]
+            engrams = [{"content": (c or "")[:300], "category": cat,
+                        "importance": round(imp or 0, 2), "recall": rc}
+                       for (c, cat, imp, rc) in rows(
+                       "SELECT content, category, importance, recall_count FROM engrams "
+                       "ORDER BY importance DESC, recall_count DESC LIMIT ?", (limit,))]
+            obs = [{"type": ot, "detail": (d or "")[:300]} for (ot, d) in rows(
+                   "SELECT obs_type, detail FROM character_observations "
+                   "ORDER BY observed_at DESC LIMIT ?", (limit,))]
+            con.close()
+            return {"scenes": scenes, "engrams": engrams, "observations": obs}
+        except Exception as e:
+            return {"scenes": [], "engrams": [], "observations": [], "error": str(e)}
+
     @app.get("/api/hardware")
     def hardware_info() -> dict:
         from .. import hardware, runtime
@@ -963,6 +1071,58 @@ def create_app() -> FastAPI:
                 "recommended": rec.quant if rec else None,
                 "options": opts}
 
+    @app.get("/api/models/cloud-search")
+    def cloud_search(source: str, q: str = "", limit: int = 25) -> dict:
+        import httpx
+        s = config.Settings.load()
+        ql = (q or "").lower()
+        if source == "openrouter":
+            try:
+                r = httpx.get("https://openrouter.ai/api/v1/models", timeout=15)
+                data = r.json().get("data", [])
+            except Exception as e:
+                raise HTTPException(502, f"OpenRouter unreachable: {e}")
+            out = []
+            for m in data:
+                mid = m.get("id", "")
+                if ql and ql not in mid.lower() and ql not in (m.get("name", "").lower()):
+                    continue
+                pr = m.get("pricing", {}) or {}
+                is_free = (pr.get("prompt") in ("0", 0, "0.0") and pr.get("completion") in ("0", 0, "0.0"))
+                out.append({"id": mid, "name": m.get("name", mid),
+                            "context": m.get("context_length"),
+                            "prompt_price": pr.get("prompt"),
+                            "completion_price": pr.get("completion"),
+                            "is_free": is_free})
+            out.sort(key=lambda x: (0 if x.get("is_free") else 1, x["id"]))
+            return {"source": "openrouter", "results": out[:limit]}
+        if source == "ollama":
+            base = (s.ollama_cloud_url or "https://ollama.com/v1").rstrip("/")
+            _ok = s.ollama_cloud_api_keys[0] if getattr(s, "ollama_cloud_api_keys", None) else ""
+            headers = {"Authorization": f"Bearer {_ok}"} if _ok else {}
+            try:
+                r = httpx.get(base + "/models", headers=headers, timeout=15)
+                data = r.json().get("data", [])
+                out = [{"id": m.get("id"), "name": m.get("id")} for m in data
+                       if not ql or ql in (m.get("id", "") or "").lower()]
+                return {"source": "ollama", "results": out[:limit]}
+            except Exception as e:
+                return {"source": "ollama", "results": [],
+                        "error": "Set an Ollama Cloud key/URL in Settings (or endpoint unreachable).",
+                        "detail": str(e)}
+        raise HTTPException(400, "source must be 'openrouter' or 'ollama'")
+
+    @app.post("/api/profiles/{name}/cloud-model")
+    def assign_cloud_model(name: str, body: CloudModelBody) -> dict:
+        try:
+            p = pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        prefix = "openrouter:" if body.source == "openrouter" else "ollama-cloud:"
+        p.model = prefix + body.model
+        pm._save(p)  # noqa: SLF001
+        return _profile_view(p)
+
     @app.post("/api/models/{name}/stop")
     def models_stop(name: str) -> dict:
         return {"ok": mm.stop(name)}
@@ -970,6 +1130,132 @@ def create_app() -> FastAPI:
     @app.get("/api/email/presets")
     def email_presets() -> dict:
         return config.EMAIL_PRESETS
+
+    # ----------------------------- Claude lab ------------------------------ #
+    # Claude (subscription) is used ONLY to build/debug/audit local tools.
+    _claude_cfg = Path.home() / ".pleiades" / "claude.json"
+
+    def _claude_model() -> str:
+        import json as _j
+        if _claude_cfg.is_file():
+            try:
+                return _j.loads(_claude_cfg.read_text()).get("model") or "claude-sonnet-4-6"
+            except Exception:
+                pass
+        return "claude-fable-5"
+
+    @app.get("/api/claude/status")
+    def claude_status() -> dict:
+        import json as _j, shutil as _sh
+        creds = Path.home() / ".claude" / ".credentials.json"
+        connected, sub = False, ""
+        if creds.is_file():
+            try:
+                o = _j.loads(creds.read_text()).get("claudeAiOauth") or {}
+                connected = bool(o.get("accessToken"))
+                sub = o.get("subscriptionType", "")
+            except Exception:
+                pass
+        try:
+            import claude_agent_sdk as _s
+            sdk = getattr(_s, "__version__", "?")
+        except Exception:
+            sdk = None
+        return {"connected": connected, "subscription": sub, "sdk": sdk,
+                "cli": bool(_sh.which("claude")),
+                "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "model": _claude_model(),
+                "models": ["claude-fable-5", "claude-opus-4-8",
+                           "claude-sonnet-4-6", "claude-haiku-4-5"],
+                "note": "Used only to build/audit your local tools — never a chat brain. Billed to your subscription."}
+
+    @app.post("/api/claude/model")
+    def claude_set_model(body: ClaudeModelBody) -> dict:
+        import json as _j
+        _claude_cfg.parent.mkdir(parents=True, exist_ok=True)
+        _claude_cfg.write_text(_j.dumps({"model": body.model}))
+        return {"ok": True, "model": body.model}
+
+    @app.post("/api/claude/chat")
+    def claude_chat(body: ClaudeChat) -> dict:
+        """Build/debug chat: Claude on your subscription, with the local tool belt."""
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return {"error": "ANTHROPIC_API_KEY is set — unset it to use your subscription, not the API."}
+        try:
+            from ..harness import Config as HCfg
+            from ..harness import builtins as _b  # noqa: F401  registers tools
+            from ..harness.claude_backend import run_claude
+        except Exception as e:
+            return {"error": f"Claude Agent SDK unavailable: {e}"}
+        cfg = HCfg.load()
+        cfg.exec_policy = "allow"
+        model = body.model or _claude_model()
+        try:
+            cfg.tiers["claude"].model = model
+        except Exception:
+            pass
+        try:
+            res = run_claude(body.message, cfg, tier_name="claude",
+                             add_dirs=[cfg.workspace_root])
+            return {"answer": res.answer, "turns": res.turns,
+                    "cost_usd": res.cost_usd, "error": res.error, "model": model}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/api/claude/chat/stream")
+    def claude_chat_stream(body: ClaudeChat) -> StreamingResponse:
+        """Streaming build/debug chat (NDJSON token/reasoning/tool_call/done)."""
+        import json as _json
+        model = body.model or _claude_model()
+
+        def gen():
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                yield _json.dumps({"type": "error", "error": "ANTHROPIC_API_KEY is set — unset it to use your subscription."}) + "\n"
+                return
+            import asyncio, queue, threading
+            from ..harness import Config as HCfg
+            from ..harness import builtins as _b  # noqa: F401
+            try:
+                from ..harness.claude_backend import stream_claude_async
+            except Exception as e:
+                yield _json.dumps({"type": "error", "error": f"Agent SDK unavailable: {e}"}) + "\n"
+                return
+            cfg = HCfg.load()
+            cfg.exec_policy = "allow"
+            try:
+                cfg.tiers["claude"].model = model
+            except Exception:
+                pass
+            q: "queue.Queue" = queue.Queue()
+
+            def on_event(kind, payload):
+                if kind == "text":
+                    q.put({"type": "token", "text": payload})
+                elif kind == "reasoning":
+                    q.put({"type": "reasoning", "text": payload})
+                elif kind == "tool_call":
+                    q.put({"type": "tool_call", "name": payload})
+                elif kind == "done":
+                    q.put({"type": "done", "turns": payload.get("turns", 0),
+                           "cost_usd": payload.get("cost", 0.0)})
+
+            def worker():
+                try:
+                    asyncio.run(stream_claude_async(body.message, cfg,
+                                add_dirs=[cfg.workspace_root], on_event=on_event))
+                except Exception as e:
+                    q.put({"type": "error", "error": str(e)})
+                finally:
+                    q.put(None)
+
+            threading.Thread(target=worker, daemon=True).start()
+            while True:
+                item = q.get()
+                if item is None:
+                    break
+                yield _json.dumps(item) + "\n"
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
 
     # ----------------------------- chat sessions ---------------------------- #
     @app.get("/api/chats")
@@ -1353,6 +1639,10 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     def index() -> Any:
+        # The new workstation UI is now the default; the old panel lives at /classic.
+        nx = STATIC_DIR / "next.html"
+        if nx.is_file():
+            return FileResponse(str(nx))
         idx = STATIC_DIR / "index.html"
         if idx.is_file():
             return FileResponse(str(idx))
@@ -1360,10 +1650,75 @@ def create_app() -> FastAPI:
 
     @app.get("/next")
     def index_next() -> Any:
-        nx = STATIC_DIR / "next.html"
-        if nx.is_file():
-            return FileResponse(str(nx))
-        return JSONResponse({"error": "next UI not present"}, status_code=404)
+        return index()
+
+    @app.get("/classic")
+    def index_classic() -> Any:
+        idx = STATIC_DIR / "index.html"
+        if idx.is_file():
+            return FileResponse(str(idx))
+        return JSONResponse({"error": "classic UI not present"}, status_code=404)
+
+    # ── Anamnesis control ──────────────────────────────────────────────────────
+    @app.post("/api/anamnesis/{action}")
+    async def anamnesis_control(action: str):
+        import psutil, subprocess, signal as _signal
+        if action not in ("start", "stop"):
+            raise HTTPException(status_code=400, detail="action must be start or stop")
+        procs = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = ' '.join(proc.info.get('cmdline') or [])
+                if 'node' in (proc.info.get('name') or '').lower() and 'anamnesis' in cmdline:
+                    procs.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+        if action == "stop":
+            for proc in procs:
+                try: proc.send_signal(_signal.SIGTERM)
+                except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+            return {"ok": True, "action": "stop", "killed": len(procs)}
+        daemon = os.path.expanduser("~/.local/share/anamnesis/src/daemon.js")
+        if procs: return {"ok": True, "action": "start", "status": "already_running"}
+        if not os.path.exists(daemon):
+            raise HTTPException(status_code=404, detail=f"daemon not found: {daemon}")
+        subprocess.Popen(["node", daemon], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return {"ok": True, "action": "start", "status": "starting"}
+
+    # ── Rules & guidelines ─────────────────────────────────────────────────────
+    import json as _json, uuid as _uuid
+    _RULES_FILE = os.path.expanduser("~/.pleiades/rules.json")
+    def _load_rules():
+        try:
+            with open(_RULES_FILE) as _f: return _json.load(_f)
+        except FileNotFoundError: return []
+        except Exception: return []
+    def _save_rules(rules):
+        os.makedirs(os.path.dirname(_RULES_FILE), exist_ok=True)
+        with open(_RULES_FILE, 'w') as _f: _json.dump(rules, _f, indent=2)
+    @app.get("/api/rules")
+    async def get_rules():
+        return {"rules": _load_rules()}
+    @app.post("/api/rules")
+    async def create_rule(body: dict):
+        rules = _load_rules()
+        rule = {"id": _uuid.uuid4().hex[:8], "text": body.get("text",""),
+                "enabled": True, "pending": bool(body.get("pending", False))}
+        rules.append(rule); _save_rules(rules); return rule
+    @app.put("/api/rules/{rule_id}")
+    async def update_rule(rule_id: str, body: dict):
+        rules = _load_rules()
+        for r in rules:
+            if r["id"] == rule_id:
+                for k in ("text","enabled","pending"):
+                    if k in body: r[k] = body[k]
+                _save_rules(rules); return r
+        raise HTTPException(status_code=404, detail="rule not found")
+    @app.delete("/api/rules/{rule_id}")
+    async def delete_rule_ep(rule_id: str):
+        _save_rules([r for r in _load_rules() if r["id"] != rule_id])
+        return {"ok": True}
+
 
     return app
 

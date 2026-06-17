@@ -102,6 +102,16 @@ _WARN_NOTICE = (
     "(remember) soon, and keep tool outputs small (use line ranges/filters)."
 )
 
+_REFLECTION = (
+    "\n\n[Self-check after {n} steps — keep going; do NOT end your turn or stop here] "
+    "Quickly evaluate, then CONTINUE working:\n"
+    "- Are you making real progress, or repeating the same actions/tool calls (looping)?\n"
+    "- If you are looping or stuck, do NOT give up or finish — change strategy: re-read the "
+    "goal, try a different tool or angle, break the task down, or gather missing info.\n"
+    "- Only give a final answer once the goal is genuinely accomplished; otherwise take the "
+    "next concrete action toward it."
+)
+
 
 def squeeze_messages(messages: list[dict], keep_last: int = 4,
                      clip: int = 400) -> int:
@@ -196,9 +206,32 @@ class Agent:
         messages: list[dict] = [{"role": "user", "content": task}]
         answer = ""
         warned = False
+        fails = 0
+        interval = max(0, getattr(self.cfg, "eval_interval", 40))
 
-        for step in range(self.cfg.max_steps):
-            reply = self.llm.chat(messages, active, tier, system=system)
+        step = 0
+        while True:
+            if interval and step and step % interval == 0:
+                messages.append({"role": "user", "content": _REFLECTION.format(n=step)})
+                emit("reflect", {"step": step})
+            try:
+                reply = self.llm.chat(messages, active, tier, system=system)
+                fails = 0
+            except Exception as e:  # never error out — recover and keep working
+                fails += 1
+                emit("model_error", {"error": str(e), "fails": fails})
+                if fails >= 6:
+                    emit("done", answer)
+                    return AgentResult(
+                        answer=answer or f"(paused: model unavailable after {fails} attempts: {e})",
+                        steps=step + 1, transcript=messages)
+                import time as _t
+                _t.sleep(min(2 * fails, 8))
+                messages.append({"role": "user", "content":
+                    f"[system] The previous model call failed ({e}). Do not stop — wait, then "
+                    "retry a smaller, simpler step toward the goal."})
+                step += 1
+                continue
 
             # --- context manager: warn at 60%, squeeze old output at 75% ---
             frac = reply.usage.get("input_tokens", 0) / max(1, self.cfg.context_budget)
@@ -233,10 +266,7 @@ class Agent:
                 results.append((call, out, err))
 
             messages.extend(self._result_turns(reply.backend, results))
-
-        emit("done", answer)
-        return AgentResult(answer=answer or "(step limit reached)",
-                           steps=self.cfg.max_steps, transcript=messages)
+            step += 1
 
     def _active_tools(self) -> list[Tool]:
         """Which tools to expose this turn. In search mode, only discovery tools

@@ -95,10 +95,15 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 .autofit{border:1px solid var(--a2);border-radius:14px;background:linear-gradient(180deg,rgba(98,224,216,.06),transparent);padding:16px}
 .autofit .hd{display:flex;align-items:center;gap:10px;margin-bottom:6px}.autofit .hd .big{font-size:15px;font-weight:700}
 .slider{display:flex;align-items:center;gap:12px;margin:14px 0}.slider input[type=range]{flex:1}
-.quants{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-.quant{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-family:var(--mono);font-size:12px;background:var(--surf)}
-.quant.pick{border-color:var(--a2);background:var(--surf2)}
+.qaxis{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1px 4px}
+.quants{display:flex;flex-direction:column;gap:6px;margin:4px 0;padding:8px;border-radius:12px;border:1px solid var(--line);background:linear-gradient(180deg,rgba(98,224,216,.10),rgba(139,155,255,.10))}
+.quant{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-family:var(--mono);font-size:12px;background:var(--surf);cursor:pointer;transition:.12s}
+.quant:hover{border-color:var(--a2);transform:translateX(2px)}
+.quant:hover .dlico{color:var(--a2)}
+.quant.pick{border-color:var(--a2);box-shadow:0 0 0 1px var(--a2)}
+.quant.over{opacity:.85}
 .quant .nm{font-weight:600;min-width:74px}.quant .sz{color:var(--muted);min-width:56px}.quant .fit{font-size:11px}.quant .tps{margin-left:auto;color:var(--a2);font-weight:600}.quant.over .tps{color:var(--warn)}
+.quant .dlico{color:var(--faint);font-weight:700;margin-left:4px}
 .prog{height:8px;border-radius:99px;background:var(--surf3);overflow:hidden;margin-top:10px;display:none}.prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--a1),var(--a2));transition:width .2s}
 .place{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--muted)}.layer{height:14px;border-radius:3px}
 
@@ -216,6 +221,27 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 .pal{width:540px;max-width:92vw;background:var(--surf);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .pal input{border:0;border-bottom:1px solid var(--line);border-radius:0;font-size:15px;padding:15px}
 .pal .it{display:flex;gap:11px;align-items:center;padding:10px 14px;cursor:pointer}.pal .it:hover{background:var(--surf2)}
+
+/* pipeline-per-message */
+.pipe-think{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:4px 10px;margin-bottom:8px;font-size:12px}
+.pipe-think summary{cursor:pointer;color:var(--muted);list-style:none;padding:4px 0;user-select:none}
+.pipe-think summary::-webkit-details-marker{display:none}
+.pipe-think-body{color:var(--faint);font-size:11.5px;white-space:pre-wrap;padding:6px 0 4px;border-top:1px solid var(--line);margin-top:4px;max-height:180px;overflow-y:auto}
+.pipe-nodes{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0}
+.pipe-node{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:5px 12px;font-size:11.5px;font-family:var(--mono);cursor:pointer;transition:border-color .15s,background .15s;white-space:nowrap}
+.pipe-node:hover,.pipe-node.sel{border-color:var(--a2);background:var(--surf)}
+.pipe-node.err{border-color:var(--bad)}.pipe-node.ok{border-color:var(--good)}
+.pipe-node.running{border-color:var(--warn);animation:ndblink .9s ease-in-out infinite alternate}
+@keyframes ndblink{from{opacity:.6}to{opacity:1}}
+.pipe-arrow{color:var(--muted);font-size:13px;user-select:none}
+.pipe-text{font-size:14px;line-height:1.65;white-space:pre-wrap;margin-top:6px}
+.pipe-detail{background:var(--surf);border:1px solid var(--a2);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:12px}
+.pipe-detail .k{color:var(--muted);min-width:64px;flex-shrink:0;font-size:11px}
+.pipe-detail .v{color:var(--text);word-break:break-all;font-family:var(--mono);font-size:11px}
+.pipe-detail .kv{display:flex;gap:8px;margin:4px 0;align-items:start}
+.rule-row{display:flex;align-items:start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.rule-row:last-child{border-bottom:none}
+.rule-pending{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -230,11 +256,12 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <div class="nl">Build</div>
     <div class="nav on" data-v="deck"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg>Command deck</div>
     <div class="nav" data-v="foundry"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>Model foundry<span class="ct">HF</span></div>
-    <div class="nav" data-v="characters"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>Characters<span class="ct">3</span></div>
+    <div class="nav" data-v="characters"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>Characters<span class="ct" id="nav-char-ct">—</span></div>
     <div class="nav" data-v="tools"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M22 19l-6-6 2-2-4-4-2 2-6-6-2 2 6 6-6 6 2 2 6-6 6 6z"/></svg>Tools &amp; connectors<span class="ct">75</span></div>
     <div class="nav" data-v="claude"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 5l1.5 3.5L17 12l-3.5 1.5L12 17l-1.5-3.5L7 12l3.5-1.5z"/></svg>Claude lab<span class="ct">Pro</span></div>
     <div class="nl">Operate</div>
     <div class="nav" data-v="talk"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>Talk</div>
+    <div class="nav" data-v="settings"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.7-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L14 2.6h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L3.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.7 2 3.5 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.5zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>Settings</div>
     <div class="foot"><span class="dot up"></span>127.0.0.1 · local only</div>
   </aside>
 
@@ -251,59 +278,50 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <!-- DECK -->
     <section class="view on" id="v-deck">
       <h1 class="h1">Command deck</h1><p class="sub">Your workstation at a glance — hardware, services, models, characters.</p>
-      <div class="grid" style="grid-template-columns:repeat(4,1fr)">
-        <div class="card"><h3>GPU <span class="t">AMD · Vulkan</span></h3><div class="metric"><span class="n" style="color:var(--gpu)">16</span><span class="u"> GB · RX 7800 XT</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">5.4 GB used · qwen2.5-coder resident</div></div>
-        <div class="card"><h3>System RAM</h3><div class="metric"><span class="n">64</span><span class="u"> GB · 18 used</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">16 CPU threads</div></div>
-        <div class="card"><h3>Models</h3><div class="metric"><span class="n">4</span><span class="u"> registered · 2 running</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">62 tps live</div></div>
-        <div class="card"><h3>Characters</h3><div class="metric"><span class="n">3</span><span class="u"> · 0 orphans</span></div><div style="color:var(--muted);font-size:12px;margin-top:6px">alice · mark · default</div></div>
-      </div>
+      <div class="grid" style="grid-template-columns:repeat(4,1fr)" id="deck-metrics"></div>
       <div class="grid" style="grid-template-columns:1.3fr 1fr;margin-top:14px">
-        <div class="card"><h3>Services</h3>
-          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Inference engine</span><span class="v">:8080 · running</span></div>
-          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Anamnesis memory</span><span class="v">:9000 · 3 chars</span></div>
-          <div class="kv"><span class="k"><span class="dot warn" style="display:inline-block;margin-right:7px"></span>SearXNG</span><span class="v">:8888 · stopped</span></div>
-          <div class="kv"><span class="k"><span class="dot up" style="display:inline-block;margin-right:7px"></span>Camoufox browser</span><span class="v">ready</span></div>
-        </div>
-        <div class="card"><h3>Running models</h3>
-          <div class="kv"><span class="k">qwen2.5-coder</span><span class="v" style="color:var(--a2)">:8081 · 62 tps</span></div>
-          <div class="kv"><span class="k">llama-3.1-8b</span><span class="v" style="color:var(--a2)">:8082 · 48 tps</span></div>
-          <button class="btn sm" style="margin-top:10px" onclick="go('foundry')">+ pull a new model</button>
-        </div>
+        <div class="card"><h3>Services</h3><div id="deck-services"><div style="color:var(--muted);font-size:12px">loading…</div></div></div>
+        <div class="card"><h3>Running models</h3><div id="deck-running"></div><button class="btn sm" style="margin-top:10px" onclick="go('foundry')">+ pull a new model</button></div>
       </div>
     </section>
 
     <!-- FOUNDRY -->
     <section class="view" id="v-foundry">
       <h1 class="h1">Model foundry</h1><p class="sub">Search any GGUF on Hugging Face. Pleiades picks the optimal quant for your exact hardware and downloads it.</p>
-      <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder"/><button class="btn pri" onclick="hfSearch()">Search</button></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span class="seg2" id="src-seg"><button class="on" onclick="setSource('gguf')">GGUF (local)</button><button onclick="setSource('openrouter')">OpenRouter</button><button onclick="setSource('ollama')">Ollama Cloud</button></span>
+        <span id="src-char-wrap" style="display:none;margin-left:auto;font-size:11px;color:var(--muted)">assign to <select id="src-char" style="width:auto;display:inline-block"></select></span>
+      </div>
+      <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder" onkeydown="if(event.key==='Enter')foundrySearch()"/><button class="btn pri" onclick="foundrySearch()">Search</button></div>
       <div class="row2" style="align-items:start;gap:18px"><div id="results"></div><div id="fitpane"></div></div>
       <h3 style="margin:24px 0 10px;font-size:13px;color:var(--muted)">Installed library</h3><div id="library"></div>
     </section>
 
     <!-- CHARACTERS -->
     <section class="view" id="v-characters">
-      <h1 class="h1">Characters</h1><p class="sub">A character binds one model + memory + email + vault + browser + Discord into one identity.</p>
+      <h1 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">Characters<button class="btn sm" onclick="newChar()" style="font-size:11px">+ New character</button></h1><p class="sub">A character binds one model + memory + email + vault + browser + Discord into one identity.</p>
       <div class="grid" style="grid-template-columns:1fr 1fr 1fr" id="charcards"></div>
       <div class="card" style="margin-top:16px">
-        <h3 id="cfg-h">alice · configuration <span class="t">editing</span></h3>
+        <h3 id="cfg-h">character · configuration <span class="t">editing</span></h3>
+        <div class="field" style="margin-bottom:12px"><label>Profile picture</label><div style="display:flex;gap:14px;align-items:center"><div style="position:relative;width:54px;height:54px;flex-shrink:0"><img id="cf-av-img" src="" style="width:54px;height:54px;border-radius:50%;object-fit:cover;display:none" onerror="this.style.display='none';document.getElementById('cf-av-fb').style.display='flex'"/><div id="cf-av-fb" class="avatar" style="width:54px;height:54px;font-size:20px;display:flex;position:absolute;inset:0">?</div></div><div style="display:flex;flex-direction:column;gap:5px"><input type="file" id="cf-pfp-input" accept="image/*" style="display:none" onchange="charPfpChanged(this)"/><button class="btn sm" onclick="document.getElementById('cf-pfp-input').click()">Upload photo</button><button class="btn sm" onclick="deleteCharPfp()">Remove</button></div></div></div>
         <div class="row2">
           <div>
-            <div class="field"><label>Model</label><select><option>qwen2.5-coder (running)</option><option>llama-3.1-8b</option><option>default engine</option><option>Claude · debug only</option></select></div>
-            <div class="field"><label>Persona source</label><select><option>auto</option><option>custom</option></select></div>
-            <div class="field"><label>Email · provider preset</label><select><option>gmail</option><option>mail.com</option><option>outlook</option><option>generic</option></select></div>
-            <div class="row2"><div class="field"><label>IMAP host</label><input value="imap.gmail.com"/></div><div class="field"><label>port</label><input value="993"/></div></div>
-            <div class="row2"><div class="field"><label>SMTP host</label><input value="smtp.gmail.com"/></div><div class="field"><label>port</label><input value="587"/></div></div>
+            <div class="field"><label>Model</label><select id="cf-model"></select></div>
+            <div class="field"><label>Persona source</label><select id="cf-persona"><option value="auto">auto</option><option value="custom">custom</option></select></div>
+            <div class="field"><label>Email address</label><input id="cf-email" placeholder="name@host"/></div>
+            <div class="row2"><div class="field"><label>IMAP host</label><input id="cf-imaph"/></div><div class="field"><label>port</label><input id="cf-imapp"/></div></div>
+            <div class="row2"><div class="field"><label>SMTP host</label><input id="cf-smtph"/></div><div class="field"><label>port</label><input id="cf-smtpp"/></div></div>
           </div>
           <div>
-            <div class="field"><label>Discord bot token</label><input value="••••••••••••••••" type="password"/></div>
-            <div class="row2"><div class="field"><label>Enabled</label><select><option>yes</option><option>no</option></select></div><div class="field"><label>Require @mention</label><select><option>yes</option><option>no</option></select></div></div>
-            <div class="field"><label>Anamnesis memory</label><input value="127.0.0.1:8084 · 1,204 turns" disabled/></div>
-            <div class="field"><label>Vault secrets</label>
-              <button class="btn" style="width:100%;display:flex;justify-content:space-between" onclick="openVault()">🔒 Manage secrets<span style="color:var(--muted)">8 stored ›</span></button>
+            <div class="row2"><div class="field"><label>Discord enabled</label><select id="cf-den"><option>yes</option><option>no</option></select></div><div class="field"><label>Require @mention</label><select id="cf-dmention"><option>yes</option><option>no</option></select></div></div>
+            <div class="field"><label>Discord allowed channels</label><input id="cf-dchan" placeholder="comma-separated channel IDs"/></div>
+            <div class="field"><label>Vault secrets <span style="color:var(--faint)">· Fernet-encrypted</span></label>
+              <button class="btn" id="cf-vaultbtn" style="width:100%;display:flex;justify-content:space-between" onclick="openVault()">🔒 Manage secrets<span class="vc" style="color:var(--muted)">— ›</span></button>
             </div>
+            <div class="field"><label>Memory · Anamnesis</label><div id="cf-mem" style="font-size:12px;color:var(--muted);font-family:var(--mono)">—</div></div>
           </div>
         </div>
-        <button class="btn pri" style="margin-top:6px">Save character</button>
+        <button class="btn pri" id="cf-save" style="margin-top:6px" onclick="saveChar()">Save character</button>
       </div>
     </section>
 
@@ -324,32 +342,26 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 
     <!-- CLAUDE LAB -->
     <section class="view" id="v-claude">
-      <h1 class="h1">Claude lab</h1><p class="sub">Your Claude subscription — used to build, debug, and stress-test your local tools. Optional debug brain, never the default.</p>
+      <h1 class="h1">Claude lab</h1><p class="sub">Your Claude subscription — used only to build, debug, and stress-test your local tools. Never a chat brain; local models stay default.</p>
       <div class="cl-grid">
         <div style="display:flex;flex-direction:column;gap:16px">
           <div class="card"><h3><span class="avatar">C</span> Account <span class="t">subscription</span></h3>
-            <div class="kv"><span class="k">status</span><span class="v" style="color:var(--good)">connected · Pro</span></div>
+            <div class="kv"><span class="k">status</span><span class="v" id="cl-status">checking…</span></div>
             <div class="kv"><span class="k">auth</span><span class="v">claude login (OAuth)</span></div>
-            <div class="field" style="margin-top:12px"><label>Model</label>
-              <select><option>claude-fable-5 (newest · Mythos-class)</option><option>claude-sonnet-4-6</option><option>claude-opus-4-8</option><option>claude-haiku-4-5</option></select></div>
-            <div style="display:flex;gap:8px;margin-top:4px"><button class="btn sm">Reconnect</button><button class="btn sm x">Disconnect</button></div>
-            <div class="kv" style="margin-top:10px"><span class="k">debug brain</span><span class="v"><span class="tagp tp-cl">enabled for debugging</span></span></div>
-            <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5">When on, you can pick <b style="color:var(--cl)">Claude · debug</b> as a character's brain to diagnose tool issues. Local models stay default.</div>
+            <div class="kv"><span class="k">Agent SDK</span><span class="v" id="cl-sdk">—</span></div>
+            <div class="field" style="margin-top:12px"><label>Model</label><select id="cl-model" onchange="claudeSetModel()"></select></div>
+            <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5" id="cl-note"></div>
           </div>
           <div class="card"><h3>Tool audit <span class="t">stress-test</span></h3>
-            <div class="kv"><span class="k">last run</span><span class="v">3 bugs · 5 smells</span></div>
-            <div class="kv"><span class="k">coverage</span><span class="v">75 / 75 tools</span></div>
-            <div style="display:flex;gap:8px;margin-top:12px"><button class="btn pri sm">Run audit</button><button class="btn sm">Open report</button><button class="btn sm">Differential</button></div>
+            <div style="font-size:12.5px;color:var(--muted);line-height:1.5">Claude exercises your local tool belt and proposes fixes. Run it from the CLI: <code>pleiades audit</code> — a UI runner is the next piece.</div>
           </div>
         </div>
         <div class="clchat">
-          <div class="hd"><span class="avatar">C</span> Build with Claude<span class="t" style="margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)">claude-fable-5</span></div>
+          <div class="hd"><span class="avatar">C</span> Build with Claude<span class="t" id="cl-hdr-model" style="margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)">—</span></div>
           <div class="body" id="clbody">
-            <div class="clmsg a"><b>Claude</b> — I can see your repo and the live tool belt. Want me to harden a tool's schema, write tests, or trace a failing connector?</div>
-            <div class="clmsg u">vault_set throws on keys with slashes — fix it and add a test</div>
-            <div class="clmsg a"><b>Claude</b> found it: <code>vault.set()</code> doesn't sanitize <code>/</code>. Patching the key validation + adding <code>test_vault_slash_key</code>. Run it?</div>
+            <div class="clmsg a"><b>Claude</b> — I can see your repo and the live tool belt. Ask me to harden a tool's schema, write a test, or trace a failing connector. Runs on your subscription.</div>
           </div>
-          <div class="foot"><input placeholder="Ask Claude to build or debug…"/><button class="btn pri">Send</button></div>
+          <div class="foot"><input id="cl-input" placeholder="Ask Claude to build or debug…" onkeydown="if(event.key==='Enter')claudeSend()"/><button class="btn pri" onclick="claudeSend()">Send</button></div>
         </div>
       </div>
     </section>
@@ -358,39 +370,86 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <section class="view flexcol" id="v-talk">
       <div class="talk">
         <div class="modes">
-          <span class="ttl">Talk · alice</span>
-          <div class="seg"><button data-m="stream" onclick="setMode('stream')">Stream</button><button class="on" data-m="pipeline" onclick="setMode('pipeline')">Pipeline</button><button data-m="mind" onclick="setMode('mind')">Mind</button></div>
+          <span class="ttl">Talk · <span id="talk-ttl">—</span></span><button class="btn sm" onclick="newTalkSession()" style="margin-left:6px;font-size:11px">+ New</button><select id="talk-sess" style="width:auto;margin-left:6px;font-size:11px" onchange="switchSession()"><option value="">— new chat —</option></select>
           <div class="sp"></div>
-          <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">brain</span>
-            <select style="width:auto"><option>qwen2.5-coder (local)</option><option>llama-3.1-8b (local)</option><option>Claude · debug only</option></select></div>
+          <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">character</span>
+            <select id="talk-char" style="width:auto" onchange="charChanged()"></select></div>
         </div>
-        <div class="talkscroll" id="talkscroll">
-          <div class="tmsg"><div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">a</span>alice · local</div>Hey — full tool belt is live. Try the suggestion below to watch a run in Stream, Pipeline, and Mind.</div>
-          <button class="btn" onclick="runDemo()">▶ run: check inbox → store code in vault</button>
-        </div>
-        <div class="composer"><input id="talkin" placeholder="Message alice — every tool always on…"/><button class="btn pri" onclick="talkSend()">↑</button></div>
+        <div class="talkscroll" id="talkscroll"></div>
+        <div class="composer"><input id="talkin" placeholder="Message — every tool always on… (Enter to send)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();talkSend()}"/><button class="btn pri" onclick="talkSend()">↑</button></div>
 
         <aside class="rail">
-          <div class="rc"><h4>Model</h4>
-            <div class="kv"><span class="k">qwen2.5-coder</span><span class="v tp-run tagp">running</span></div>
-            <div class="kv"><span class="k">port</span><span class="v">:8081</span></div>
-            <div class="kv"><span class="k">context</span><span class="v">8k / 8k</span></div>
-            <div class="kv"><span class="k">layers</span><span class="v" style="color:var(--gpu)">33/33 GPU</span></div>
+          <div class="rc"><h4>Brain</h4><div id="rail-brain"><div class="kv"><span class="k">—</span></div></div>
             <h4 style="margin-top:12px">Throughput</h4><div class="spark" id="spark"></div>
-            <div style="text-align:right;font-family:var(--mono);font-size:12px;color:var(--a2);margin-top:2px">62 tps</div>
           </div>
-          <div class="rc"><h4>Recent events</h4>
-            <div class="ev"><span class="d"></span>webhook · github push · 2m</div>
-            <div class="ev"><span class="d"></span>email · code received · 9m</div>
-            <div class="ev"><span class="d"></span>memory · checkpoint · 14m</div>
-            <div class="ev"><span class="d"></span>vault · stripe_verify · now</div>
-          </div>
+          <div class="rc"><h4 style="display:flex;align-items:center">Memory · Anamnesis<button class="btn sm" style="margin-left:auto;padding:3px 9px" onclick="memInspect()">Inspect ›</button></h4><div id="rail-mem"><div class="kv"><span class="k">select a character</span></div></div></div>
           <div class="rc"><h4>Session</h4>
             <div class="kv"><span class="k">tokens</span><span class="v" id="r-tok">0</span></div>
             <div class="kv"><span class="k">tools run</span><span class="v" id="r-tools">0</span></div>
             <div class="kv"><span class="k">turns</span><span class="v" id="r-turns">0</span></div>
           </div>
         </aside>
+      </div>
+    </section>
+
+    <section class="view" id="v-settings">
+      <h1 class="h1">Settings</h1><p class="sub">Engine, agent loop, services, and optional cloud providers. Local inference is the default brain.</p>
+      <div class="row2" style="align-items:start;gap:18px">
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="card" id="engine-card">
+  <h3>Local engine <span class="t" style="color:var(--muted)">auto-managed</span></h3>
+  <div style="color:var(--muted);font-size:12.5px;line-height:1.6;margin-bottom:10px">
+    Pleiades selects optimal llama.cpp flags for your hardware automatically.
+  </div>
+  <div id="hw-msg" style="font-size:12px;color:var(--good);margin-bottom:8px"></div>
+  <button class="btn" onclick="applyHwPlan(this)" style="font-size:12px">⚙ Re-run hardware plan</button>
+  <input id="se-model_path" style="display:none"/>
+  <input id="se-n_ctx" style="display:none"/>
+  <input id="se-n_gpu_layers" style="display:none"/>
+  <select id="se-flash_attn" style="display:none"><option value="on">on</option><option value="off">off</option></select>
+  <select id="se-kv_cache_type" style="display:none"><option value="">f16</option><option value="q8_0">q8_0</option><option value="q4_0">q4_0</option></select>
+  <input id="se-draft_model" style="display:none"/>
+  <input id="se-draft_n_gpu_layers" style="display:none"/>
+</div>
+<div class="card"><h3>Agent loop</h3>
+            <div class="row2"><div class="field"><label>Exec policy</label><select id="se-exec_policy"><option>ask</option><option value="allow">act</option><option>deny</option></select></div><div class="field"><label>Self-check every N turns</label><input id="se-eval_interval" placeholder="40"/></div></div>
+          <div style="margin-top:10px;display:flex;align-items:center;gap:10px"><button class="btn sm" onclick="saveAgentLoop()">Save</button><span id="se-loop-msg" style="font-size:12px;color:var(--muted)"></span></div>
+          </div>
+          <div class="card">
+  <h3>Rules &amp; guidelines</h3>
+  <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">Per-turn instructions the model follows. Models can also propose rules pending your approval.</p>
+  <div id="rules-list" style="margin-bottom:12px"><div style="color:var(--muted);font-size:12.5px">Loading…</div></div>
+  <div style="display:flex;gap:8px">
+    <input id="rule-new" placeholder="Add a new rule…" style="flex:1;font-size:12.5px" onkeydown="if(event.key==='Enter')addRule()"/>
+    <button class="btn sm" onclick="addRule()">+ Add</button>
+  </div>
+</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="card"><h3>Services</h3>
+            <div class="field"><label>Anamnesis control URL</label><input id="se-anamnesis_control_url"/></div>
+            <div class="field"><label>SearXNG URL</label><input id="se-searxng_url"/></div>
+          <div style="margin-top:10px;display:flex;align-items:center;gap:10px"><button class="btn sm" onclick="saveServices()">Save</button><span id="se-svc-msg" style="font-size:12px;color:var(--muted)"></span></div>
+          </div>
+          <div class="card"><h3>Cloud providers <span class="t">optional</span></h3>
+            <div style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.5">Local GGUF stays the default. These let a character use a hosted model — routed through Anamnesis, so memory still applies. Keys are stored locally in <code>.env</code>.</div>
+            <div id="cp-key-list" style="margin-bottom:12px"></div>
+            <div id="cp-add-row" style="display:none;gap:6px;align-items:center;margin-bottom:8px">
+              <select id="cp-provider" style="font-size:12.5px;width:auto;flex:0 0 130px">
+                <option value="or">OpenRouter</option>
+                <option value="ol">Ollama Cloud</option>
+              </select>
+              <input id="cp-new-key" type="password" placeholder="API key…" style="flex:1;font-size:12.5px"/>
+              <button type="button" class="btn sm" onclick="revealTog('cp-new-key',this)" title="Show/hide key" style="flex:0 0 auto">👁</button>
+              <button class="btn sm" onclick="addCpKey()" id="cp-add-confirm-btn">Add</button>
+              <button class="btn sm" onclick="cancelCpAdd()">✕</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button class="btn sm" id="cp-add-btn" onclick="showCpAdd()">+ Add key</button>
+              <span id="cp-msg" style="font-size:12px;color:var(--muted)"></span>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -413,7 +472,8 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 <script>
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
-  document.getElementById('main').classList.toggle('flush',v==='talk');}
+  document.getElementById('main').classList.toggle('flush',v==='talk');
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='claude')loadClaude(); if(v==='settings'){loadSettings();loadRules();}}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -422,23 +482,99 @@ document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLower
 /* modal */
 function showModal(html){document.getElementById('modal').innerHTML=html;document.getElementById('mb').classList.add('open')}
 function closeModal(){document.getElementById('mb').classList.remove('open')}
-function openVault(){
-  const rows=[['stripe_verify','verification code','••••','now'],['smtp_password','email send','••••','reserved'],
-    ['discord_token','bot auth','••••','reserved'],['openai_key','fallback api','••••','2d'],
-    ['github_pat','repo access','••••','5d'],['aws_secret','s3 backups','••••','1w'],
-    ['session_cookie','site login','••••','3d'],['totp_seed','2fa','••••','1w']];
-  showModal(`<div class="mh">🔒 alice · vault secrets <span class="t" style="margin-left:8px;color:var(--faint);font-family:var(--mono);font-size:10.5px">Fernet-encrypted</span><span class="x" onclick="closeModal()">✕</span></div>
-    <div class="mbody">
-      <div style="display:flex;gap:8px;margin-bottom:12px"><input placeholder="Search secrets…" style="flex:1"/><button class="btn pri sm">+ Add</button></div>
-      ${rows.map(([k,n,v,t])=>`<div class="kv"><span class="k"><b style="color:var(--text);font-family:var(--mono)">${k}</b> · ${n}</span>
-        <span class="v" style="display:flex;gap:8px;align-items:center">${v} · ${t}
-        <button class="btn sm">Reveal</button><button class="btn sm">Edit</button><button class="btn sm x">Delete</button></span></div>`).join('')}
-    </div>`);
+function setHTML(id,h){const e=document.getElementById(id);if(e)e.innerHTML=h}
+function val(id){const e=document.getElementById(id);return e?e.value:''}
+function setVal(id,v){const e=document.getElementById(id);if(e)e.value=v}
+function _card(t,n,col,u,sub){return '<div class="card"><h3>'+t+'</h3><div class="metric"><span class="n"'+(col?' style="color:'+col+'"':'')+'>'+n+'</span><span class="u"> '+u+'</span></div>'+(sub?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+sub+'</div>':'')+'</div>'}
+function _srow(up,name,v){return '<div class="kv"><span class="k"><span class="dot '+(up?'up':'warn')+'" style="display:inline-block;margin-right:7px"></span>'+name+'</span><span class="v">'+v+'</span></div>'}
+async function loadDeck(){
+  try{const [st,hw,md]=await Promise.all([api('/api/status'),api('/api/hardware'),api('/api/models')]);
+    const g=hw.gpus&&hw.gpus[0];const c=st.counts;const run=md.running||[];{const nct=document.getElementById('nav-char-ct');if(nct)nct.textContent=c.profiles||'0';}
+    setHTML('deck-metrics',
+      _card('GPU', g?(g.vram_total/1073741824).toFixed(0):'—','var(--gpu)', g?'GB · '+g.name:'no GPU', g?(fmtGB(g.vram_total-g.vram_free)+' used'):'')+
+      _card('System RAM',(hw.ram_total/1073741824).toFixed(0),'','GB · '+((hw.ram_total-hw.ram_available)/1073741824).toFixed(0)+' used',hw.cpu_threads+' CPU threads')+
+      _card('Models',md.models.length,'','registered · '+run.length+' running','')+
+      _card('Characters',c.profiles,'','· '+c.orphans+' orphans',(st.services.anamnesis.characters||0)+' in memory'));
+    const sv=st.services;const port=u=>(String(u).match(/:(\d+)/)||['',''])[1];
+    setHTML('deck-services',
+      _srow(sv.inference.up,'Inference engine',':'+port(sv.inference.url)+' · '+sv.inference.state)+
+      _srow(sv.anamnesis.up,'Anamnesis memory',':'+port(sv.anamnesis.url)+' · '+sv.anamnesis.characters+' chars')+
+      _srow(sv.searxng.up,'SearXNG',':'+port(sv.searxng.url)+' · '+(sv.searxng.up?'running':'stopped')));
+    setHTML('deck-running', run.length?run.map(m=>'<div class="kv"><span class="k">'+m.name+'</span><span class="v" style="display:flex;gap:8px;align-items:center;color:var(--a2)">:'+m.port+' <button class="btn sm" onclick="modelAct(\''+m.name+'\',\'stop\')">Stop</button></span></div>').join(''):'<div style="color:var(--muted);font-size:12px">none running</div>');
+  }catch(e){setHTML('deck-metrics','<div class="card" style="color:var(--bad)">'+e.message+'</div>')}
 }
+let MODELS=[],curChar='';
+async function loadChars(){
+  try{const [d,md]=await Promise.all([api('/api/profiles'),api('/api/models')]);
+    MODELS=md.models||[];const box=document.getElementById('charcards');box.innerHTML='';
+    (d.profiles||[]).forEach(pf=>{const conn=[pf.has_email?'✉':'',pf.discord_enabled?'◈':'','✦'].filter(Boolean).join('  ');
+      const e=document.createElement('div');e.className='card';
+      const avUrl='/api/profiles/'+encodeURIComponent(pf.name)+'/avatar?_='+Date.now();
+      e.innerHTML='<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">'+
+        '<div style="position:relative;width:40px;height:40px;flex-shrink:0">'+
+        '<img src="'+avUrl+'" style="width:40px;height:40px;border-radius:50%;object-fit:cover" onerror="this.style.display=\'none\'"/>'+
+        '<div class="avatar" style="position:absolute;inset:0;width:40px;height:40px;font-size:15px">'+pf.name.charAt(0).toUpperCase()+'</div></div>'+
+        '<div style="flex:1"><div style="font-weight:600">'+pf.name+'</div>'+
+        '<div style="font-size:11.5px;color:var(--muted)">'+(pf.model||'default engine')+'</div></div>'+
+        '<span class="tagp '+(pf.model?'tp-run':'tp-idle')+'">'+(pf.model?'configured':'no model')+'</span></div>'+
+        '<div class="kv"><span class="k">connectors</span><span class="v">'+conn+'</span></div>'+
+        '<button class="btn sm" style="margin-top:10px" onclick="configChar(\''+pf.name+'\')">Configure</button>';box.append(e)});
+    if(d.orphans&&d.orphans.length){const e=document.createElement('div');e.className='card';e.style.borderStyle='dashed';
+      e.innerHTML='<h3>Adoptable<span class="tagp tp-warn" style="margin-left:auto">'+d.orphans.length+'</span></h3><div class="kv"><span class="k">Anamnesis chars</span><span class="v">'+d.orphans.join(', ')+'</span></div><div style="color:var(--muted);font-size:11.5px;margin-top:8px">not yet Pleiades profiles</div>';box.append(e)}
+    /* no auto-select */
+  }catch(e){document.getElementById('charcards').innerHTML='<div class="card" style="color:var(--bad)">'+e.message+'</div>'}
+}
+let curCharModel='';
+async function configChar(name){curChar=name;
+  try{const pf=await api('/api/profiles/'+encodeURIComponent(name));curCharModel=pf.model||'';
+    document.getElementById('cfg-h').innerHTML=name+' · configuration <span class="t">editing</span>';
+    const opts=['<option value="">default engine</option>'].concat(MODELS.map(m=>'<option '+(m.name===pf.model?'selected':'')+'>'+m.name+'</option>')).concat(['<option value="__claude"'+(pf.model==='__claude'?' selected':'')+'>Claude · debug only</option>']).join('');
+    setHTML('cf-model',opts);
+    setVal('cf-persona',pf.persona_source||'auto');setVal('cf-email',pf.email_address||'');
+    setVal('cf-imaph',pf.imap_host||'');setVal('cf-imapp',pf.imap_port||993);
+    setVal('cf-smtph',pf.smtp_host||'');setVal('cf-smtpp',pf.smtp_port||587);
+    setVal('cf-den',pf.discord_enabled?'yes':'no');setVal('cf-dmention',pf.discord_require_mention?'yes':'no');
+    setVal('cf-dchan',pf.discord_allowed_channels||'');
+    const vb=document.getElementById('cf-vaultbtn');if(vb)vb.querySelector('.vc').textContent=(pf.vault?pf.vault.length:0)+' stored ›';
+    loadCharMemory(name);
+    const avImg=document.getElementById('cf-av-img');const avFb=document.getElementById('cf-av-fb');
+    if(avImg){avImg.src='/api/profiles/'+encodeURIComponent(name)+'/avatar?_='+Date.now();
+      avImg.style.display='block';
+      avImg.onload=()=>{if(avFb)avFb.style.display='none';};
+      avImg.onerror=()=>{avImg.style.display='none';if(avFb)avFb.style.display='flex';};}
+    if(avFb)avFb.textContent=name.charAt(0).toUpperCase();
+    document.getElementById('cfg-h').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){}
+}
+async function loadCharMemory(name){const el=document.getElementById('cf-mem');if(!el)return;el.textContent='loading…';
+  try{const d=await api('/api/profiles/'+encodeURIComponent(name)+'/anamnesis');const s=d.stats||{};
+    el.innerHTML=(d.char_status||'?')+' · '+(s.turns||0).toLocaleString()+' turns · '+(s.scenes||0)+' scenes · '+(s.engrams||0)+' engrams · '+(s.observations||0)+' obs';
+  }catch(e){el.textContent='memory unavailable (daemon down?)'}}
+async function saveChar(){if(!curChar)return;const btn=document.getElementById('cf-save');
+  const body={email_address:val('cf-email'),imap_host:val('cf-imaph'),imap_port:+val('cf-imapp')||993,
+    smtp_host:val('cf-smtph'),smtp_port:+val('cf-smtpp')||587,persona_source:val('cf-persona'),
+    discord_enabled:val('cf-den')==='yes',discord_require_mention:val('cf-dmention')==='yes',
+    discord_allowed_channels:val('cf-dchan')};
+  if(btn)btn.textContent='Saving…';
+  try{await fetch('/api/profiles/'+encodeURIComponent(curChar),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const m=val('cf-model');const target=(m==='__claude'?'':m);if(target!==(curCharModel||'')){await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:target})});curCharModel=target;}
+    if(btn)btn.textContent='✓ Saved';setTimeout(()=>{if(btn)btn.textContent='Save character'},1500);loadChars();
+  }catch(e){if(btn)btn.textContent='Save failed'}
+}
+async function openVault(){if(!curChar)return;
+  try{const pf=await api('/api/profiles/'+encodeURIComponent(curChar));const rows=pf.vault||[];
+    showModal('<div class="mh">🔒 '+curChar+' · vault secrets <span class="t" style="margin-left:8px;color:var(--faint);font-family:var(--mono);font-size:10.5px">Fernet-encrypted</span><span class="x" onclick="closeModal()">✕</span></div>'+
+      '<div class="mbody"><div style="display:flex;gap:8px;margin-bottom:12px"><input id="vk" placeholder="key (e.g. site:example.com)" style="flex:1"/><input id="vv" placeholder="value" style="flex:1" type="password"/><button class="btn pri sm" onclick="vaultAdd()">+ Add</button></div>'+
+      (rows.length?rows.map(r=>'<div class="kv"><span class="k"><b style="color:var(--text);font-family:var(--mono)">'+r.key+'</b>'+(r.reserved?' · <span class="tagp tp-warn">reserved</span>':(r.meta&&r.meta.note?' · '+r.meta.note:''))+'</span><span class="v" style="display:flex;gap:8px;align-items:center">•••• <button class="btn sm x" onclick="vaultDel('+JSON.stringify(r.key)+')">Delete</button></span></div>').join(''):'<div style="color:var(--muted);font-size:13px">No secrets stored.</div>')+
+      '</div>');
+  }catch(e){}
+}
+async function vaultAdd(){const k=val('vk'),v=val('vv');if(!k||!v)return;
+  await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/vault',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,value:v,note:''})});openVault()}
+async function vaultDel(key){await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/vault/'+encodeURIComponent(key),{method:'DELETE'});openVault()}
 
 /* ───── Foundry (live · wired to backend) ───── */
-let pref=2, curRepo='';
-const PREF=['speed','speed','balanced','quality','quality'];
+let curRepo='';
 const fmtGB=b=>(b/1073741824).toFixed(1)+' GB';
 async function api(path){const r=await fetch(path);if(!r.ok){let t='';try{t=(await r.json()).detail||''}catch(e){}throw new Error(t||('HTTP '+r.status))}return r.json()}
 async function hfSearch(){
@@ -457,32 +593,42 @@ async function hfSearch(){
 async function fit(repo){
   curRepo=repo;const pane=document.getElementById('fitpane');
   pane.innerHTML='<div class="autofit"><div style="color:var(--muted);font-size:13px">Reading the model header & matching quants to your hardware…</div></div>';
-  try{const d=await api('/api/models/quant-options?repo='+encodeURIComponent(repo)+'&preference='+PREF[pref]);
+  try{const d=await api('/api/models/quant-options?repo='+encodeURIComponent(repo)+'&preference=balanced');
     const hw=d.hardware||{},rec=d.recommended;const reco=(d.options||[]).find(o=>o.quant===rec);
     const fitLabel=o=>o.fits_fully?(o.n_gpu_layers<0?'full GPU':o.n_gpu_layers+' layers GPU'):(o.feasible?o.strategy.replace(/_/g,' '):'too big');
     pane.innerHTML='<div class="autofit">'+
-      '<div class="hd"><span class="tagp tp-best">BEST FOR YOUR HARDWARE</span><span class="big">'+(rec||'—')+'</span></div>'+
-      '<div style="font-size:12.5px;color:var(--muted)">'+repo.split('/').pop()+' · '+(d.n_layers||'?')+' layers'+(d.is_moe?' · MoE':'')+' on '+(hw.gpu||'CPU')+(hw.vram_total?' ('+fmtGB(hw.vram_total)+(hw.vendor?', '+hw.vendor:'')+')':'')+'</div>'+
-      '<div class="slider"><span style="font-size:11px;color:var(--muted)">speed</span><input type="range" min="0" max="4" value="'+pref+'" oninput="pref=+this.value;fit(curRepo)"/><span style="font-size:11px;color:var(--muted)">quality</span></div>'+
-      '<div class="quants">'+(d.options||[]).map(o=>'<div class="quant '+(o.quant===rec?'pick':'')+' '+(o.fits_fully?'':'over')+'">'+
+      '<div class="hd"><span class="tagp tp-best">RECOMMENDED</span><span class="big">'+(rec||'—')+'</span><span style="margin-left:auto;font-size:11px;color:var(--faint)">click a quant to download</span></div>'+
+      '<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px">'+repo.split('/').pop()+' · '+(d.n_layers||'?')+' layers'+(d.is_moe?' · MoE':'')+' on '+(hw.gpu||'CPU')+(hw.vram_total?' ('+fmtGB(hw.vram_total)+(hw.vendor?', '+hw.vendor:'')+')':'')+'</div>'+
+      '<div class="qaxis">↑ faster · smaller</div>'+
+      '<div class="quants">'+(d.options||[]).map(o=>'<div class="quant '+(o.quant===rec?'pick':'')+' '+(o.fits_fully?'':'over')+'" title="Download '+o.quant+' ('+fmtGB(o.size)+')" onclick="dl(\''+o.quant+'\',\''+repo+'\')">'+
         '<span class="nm">'+o.quant+'</span><span class="sz">'+fmtGB(o.size)+'</span>'+
         '<span class="fit tagp '+(o.fits_fully?'tp-gpu':'tp-warn')+'">'+fitLabel(o)+'</span>'+
-        '<span class="tps">~'+o.est_tps+' tps</span></div>').join('')+'</div>'+
+        '<span class="tps">~'+o.est_tps+' tps</span>'+
+        (o.quant===rec?'<span class="tagp tp-best" style="margin-left:8px">best</span>':'')+
+        '<span class="dlico">⇣</span></div>').join('')+'</div>'+
+      '<div class="qaxis">↓ higher quality · larger</div>'+
       (reco?'<div class="place">'+reco.reason+'</div>':'')+
-      '<button class="btn pri" style="margin-top:13px" '+(rec?'onclick="dl(\''+rec+'\',\''+repo+'\')"':'disabled')+'>⇣ Download '+(rec||'')+' — optimal for your machine</button>'+
       '<div class="prog" id="prog"><i id="progi"></i></div><div id="dlmsg" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div></div>';
   }catch(e){pane.innerHTML='<div class="autofit"><div style="color:var(--bad);font-size:13px">Could not analyze: '+e.message+'</div></div>'}
 }
 async function dl(quant,repo){
   const p=document.getElementById('prog'),i=document.getElementById('progi'),m=document.getElementById('dlmsg');
   p.style.display='block';m.textContent='starting download…';
-  try{const r=await fetch('/api/models/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:repo,quant:quant})});if(!r.ok)throw new Error('HTTP '+r.status)}
-  catch(e){m.innerHTML='<span style="color:var(--bad)">failed to start: '+e.message+'</span>';return}
-  const poll=setInterval(async()=>{try{const st=await api('/api/models/fetch/status');
-    if(st.total){i.style.width=Math.round(st.done/st.total*100)+'%';m.textContent='downloading '+(st.file||'')+' · '+Math.round(st.done/st.total*100)+'%'}
-    if(st.status==='done'){clearInterval(poll);i.style.width='100%';m.innerHTML='✓ downloaded & registered. <b style="color:var(--a2)">Ready to run.</b>';loadLib()}
-    else if(st.status==='error'){clearInterval(poll);m.innerHTML='<span style="color:var(--bad)">error: '+(st.error||'')+'</span>'}
-  }catch(e){}},700);
+  try{const r=await fetch('/api/models/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:repo,quant:quant})});
+    if(r.status===409){m.textContent='a download is already running — attaching to it…';}
+    else if(!r.ok){let t='';try{t=(await r.json()).detail}catch(e){}throw new Error(t||('HTTP '+r.status))}
+  }catch(e){m.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';return}
+  pollFetch(p,i,m);
+}
+function pollFetch(p,i,m){
+  if(p)p.style.display='block';
+  if(window._dlpoll)clearInterval(window._dlpoll);
+  window._dlpoll=setInterval(async()=>{try{const st=await api('/api/models/fetch/status');
+    if(st.total){const pc=Math.round(st.done/st.total*100);if(i)i.style.width=pc+'%';if(m)m.textContent='downloading '+(st.file||'')+' · '+pc+'%'}
+    else if(st.status==='downloading'&&m){m.textContent='downloading '+(st.file||'')+'…'}
+    if(st.status==='done'){clearInterval(window._dlpoll);if(i)i.style.width='100%';if(m)m.innerHTML='✓ downloaded & registered. <b style="color:var(--a2)">Ready to run.</b>';loadLib()}
+    else if(st.status==='error'){clearInterval(window._dlpoll);if(m)m.innerHTML='<span style="color:var(--bad)">error: '+escapeHtml(st.error||'')+'</span>'}
+  }catch(e){}},800);
 }
 async function loadLib(){const box=document.getElementById('library');
   try{const d=await api('/api/models');const running=new Set((d.running||[]).map(m=>m.name));
@@ -491,10 +637,12 @@ async function loadLib(){const box=document.getElementById('library');
     d.models.forEach(m=>{const run=running.has(m.name)||m.running;const e=document.createElement('div');e.className='result';
       e.innerHTML='<div><div class="ttl">'+m.name+'</div><div class="meta">'+((m.path||'').split('/').pop())+' · '+m.n_gpu_layers+' gpu-layers'+(m.port?' · :'+m.port:'')+'</div></div>'+
         '<div class="right" style="display:flex;gap:8px;align-items:center"><span class="tagp '+(run?'tp-run':'tp-idle')+'">'+(run?'running':'idle')+'</span>'+
-        '<button class="btn sm" onclick="modelAct(\''+m.name+'\',\''+(run?'stop':'start')+'\')">'+(run?'Stop':'Start')+'</button></div>';box.append(e)});
+        '<button class="btn sm" onclick="modelAct(\''+m.name+'\',\''+( run?'stop':'start')+'\')">'+(run?'Stop':'Start')+'</button>'+
+        (!run?'<button class="btn sm" style="color:var(--bad);margin-left:4px" onclick="deleteModel(\''+m.name+'\')" title="Remove">&#x2715;</button>':'')+
+        '</div>';box.append(e)});
   }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+e.message+'</div>'}
 }
-async function modelAct(name,act){try{await fetch('/api/models/'+encodeURIComponent(name)+'/'+act,{method:'POST'});setTimeout(loadLib,600)}catch(e){}}
+async function modelAct(name,act){try{await fetch('/api/models/'+encodeURIComponent(name)+'/'+act,{method:'POST'});setTimeout(function(){loadLib();try{loadDeck()}catch(e){}},700)}catch(e){}}
 async function refreshState(){
   try{const h=await api('/api/hardware');const g=h.gpus&&h.gpus[0];
     if(g&&g.vram_total){const used=g.vram_total-g.vram_free;const pct=Math.round(used/g.vram_total*100);
@@ -510,10 +658,7 @@ async function refreshState(){
   }catch(e){}
 }
 
-function loadChars(){const cs=[['alice','qwen2.5-coder','running','✉ ◈ ◐ ✦'],['mark','llama-3.1-8b','running','◈ ✦'],['default','qwen2.5-7b','idle','✦']];
-  const box=document.getElementById('charcards');box.innerHTML='';
-  cs.forEach(([n,m,st,conn])=>{const e=document.createElement('div');e.className='card';
-    e.innerHTML=`<h3>${n}<span class="tagp ${st==='running'?'tp-run':'tp-idle'}" style="margin-left:auto">${st}</span></h3><div class="kv"><span class="k">model</span><span class="v">${m}</span></div><div class="kv"><span class="k">connectors</span><span class="v">${conn}</span></div><button class="btn sm" style="margin-top:10px" onclick="configChar('${n}')">Configure</button>`;box.append(e)})}
+/* loadChars: defined live above */
 
 /* ───── Tools: collapsible categories + tooltips ───── */
 const CAT={
@@ -537,107 +682,416 @@ function loadCat(){const box=document.getElementById('catalog');box.innerHTML=''
     w.querySelector('.ch').onclick=()=>w.classList.toggle('open');box.append(w)}}
 
 /* ───── Connectors with action buttons ───── */
-function loadConn(){const C=[['✉','Email · IMAP/SMTP','per-character inbox; receive codes','run','2 wired'],
-  ['◈','Discord','host a character as a bot','run','alice'],
-  ['◐','Camoufox browser','headed, anti-fingerprint profile','run','ready'],
-  ['⌕','SearXNG','local web search','warn','stopped'],
-  ['✦','Anamnesis','canonical memory proxy','run',':9000']];
+async function loadConn(){
+  let up={};try{const st=await api('/api/status');up=st.services||{}}catch(e){}
+  const sx=!!(up.searxng&&up.searxng.up),an=!!(up.anamnesis&&up.anamnesis.up);
   const box=document.getElementById('connectors');box.innerHTML='';
-  C.forEach(([ic,nm,ds,st,tag])=>{const e=document.createElement('div');e.className='conn';
-    const acts=st==='run'?['Stop','Debug','Settings','Edit']:['Start','Fix','Settings','Edit'];
-    e.innerHTML=`<div class="ci">${ic}</div><div class="info"><div class="nm">${nm}</div><div class="ds">${ds}</div></div>
-      <span class="tagp ${st==='run'?'tp-run':'tp-warn'}">${tag}</span>
-      <div class="acts">${acts.map(a=>`<button class="btn sm ${a==='Stop'||a==='Fix'?'':''}">${a}</button>`).join('')}</div>`;box.append(e)})}
-
-/* ───── TALK: modes + demo run ───── */
-let mode='pipeline';
-function setMode(m){mode=m;document.querySelectorAll('.modes .seg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));renderRun();}
-const RUN={
-  think:[[0.0,'Goal','Find newest verification email → save code to vault'],[1.1,'Plan','search → open → extract → vault_set'],[3.0,'Observe','Stripe message is newest of 3'],[5.0,'Decide','Code 481920 valid → store']],
-  tools:[[1.4,'search_inbox',0.4,'3 results'],[2.6,'read_email',0.6,'Stripe · 481920'],[4.0,'dispatch_subagent',0.3,'format valid'],[5.4,'vault_set',0.3,'stored']],
-  out:[[6.0,'Done. Saved stripe_verify to alice’s vault.']],
-  threads:[[0,0],[1,1],[1,2],[2,3]] /* [thoughtIdx,toolIdx] causal links */
-};
-let ran=false;
-function runDemo(){ran=true;document.getElementById('r-tok').textContent='3,480';document.getElementById('r-tools').textContent='4';document.getElementById('r-turns').textContent='3';renderRun(true);}
-function talkSend(){const i=document.getElementById('talkin');if(!i.value.trim())return;
-  const s=document.getElementById('talkscroll');const u=document.createElement('div');u.className='tmsg u';u.innerHTML='<div class="bub">'+i.value+'</div>';s.append(u);i.value='';runDemo();s.scrollTop=s.scrollHeight;}
-function renderRun(fresh){
-  const s=document.getElementById('talkscroll');
-  document.querySelectorAll('.runblock,.mind,.pipewrap,.runmsg').forEach(e=>e.remove());
-  if(!ran)return;
-  if(mode==='stream'){
-    const b=document.createElement('div');b.className='runblock';
-    b.innerHTML=`<div class="rh"><span>✓</span>run · 4 tools · 3 turns · qwen2.5-coder</div><div class="rb">
-      ${RUN.tools.map(t=>`<div class="tstep"><div class="sh"><span class="dot"></span><span class="nm">mcp__pleiades__${t[1]}</span><span class="st">ok · ${t[2]}s</span></div></div>`).join('')}</div>`;
-    s.append(b);
-    const a=document.createElement('div');a.className='tmsg runmsg';a.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">a</span>alice</div>'+RUN.out[0][1];s.append(a);
-  } else if(mode==='pipeline'){
-    const w=document.createElement('div');w.className='pipewrap';
-    w.innerHTML='<div class="pflow" id="pflow"></div><div class="pdetail" id="pdetail"><div style="color:var(--muted);font-size:12px">Building the run… click any node to inspect its args, output, and timing.</div></div>';
-    s.append(w);
-    const flow=w.querySelector('#pflow');let delay=200;
-    PIPE.forEach((n,i)=>{
-      const seg=document.createElement('div');seg.className='pseg';
-      if(i>0){const ar=document.createElement('div');ar.className='parrow';seg.append(ar);const d=delay;setTimeout(()=>ar.classList.add('in'),d);delay+=120;}
-      const nd=document.createElement('div');nd.className='pnode2'+(n.kind==='tool'?' tool':'');
-      nd.innerHTML=(n.kind==='tool'?'<span class="dot"></span>':'<div class="k">'+n.kind+'</div>')+n.label;
-      nd.onclick=()=>{document.querySelectorAll('.pnode2').forEach(x=>x.classList.remove('sel'));nd.classList.add('sel');showPDetail(n)};
-      seg.append(nd);flow.append(seg);const d2=delay;setTimeout(()=>nd.classList.add('in'),d2);delay+=300;
-    });
-  } else { /* MIND */
-    const SC=86; // px per second
-    const W=860;
-    const lane=(tag)=>`<div class="lane"><span class="tag">${tag}</span></div>`;
-    const m=document.createElement('div');m.className='mind';
-    m.innerHTML=`<div class="legend"><span><i style="background:var(--a1)"></i>thought</span><span><i style="background:var(--a2)"></i>tool</span><span><i style="background:var(--good)"></i>output</span><span style="margin-left:auto;color:var(--faint)">time →</span></div>
-      <div class="lanes"><div class="lanewrap" id="lw" style="width:${W}px">
-        <svg id="threads" width="${W}" height="240"></svg>
-        ${lane('Thought')}${lane('Tools')}${lane('Output')}
-        <div class="playhead" id="ph"></div>
-      </div></div>
-      <div class="mindbar"><button class="btn sm pl" onclick="playMind()">▶ replay</button><span style="font-size:11px;color:var(--muted)">watch thought, tool, and output unfold on one timeline — threads show what caused what</span></div>`;
-    s.append(m);
-    const lw=document.getElementById('lw');
-    const place=(b,laneIdx)=>{b.style.left=(70+b.dataset.t*SC)+'px';b.style.top=(24+laneIdx*74)+'px';};
-    RUN.think.forEach((t,i)=>{const b=document.createElement('div');b.className='beat th';b.id='th'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">${t[1]}</div>${t[2]}`;lw.append(b);place(b,0)});
-    RUN.tools.forEach((t,i)=>{const b=document.createElement('div');b.className='beat to';b.id='to'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">tool · ${t[2]}s</div>${t[1]}`;lw.append(b);place(b,1)});
-    RUN.out.forEach((t,i)=>{const b=document.createElement('div');b.className='beat ou';b.id='ou'+i;b.dataset.t=t[0];b.innerHTML=`<div class="l">output</div>${t[1]}`;lw.append(b);place(b,2)});
-    drawThreads(SC);playMind();
-  }
-  s.scrollTop=s.scrollHeight;
+  [['&#x2709;','Email · IMAP/SMTP','per-character inbox + send'],
+   ['◈','Discord','host a character as a bot'],
+   ['◐','Camoufox browser','headed, anti-fingerprint browsing']
+  ].forEach(([ic,nm,ds])=>{
+    const e=document.createElement('div');e.className='conn';
+    e.innerHTML='<div class="ci">'+ic+'</div><div class="info"><div class="nm">'+nm+'</div><div class="ds">'+ds+'</div></div>'+
+      '<span class="tagp tp-idle">per-character</span>'+
+      '<div class="acts"><button class="btn sm" onclick="go(\'characters\')">&#x2192; Characters</button></div>';
+    box.append(e);
+  });
+  (()=>{const e=document.createElement('div');e.className='conn';
+    e.innerHTML='<div class="ci">&#x2315;</div><div class="info"><div class="nm">SearXNG</div><div class="ds">local web search</div></div>'+
+      '<span class="tagp '+(sx?'tp-run':'tp-warn')+'">'+(sx?'running':'stopped')+'</span><div class="acts"></div>';
+    const b=document.createElement('button');b.className='btn sm';b.textContent=sx?'Stop':'Start';
+    b.onclick=()=>searxctl(sx?'down':'up',b);e.querySelector('.acts').append(b);box.append(e);
+  })();
+  (()=>{const e=document.createElement('div');e.className='conn';
+    e.innerHTML='<div class="ci">&#x2736;</div><div class="info"><div class="nm">Anamnesis</div><div class="ds">canonical memory proxy · '+(an?':9000':'down')+'</div></div>'+
+      '<span class="tagp '+(an?'tp-run':'tp-warn')+'">'+(an?'running':'stopped')+'</span><div class="acts"></div>';
+    const b=document.createElement('button');b.className='btn sm';b.textContent=an?'Stop':'Start';
+    b.onclick=()=>anamctl(an?'stop':'start',b);e.querySelector('.acts').append(b);box.append(e);
+  })();
 }
-function drawThreads(SC){const svg=document.getElementById('threads');if(!svg)return;
-  const ctr=(id,lane)=>{const e=document.getElementById(id);return{x:70+(+e.dataset.t)*SC+20,y:24+lane*74+20}};
-  svg.innerHTML=RUN.threads.map(([ti,toi])=>{const a=ctr('th'+ti,0),b=ctr('to'+toi,1);
-    return `<path d="M${a.x} ${a.y+18} C ${a.x} ${a.y+50}, ${b.x} ${b.y-30}, ${b.x} ${b.y-12}" stroke="var(--a1)" fill="none" opacity="0.4" stroke-width="1.4"/>`}).join('')
-    + RUN.tools.map((t,i)=>{const a=ctr('to'+i,1),b=ctr('ou0',2);return i===RUN.tools.length-1?`<path d="M${a.x} ${a.y+18} C ${a.x} ${a.y+50}, ${b.x} ${b.y-30}, ${b.x} ${b.y-12}" stroke="var(--good)" fill="none" opacity="0.4" stroke-width="1.4"/>`:''}).join('');}
-let mt=null;
-function playMind(){const ph=document.getElementById('ph');if(!ph)return;const SC=86,W=860,DUR=6.6;
-  document.querySelectorAll('.beat').forEach(b=>b.classList.remove('lit'));
-  let start=null;cancelAnimationFrame(mt);
-  function step(ts){if(!start)start=ts;const el=(ts-start)/1000*1.2;const x=70+el*SC;ph.style.left=Math.min(x,W-4)+'px';
-    document.querySelectorAll('.beat').forEach(b=>{if(+b.dataset.t<=el)b.classList.add('lit')});
-    if(el<DUR+0.6)mt=requestAnimationFrame(step);}
-  mt=requestAnimationFrame(step);}
+async function searxctl(dir,label){try{const bs=document.querySelectorAll('#connectors .acts button');bs.forEach(b=>{if(b.textContent===label)b.textContent='…'});
+  await fetch('/api/search/'+dir,{method:'POST'});setTimeout(loadConn,2000)}catch(e){loadConn()}}
 
+/* TALK */
+let curChatId=null;
+function escapeHtml(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+async function loadTalk(){
+  try{const d=await api('/api/profiles');
+    const sel=document.getElementById('talk-char');if(!sel)return;
+    const cur=sel.value;
+    sel.innerHTML=(d.profiles||[]).map(pf=>'<option value="'+pf.name+'">'+pf.name+' · '+(pf.model||'default engine')+'</option>').join('')||'<option value="">no characters</option>';
+    if(cur)sel.value=cur;
+    const ttl=document.getElementById('talk-ttl');if(ttl)ttl.textContent=sel.value||'—';
+    await loadSessions();refreshTalkRail();
+    const cs=document.getElementById('talk-char');if(cs)cs.disabled=!!curChatId;
+  }catch(e){}
+}
+async function charChanged(){
+  curChatId=null;
+  const s=document.getElementById('talkscroll');if(s)s.innerHTML='';
+  const cs=document.getElementById('talk-char');if(cs){cs.disabled=false;cs.title='';}
+  const sess=document.getElementById('talk-sess');if(sess)sess.innerHTML='<option value="">— new chat —</option>';
+  refreshTalkRail();loadSessions();
+}
+async function loadSessions(){
+  const sel=document.getElementById('talk-char');const char=sel&&sel.value;
+  const sess=document.getElementById('talk-sess');if(!char||!sess)return;
+  try{const d=await api('/api/chats');
+    const mine=(d.chats||[]).filter(c=>c.character===char);
+    sess.innerHTML='<option value="">— new chat —</option>'+mine.map(c=>'<option value="'+c.id+'">'+escapeHtml((c.title||'(new chat)').slice(0,45))+'</option>').join('');
+    if(curChatId)sess.value=curChatId;
+  }catch(e){}
+}
+async function newTalkSession(){
+  curChatId=null;const s=document.getElementById('talkscroll');if(s)s.innerHTML='';
+  const sess=document.getElementById('talk-sess');if(sess)sess.value='';
+  const cs=document.getElementById('talk-char');if(cs){cs.disabled=false;cs.title='';}
+}
+async function switchSession(){
+  const sess=document.getElementById('talk-sess');const id=sess&&sess.value;
+  const s=document.getElementById('talkscroll');if(s)s.innerHTML='';curChatId=id||null;
+}
+async function memInspect(){}
+async function refreshTalkRail(){
+  const sel=document.getElementById('talk-char');const char=sel&&sel.value;
+  const ttl=document.getElementById('talk-ttl');if(ttl)ttl.textContent=char||'—';
+  if(!char)return;
+  try{const[pf,st]=await Promise.all([api('/api/profiles/'+encodeURIComponent(char)),api('/api/status')]);
+    const brain=pf.model||'default engine';const running=(st.running_models||[]).find(m=>m.name===pf.model);const cloud=(pf.model||'').includes(':');
+    setHTML('rail-brain','<div class="kv"><span class="k">character</span><span class="v">'+char+'</span></div>'+
+      '<div class="kv"><span class="k">brain</span><span class="v">'+(cloud?brain.split(':')[0]:brain)+'</span></div>'+
+      (cloud?'<div class="kv"><span class="k">model</span><span class="v" style="font-size:11px">'+brain.split(':').slice(1).join(':')+'</span></div>':
+        (running?'<div class="kv"><span class="k">port</span><span class="v" style="color:var(--a2)">:'+running.port+'</span></div>':
+          '<div class="kv"><span class="k">status</span><span class="v">on-demand</span></div>')));
+  }catch(e){}
+  try{const a=await api('/api/profiles/'+encodeURIComponent(char)+'/anamnesis');const s=a.stats||{};
+    setHTML('rail-mem','<div class="kv"><span class="k">status</span><span class="v">'+(a.char_status||'?')+'</span></div>'+
+      '<div class="kv"><span class="k">turns</span><span class="v">'+(s.turns||0).toLocaleString()+'</span></div>'+
+      '<div class="kv"><span class="k">engrams</span><span class="v">'+(s.engrams||0)+'</span></div>');
+  }catch(e){setHTML('rail-mem','<div class="kv"><span class="k">memory</span><span class="v">unavailable</span></div>')}
+}
+function buildToolNodes(tools){
+  const nodes=document.createElement('div');nodes.className='pipe-nodes';
+  tools.forEach((t,i)=>{
+    if(i>0){const ar=document.createElement('div');ar.className='pipe-arrow';ar.textContent='→';nodes.append(ar);}
+    const nd=document.createElement('div');nd.className='pipe-node'+(t.ok===false?' err':t.ok===true?' ok':'');nd.textContent=t.name||'tool';nodes.append(nd);
+  });return nodes;
+}
+function showNodeDetail(det,t){
+  det.style.display='';
+  det.innerHTML='<div class="kv"><span class="k">tool</span><span class="v" style="color:var(--a2)">'+escapeHtml(t.name||'')+'</span></div>'+
+    (t.args?'<div class="kv"><span class="k">args</span><span class="v">'+escapeHtml(String(t.args).slice(0,400))+'</span></div>':'')+
+    (t.output!=null?'<div class="kv"><span class="k">output</span><span class="v">'+escapeHtml(String(t.output).slice(0,400))+'</span></div>':'')+
+    '<div class="kv"><span class="k">status</span><span class="v" style="color:'+(t.ok===false?'var(--bad)':'var(--good)')+'">'+
+    (t.ok===false?'error':t.ok===true?'ok':'—')+'</span></div>';
+}
+async function talkSend(){
+  const i=document.getElementById('talkin');const text=(i.value||'').trim();if(!text)return;
+  const sel=document.getElementById('talk-char');const character=sel&&sel.value;
+  const s=document.getElementById('talkscroll');
+  if(!character){const w=document.createElement('div');w.className='tmsg';
+    w.innerHTML='<div style="color:var(--bad);font-size:13px;padding:8px 0">No character selected — create one first.</div>';
+    s.append(w);return;}
+  i.value='';
+  const u=document.createElement('div');u.className='tmsg u';
+  u.innerHTML='<div class="bub">'+escapeHtml(text)+'</div>';s.append(u);
+  if(!curChatId){
+    try{const r=await fetch('/api/chats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character})});
+      const c=await r.json();curChatId=c.id||c.chat_id;
+      const cs=document.getElementById('talk-char');if(cs){cs.disabled=true;cs.title='Start a new session (→ + New) to switch characters';}
+      setTimeout(()=>{loadSessions();const ss=document.getElementById('talk-sess');if(ss&&curChatId)ss.value=curChatId;},400);
+    }catch(e){const w=document.createElement('div');w.className='tmsg';
+      w.innerHTML='<div style="color:var(--bad)">Failed to create session: '+escapeHtml(e.message)+'</div>';s.append(w);return;}
+  }
+  const wrap=document.createElement('div');wrap.className='tmsg';
+  wrap.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">'+
+    escapeHtml(character[0].toLowerCase())+'</span>'+escapeHtml(character)+'</div>';
+  const thinkEl=document.createElement('details');thinkEl.className='pipe-think';thinkEl.style.display='none';
+  const thinkSum=document.createElement('summary');thinkSum.textContent='💭 thinking…';thinkEl.append(thinkSum);
+  const thinkBody=document.createElement('div');thinkBody.className='pipe-think-body';thinkEl.append(thinkBody);
+  const nodesEl=document.createElement('div');nodesEl.className='pipe-nodes';nodesEl.style.display='none';
+  const detailEl=document.createElement('div');detailEl.className='pipe-detail';detailEl.style.display='none';
+  const textEl=document.createElement('div');textEl.className='pipe-text';
+  textEl.innerHTML='<span style="color:var(--faint)">⏳ generating…</span>';
+  wrap.append(thinkEl,nodesEl,detailEl,textEl);s.append(wrap);s.scrollTop=s.scrollHeight;
+  let acc='',thinkAcc='',hadError=false,started=false;const liveTools=[];let liveTool=null;
+  try{
+    const res=await fetch('/api/chats/'+encodeURIComponent(curChatId)+'/message',
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+    if(!res.body)throw new Error('no stream');
+    const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
+    while(true){
+      const{value,done}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});let nl;
+      while((nl=buf.indexOf('\n'))>=0){
+        const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;
+        let ev;try{ev=JSON.parse(line)}catch(e){continue}
+        if(ev.type==='reasoning'){
+          if(!started){started=true;textEl.textContent='';}
+          thinkEl.style.display='';thinkAcc+=ev.text||'';thinkBody.textContent=thinkAcc.slice(-1200);
+        }else if(ev.type==='token'||ev.type==='chunk'){
+          if(!started){started=true;textEl.textContent='';}acc+=ev.text||'';textEl.textContent=acc;
+        }else if(ev.type==='tool_call'){
+          if(!started){started=true;textEl.textContent='';}nodesEl.style.display='';
+          if(nodesEl.children.length){const ar=document.createElement('div');ar.className='pipe-arrow';ar.textContent='→';nodesEl.append(ar);}
+          const nd=document.createElement('div');nd.className='pipe-node running';nd.textContent=ev.name||'tool';
+          const tool={name:ev.name||'tool',args:typeof ev.args==='object'?JSON.stringify(ev.args,null,2):(ev.args||''),output:null,ok:null,nodeEl:nd};
+          nd.onclick=()=>{document.querySelectorAll('.pipe-node').forEach(n=>n.classList.remove('sel'));nd.classList.add('sel');showNodeDetail(detailEl,tool);};
+          nodesEl.append(nd);liveTools.push(tool);liveTool=tool;
+        }else if(ev.type==='tool_result'){
+          if(liveTool){liveTool.output=ev.output||'';liveTool.ok=ev.ok!==false;
+            const nd=liveTool.nodeEl;nd.classList.remove('running');nd.classList.add(ev.ok===false?'err':'ok');liveTool=null;}
+        }else if(ev.type==='done'){
+          const sv=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
+          sv('r-tok',(ev.tokens||0).toLocaleString());sv('r-tools',liveTools.length);
+          const rt=document.getElementById('r-turns');if(rt)rt.textContent=(parseInt(rt.textContent)||0)+1;
+          setTimeout(loadSessions,600);
+        }else if(ev.type==='error'){
+          hadError=true;
+          textEl.innerHTML='<span style="color:var(--bad)">⚠ '+escapeHtml(ev.error||'error')+
+            ' <span style="color:var(--muted);font-size:11px">(check a model is assigned to this character)</span></span>';
+        }
+        s.scrollTop=s.scrollHeight;
+      }
+    }
+    if(!acc&&!liveTools.length&&!hadError)
+      textEl.innerHTML='<span style="color:var(--muted)">(no response — verify a model is assigned to this character)</span>';
+  }catch(e){if(!hadError)textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';}
+  if(!thinkAcc)thinkEl.style.display='none';
+  else thinkSum.textContent='💭 thinking ('+Math.round(thinkAcc.length/4)+' tok)';
+}
 /* sparkline */
 function spark(){const s=document.getElementById('spark');if(!s)return;s.innerHTML='';for(let i=0;i<28;i++){const h=30+Math.random()*60;s.append(Object.assign(document.createElement('i'),{style:`height:${h}%`}))}}
 
-const PIPE=[
- {label:'Task',kind:'input',detail:{Input:'check the inbox for a verification code and store it in the vault'}},
- {label:'Plan',kind:'plan',detail:{Steps:'search → open → extract → vault_set',Turns:'3'}},
- {label:'search_inbox',kind:'tool',detail:{Args:'query="verification code"',Output:'3 results',Duration:'0.4s',Status:'ok'}},
- {label:'read_email',kind:'tool',detail:{Args:'id=msg_88c2',Output:'From: Stripe · "Your code is 481920"',Duration:'0.6s',Status:'ok'}},
- {label:'subagent',kind:'tool',detail:{Args:'task="validate 6-digit"',Output:'format valid',Duration:'0.3s',Status:'ok'}},
- {label:'vault_set',kind:'tool',detail:{Args:'key="stripe_verify"',Output:'value •••••• → stored',Duration:'0.3s',Status:'ok'}},
- {label:'Result',kind:'output',detail:{Output:'Saved stripe_verify to alice’s vault.'}}];
-function showPDetail(n){const d=document.getElementById('pdetail');if(!d)return;
-  d.innerHTML='<h4>'+(n.kind==='tool'?'<span style="color:var(--a2);font-family:var(--mono)">mcp__pleiades__'+n.label+'</span>':n.label)+(n.detail.Status?'<span class="tagp tp-run" style="margin-left:auto">'+n.detail.Status+'</span>':'')+'</h4>'+
-    Object.entries(n.detail).filter(([k])=>k!=='Status').map(([k,v])=>'<div class="kv"><span class="k">'+k+'</span><span class="v" style="max-width:68%;text-align:right;word-break:break-word">'+v+'</span></div>').join('');}
-function configChar(name){const h=document.getElementById('cfg-h');if(h){h.innerHTML=name+' · configuration <span class="t">editing</span>';h.scrollIntoView({behavior:'smooth',block:'center'});}}
-function setPolicy(p){document.getElementById('ep-ask').classList.toggle('on',p==='ask');document.getElementById('ep-act').classList.toggle('on',p==='act');}
-loadChars();loadCat();loadConn();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();
+
+/* configChar: defined live above */
+async function setPolicy(p){document.getElementById('ep-ask').classList.toggle('on',p==='ask');document.getElementById('ep-act').classList.toggle('on',p==='act');
+  try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_policy:p==='act'?'allow':'ask'})})}catch(e){}}
+async function loadPolicy(){try{const d=await api('/api/settings');const p=(d.settings&&d.settings.exec_policy)||'ask';const act=(p==='allow'||p==='act');
+  document.getElementById('ep-ask').classList.toggle('on',!act);document.getElementById('ep-act').classList.toggle('on',act)}catch(e){}}
+async function loadClaude(){try{const d=await api('/api/claude/status');
+  document.getElementById('cl-status').innerHTML=d.connected?('<span style="color:var(--good)">connected · '+(d.subscription||'subscription')+'</span>'):'<span style="color:var(--bad)">not connected — run claude login</span>';
+  document.getElementById('cl-sdk').textContent=d.sdk?('v'+d.sdk):'not installed';
+  const sel=document.getElementById('cl-model');if(sel)sel.innerHTML=(d.models||[]).map(m=>'<option'+(m===d.model?' selected':'')+'>'+m+'</option>').join('');
+  const hdr=document.getElementById('cl-hdr-model');if(hdr)hdr.textContent=d.model||'';
+  const note=document.getElementById('cl-note');if(note)note.textContent=(d.note||'')+(d.api_key_set?'  ⚠ ANTHROPIC_API_KEY is set — unset it to bill your subscription, not the API.':'');
+}catch(e){}}
+async function claudeSetModel(){const m=document.getElementById('cl-model').value;const hdr=document.getElementById('cl-hdr-model');if(hdr)hdr.textContent=m;
+  try{await fetch('/api/claude/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m})})}catch(e){}}
+async function claudeSend(){const i=document.getElementById('cl-input');const t=(i.value||'').trim();if(!t)return;i.value='';
+  const body=document.getElementById('clbody');
+  const u=document.createElement('div');u.className='clmsg u';u.textContent=t;body.append(u);
+  const a=document.createElement('div');a.className='clmsg a';a.innerHTML='<b>Claude</b> ';
+  const pend=document.createElement('span');pend.style.color='var(--muted)';pend.textContent='thinking…';a.append(pend);
+  const think=document.createElement('div');think.style.cssText='color:var(--faint);font-size:11.5px;white-space:pre-wrap;display:none;border-left:2px solid var(--cl);padding-left:8px;margin:4px 0';a.append(think);
+  const txt=document.createElement('span');a.append(txt);
+  body.append(a);body.scrollTop=body.scrollHeight;
+  let acc='',thinkAcc='',started=false;
+  const clear=()=>{if(pend.parentNode)pend.remove()};
+  try{const m=document.getElementById('cl-model').value;
+    const r=await fetch('/api/claude/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,model:m})});
+    if(!r.body)throw new Error('no stream');
+    const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
+    while(true){const {value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
+      let nl;while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;let ev;try{ev=JSON.parse(line)}catch(e){continue}
+        if(ev.type==='reasoning'){clear();think.style.display='';thinkAcc+=ev.text||'';think.textContent='💭 '+thinkAcc.slice(-800)}
+        else if(ev.type==='token'){clear();acc+=ev.text||'';txt.innerHTML=escapeHtml(acc).replace(/\n/g,'<br>')}
+        else if(ev.type==='tool_call'){clear();const st=document.createElement('div');st.style.cssText='font-family:var(--mono);font-size:11px;color:var(--a2);margin:3px 0';st.textContent='→ '+(ev.name||'tool');a.insertBefore(st,txt)}
+        else if(ev.type==='done'){clear();if(ev.turns){const d=document.createElement('div');d.style.cssText='color:var(--faint);font-size:10.5px;margin-top:6px;font-family:var(--mono)';d.textContent=ev.turns+' turns · $'+(ev.cost_usd||0).toFixed(4)+' · '+m;a.append(d)}}
+        else if(ev.type==='error'){clear();txt.innerHTML='<span style="color:var(--bad)">'+escapeHtml(ev.error||'error')+'</span>'}
+        body.scrollTop=body.scrollHeight}
+    }
+    if(!acc&&!thinkAcc&&pend.parentNode){pend.textContent='(no output)'}
+  }catch(e){clear();txt.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>'}
+}
+async function loadSettings(){try{const d=await api('/api/settings');const s=d.settings||{};
+  const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!=null&&v!=='***')e.value=v};
+  set('se-model_path',s.model_path);set('se-n_ctx',s.n_ctx);set('se-n_gpu_layers',s.n_gpu_layers);
+  set('se-flash_attn',s.flash_attn||'auto');set('se-kv_cache_type',s.kv_cache_type||'q8_0');
+  set('se-n_batch',s.n_batch||'');set('se-mlock',s.mlock?'true':'false');set('se-draft_model_path',s.draft_model_path||'');
+  set('se-exec_policy',(s.exec_policy==='allow'?'allow':s.exec_policy)||'ask');set('se-eval_interval',s.eval_interval);
+  set('se-anamnesis_control_url',s.anamnesis_control_url);set('se-searxng_url',s.searxng_url);
+  renderCpKeyList(s.openrouter_api_keys||[],s.ollama_cloud_api_keys||[]);
+}catch(e){}}
+const _v=id=>{const e=document.getElementById(id);return e?e.value:''};
+async function _savePatch(body,msgId,okText){
+  const msg=document.getElementById(msgId);if(msg)msg.textContent='saving…';
+  Object.keys(body).forEach(k=>{if(body[k]==='')delete body[k]});
+  try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(msg){msg.textContent=okText||'✓ saved';setTimeout(()=>{msg.textContent=''},4000)}}
+  catch(e){if(msg)msg.textContent='failed: '+e.message}}
+async function saveAgentLoop(){
+  const b={exec_policy:_v('se-exec_policy')};
+  const n=parseInt(_v('se-eval_interval'));if(!isNaN(n))b.eval_interval=n;
+  await _savePatch(b,'se-loop-msg','✓ saved');}
+async function saveServices(){
+  await _savePatch({anamnesis_control_url:_v('se-anamnesis_control_url'),searxng_url:_v('se-searxng_url')},'se-svc-msg','✓ saved');}
+function renderCpKeyList(orKeys,olKeys){
+  const box=document.getElementById('cp-key-list');if(!box)return;
+  const section=(label,provider,keys)=>{
+    if(!keys||!keys.length){
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0"><span style="font-size:12px;color:var(--muted);width:90px;flex-shrink:0">'+label+'</span><span style="color:var(--muted);font-size:12.5px">not set</span></div>';
+    }
+    return keys.map((val,i)=>
+      '<div style="display:flex;align-items:center;gap:8px;padding:5px 0"><span style="font-size:12px;color:var(--muted);width:90px;flex-shrink:0">'+(i===0?label:'')+'</span><span style="font-family:var(--mono);font-size:12.5px">'+escapeHtml(val)+'</span><button class="btn sm x" onclick="deleteCpKey(\''+provider+'\','+i+')" style="margin-left:auto">× Remove</button></div>'
+    ).join('');
+  };
+  box.innerHTML=section('OpenRouter','openrouter',orKeys)+section('Ollama Cloud','ollama-cloud',olKeys);
+}
+function showCpAdd(){const r=document.getElementById('cp-add-row');if(r)r.style.display='flex';const k=document.getElementById('cp-new-key');if(k){k.value='';k.focus();}}
+function cancelCpAdd(){const r=document.getElementById('cp-add-row');if(r)r.style.display='none';const k=document.getElementById('cp-new-key');if(k)k.value='';}
+async function addCpKey(){
+  const prov=document.getElementById('cp-provider').value;
+  const provider=prov==='or'?'openrouter':'ollama-cloud';
+  const key=(document.getElementById('cp-new-key').value||'').trim();
+  const msg=document.getElementById('cp-msg');if(!key){if(msg)msg.textContent='enter a key first';return;}
+  const btn=document.getElementById('cp-add-confirm-btn');if(btn){btn.disabled=true;btn.textContent='…';}
+  if(msg)msg.textContent='';
+  try{
+    if(provider==='openrouter'){
+      const r=await fetch('https://openrouter.ai/api/v1/auth/key',{headers:{Authorization:'Bearer '+key}});
+      if(!r.ok){if(msg)msg.textContent='invalid key ('+r.status+')';if(btn){btn.disabled=false;btn.textContent='Add';}return;}
+    }
+    const res=await fetch('/api/settings/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider,key})});
+    if(!res.ok){const j=await res.json().catch(()=>({}));if(msg)msg.textContent=j.detail||('failed ('+res.status+')');if(btn){btn.disabled=false;btn.textContent='Add';}return;}
+    if(msg)msg.textContent='✓ key saved';
+    cancelCpAdd();loadSettings();
+  }catch(e){if(msg)msg.textContent='failed: '+e.message;}
+  if(btn){btn.disabled=false;btn.textContent='Add';}
+}
+async function deleteCpKey(provider,index){
+  if(!confirm('Remove this '+(provider==='openrouter'?'OpenRouter':'Ollama Cloud')+' key?'))return;
+  const msg=document.getElementById('cp-msg');if(msg)msg.textContent='removing…';
+  try{
+    const res=await fetch('/api/settings/keys?provider='+encodeURIComponent(provider)+'&index='+index,{method:'DELETE'});
+    if(!res.ok){const j=await res.json().catch(()=>({}));if(msg)msg.textContent=j.detail||('failed ('+res.status+')');return;}
+    if(msg){msg.textContent='✓ removed';setTimeout(()=>{msg.textContent=''},4000);}
+  }catch(e){if(msg)msg.textContent='failed: '+e.message;}
+  loadSettings();
+}
+let foundrySource='gguf';
+function setSource(src){foundrySource=src;
+  const order=['gguf','openrouter','ollama'];
+  document.querySelectorAll('#src-seg button').forEach((b,i)=>b.classList.toggle('on',order[i]===src));
+  const cw=document.getElementById('src-char-wrap');if(cw)cw.style.display=src==='gguf'?'none':'inline';
+  const i=document.getElementById('hfq');if(i)i.placeholder=src==='gguf'?'Search Hugging Face…':(src==='openrouter'?'Search OpenRouter models…':'Search Ollama Cloud models…');
+  if(src!=='gguf')loadFoundryChars();
+  foundrySearch();
+}
+async function loadFoundryChars(){try{const d=await api('/api/profiles');const sel=document.getElementById('src-char');if(!sel)return;const cur=sel.value;sel.innerHTML=(d.profiles||[]).map(p=>'<option>'+p.name+'</option>').join('')||'<option value="">no characters</option>';if(cur)sel.value=cur}catch(e){}}
+function foundrySearch(){return foundrySource==='gguf'?hfSearch():cloudSearch();}
+async function cloudSearch(){
+  const q=document.getElementById('hfq').value.trim();const box=document.getElementById('results');const pane=document.getElementById('fitpane');
+  pane.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">Cloud models use your '+foundrySource+' key (Settings) and route through Anamnesis for memory. Pick one to assign to a character.</div>';
+  box.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">Searching '+foundrySource+'…</div>';
+  try{const d=await api('/api/models/cloud-search?source='+foundrySource+'&q='+encodeURIComponent(q)+'&limit=40');
+    if(d.error){box.innerHTML='<div class="card" style="color:var(--warn);font-size:13px">'+escapeHtml(d.error)+'</div>';return}
+    if(!d.results||!d.results.length){box.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">No models found.</div>';return}
+    box.innerHTML='';
+    const __sorted=(d.results||[]).slice().sort((a,b)=>{
+    const fa=(a.is_free||a.prompt_price==='0'||a.prompt_price===0);
+    const fb=(b.is_free||b.prompt_price==='0'||b.prompt_price===0);
+    return (fa?0:1)-(fb?0:1);
+  });
+  __sorted.forEach(r=>{const e=document.createElement('div');e.className='result';
+      const bits=[];if(r.context)bits.push(Number(r.context).toLocaleString()+' ctx');if(r.prompt_price!=null)bits.push('$'+r.prompt_price+'/tok in');
+      const free=(r.is_free||r.prompt_price==='0'||r.prompt_price===0);
+    e.innerHTML='<div><div class="ttl">'+escapeHtml(r.name||r.id)+
+      (free?' <span class="tagp tp-best" style="font-size:10px;padding:2px 7px">FREE</span>':'')+
+      '</div><div class="meta">'+escapeHtml(r.id)+(bits.length&&!free?' · '+bits.join(' · '):'')+
+      '</div></div><div class="right"><button class="btn sm'+(free?' pri':'')+'">'+
+      (free?'★ Free →':'Use →')+'</button></div>';
+      e.querySelector('button').onclick=()=>assignCloud(r.id);
+      box.append(e)});
+  }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+escapeHtml(e.message)+'</div>'}
+}
+async function assignCloud(modelId){const sel=document.getElementById('src-char');const char=sel&&sel.value;
+  if(!char){document.getElementById('fitpane').innerHTML='<div class="autofit"><div style="color:var(--warn)">Create a character first (Characters tab), then assign.</div></div>';return}
+  const src=foundrySource==='openrouter'?'openrouter':'ollama';
+  try{await fetch('/api/profiles/'+encodeURIComponent(char)+'/cloud-model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:src,model:modelId})});
+    document.getElementById('fitpane').innerHTML='<div class="autofit"><div class="hd"><span class="tagp tp-best">ASSIGNED</span><span class="big">'+escapeHtml(char)+'</span></div><div style="font-size:12.5px;color:var(--muted);margin-top:6px"><code>'+escapeHtml(modelId)+'</code> via '+src+', routed through Anamnesis. Talk to '+escapeHtml(char)+' to use it.</div></div>';
+  }catch(e){document.getElementById('fitpane').innerHTML='<div class="autofit"><div style="color:var(--bad)">assign failed: '+escapeHtml(e.message)+'</div></div>'}
+}
+
+function revealTog(id,btn){const e=document.getElementById(id);if(!e)return;e.type=e.type==='password'?'text':'password';if(btn)btn.textContent=e.type==='password'?'👁':'🙈';}
+function newChar(){
+  showModal('<div class="mh">+ New character<span class="x" onclick="closeModal()">✕</span></div>'+
+    '<div class="mbody">'+
+    '<div class="field"><label>Name</label><input id="nc-name" placeholder="e.g. Alice" style="width:100%"/></div>'+
+    '<div class="field"><label>Email (optional)</label><input id="nc-email" placeholder="alice@example.com" style="width:100%"/></div>'+
+    '<button class="btn pri" style="width:100%;margin-top:8px" onclick="doNewChar()">Create character →</button></div>');
+  setTimeout(()=>{const e=document.getElementById('nc-name');if(e)e.focus();},50);
+}
+async function doNewChar(){
+  const name=(val('nc-name')||'').trim();if(!name){alert('Name is required');return;}
+  try{await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email_address:val('nc-email')||''})});
+    closeModal();curChar=name;loadChars();}catch(e){alert('Failed: '+e.message);}
+}
+async function applyHwPlan(btn){
+  if(btn){btn.disabled=true;btn.textContent='⚙ detecting…';}const msg=document.getElementById('hw-msg');if(msg)msg.textContent='';
+  try{const hw=await api('/api/hardware');const g=hw.gpus&&hw.gpus[0];const vram=g?g.vram_total:0;
+    const n_ctx=vram>22e9?8192:vram>10e9?4096:2048;
+    setVal('se-n_gpu_layers','-1');setVal('se-n_ctx',String(n_ctx));
+    setVal('se-kv_cache_type','q8_0');setVal('se-flash_attn','on');
+    if(msg)msg.textContent='saving…';
+    await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({n_gpu_layers:-1,n_ctx,kv_cache_type:'q8_0',flash_attn:'on'})});
+    if(msg)msg.textContent='✓ plan applied & saved — restart engine to take effect';
+  }catch(e){if(msg)msg.textContent='detection failed: '+(e.message||e);}
+  if(btn){btn.disabled=false;btn.textContent='⚙ Re-run hardware plan';}
+}
+async function deleteModel(name){
+  if(!confirm('Remove "'+name+'" from library?\n(GGUF file on disk is NOT deleted.)'))return;
+  try{await fetch('/api/models/'+encodeURIComponent(name),{method:'DELETE'});loadLib();}catch(e){}
+}
+async function searxctl(dir,btn){
+  if(btn){btn.disabled=true;btn.textContent='…';}
+  try{await fetch('/api/search/'+dir,{method:'POST'});}catch(e){}
+  setTimeout(()=>{if(btn)btn.disabled=false;loadConn();},2500);
+}
+async function anamctl(action,btn){
+  if(btn){btn.disabled=true;btn.textContent='…';}
+  try{await fetch('/api/anamnesis/'+action,{method:'POST'});}catch(e){}
+  setTimeout(()=>{if(btn)btn.disabled=false;loadConn();},2500);
+}
+async function loadRules(){
+  const box=document.getElementById('rules-list');if(!box)return;
+  try{const d=await api('/api/rules');
+    if(!d.rules||!d.rules.length){box.innerHTML='<div style="color:var(--muted);font-size:12.5px">No rules yet.</div>';return;}
+    box.innerHTML='';
+    d.rules.forEach(r=>{const row=document.createElement('div');row.className='rule-row';
+      row.innerHTML='<label style="display:flex;gap:6px;flex:1;cursor:pointer;align-items:start">'+
+        '<input type="checkbox"'+(r.enabled?' checked':'')+' onchange="toggleRule(\''+r.id+'\',this.checked)" style="margin-top:3px"/>'+
+        '<span class="'+(r.pending?'rule-pending':'')+'">'+escapeHtml(r.text)+
+        (r.pending?' <span class="tagp" style="background:var(--warn);color:#000;font-size:10px;padding:1px 6px">pending</span>':'')+
+        '</span></label><div style="display:flex;gap:6px;flex-shrink:0">'+
+        (r.pending?'<button class="btn sm" style="color:var(--good)" onclick="approveRule(\''+r.id+'\')">✓</button>':'')+
+        '<button class="btn sm" style="color:var(--bad)" onclick="deleteRule(\''+r.id+'\')">✕</button></div>';
+      box.append(row);});
+  }catch(e){box.innerHTML='<div style="color:var(--bad)">'+escapeHtml(e.message||'error')+'</div>';}
+}
+async function addRule(){
+  const inp=document.getElementById('rule-new');const text=(inp?inp.value:'').trim();if(!text)return;
+  try{await fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});if(inp)inp.value='';loadRules();}catch(e){}
+}
+async function deleteRule(id){try{await fetch('/api/rules/'+id,{method:'DELETE'});loadRules();}catch(e){}}
+async function approveRule(id){
+  try{await fetch('/api/rules/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pending:false,enabled:true})});loadRules();}catch(e){}
+}
+async function toggleRule(id,enabled){
+  try{await fetch('/api/rules/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});}catch(e){}
+}
+async function charPfpChanged(input){
+  const file=input.files[0];if(!file||!curChar)return;
+  const reader=new FileReader();
+  reader.onload=async function(){
+    try{await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/avatar',
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:reader.result})});
+      configChar(curChar);loadChars();}catch(e){alert('Upload failed: '+e.message);}};
+  reader.readAsDataURL(file);}
+async function deleteCharPfp(){if(!curChar)return;
+  try{await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/avatar',{method:'DELETE'});
+    configChar(curChar);loadChars();}catch(e){}}
+loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);loadClaude();hfSearch();loadLib();
 </script>
 </body>
 </html>

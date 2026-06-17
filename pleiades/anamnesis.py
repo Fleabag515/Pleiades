@@ -152,13 +152,12 @@ class Anamnesis:
     def set_upstream(self, name: str, upstream: dict) -> bool:
         """Point a character's upstream at `upstream` (e.g. {"baseUrl": ...}).
 
-        The daemon's control API has no PATCH/edit route (as of 0.6.x), so a
-        running proxy keeps whatever upstream it was created with — a character
-        born against Ollama will 404 forever no matter what the client wishes.
-        Strategy: skip if already correct; try PATCH (future daemons); fall
-        back to editing ~/.anamnesis/characters/<name>/config.json directly
-        (the documented layout, CLAUDE.md §2); restart the proxy if it was
-        running so the change actually applies. Returns True if restarted.
+        Anamnesis 0.7+ supports PATCH /characters/:name (updateConfig), so the
+        config is updated via the daemon. Strategy: skip if already correct; try
+        PATCH; fall back to editing ~/.anamnesis/characters/<name>/config.json
+        directly for older daemons (the documented layout, CLAUDE.md §2). A
+        running proxy holds its config in memory, so we restart it afterward so
+        the change actually applies. Returns True if restarted.
         """
         import json
 

@@ -188,6 +188,51 @@ async def run_claude_async(
     return ClaudeResult(answer=answer, turns=turns, cost_usd=cost, usage=usage)
 
 
+async def stream_claude_async(task, cfg, *, tier_name="claude", add_dirs=None, on_event):
+    """Stream a build/debug turn token-by-token via the Agent SDK (subscription auth).
+
+    on_event(kind, payload): kind in {text, reasoning, tool_call, done}.
+    """
+    from claude_agent_sdk import (query, ClaudeAgentOptions,
+                                  ResultMessage, StreamEvent)
+    belt = registry.all()
+    server = build_pleiades_server(belt)
+    tier = cfg.tier(tier_name)
+    model = tier.model if tier.model and tier.model != "local" else None
+    options = ClaudeAgentOptions(
+        mcp_servers={MCP_SERVER: server},
+        system_prompt=_WORK_SYSTEM,
+        cwd=cfg.workspace_root,
+        permission_mode="default",
+        can_use_tool=_make_can_use_tool(cfg, belt, lambda *a: None),
+        max_turns=cfg.max_steps,
+        add_dirs=[str(d) for d in (add_dirs or [])],
+        model=model,
+        include_partial_messages=True,
+    )
+
+    async def _prompt():
+        yield {"type": "user", "message": {"role": "user", "content": task}}
+
+    async for msg in query(prompt=_prompt(), options=options):
+        if isinstance(msg, StreamEvent):
+            ev = msg.event or {}
+            et = ev.get("type")
+            if et == "content_block_delta":
+                d = ev.get("delta", {}) or {}
+                if d.get("type") == "text_delta" and d.get("text"):
+                    on_event("text", d["text"])
+                elif d.get("type") == "thinking_delta" and d.get("thinking"):
+                    on_event("reasoning", d["thinking"])
+            elif et == "content_block_start":
+                cb = ev.get("content_block", {}) or {}
+                if cb.get("type") == "tool_use":
+                    on_event("tool_call", cb.get("name", ""))
+        elif isinstance(msg, ResultMessage):
+            on_event("done", {"turns": getattr(msg, "num_turns", 0),
+                              "cost": getattr(msg, "total_cost_usd", 0.0)})
+
+
 def run_claude(task: str, cfg: Config, **kw) -> ClaudeResult:
     """Synchronous wrapper around `run_claude_async`."""
     return asyncio.run(run_claude_async(task, cfg, **kw))
