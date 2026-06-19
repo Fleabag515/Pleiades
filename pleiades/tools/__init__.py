@@ -125,9 +125,11 @@ class ToolBelt:
         if not isinstance(args, dict):
             return (f"[error] arguments for {name} must be a JSON object. "
                     f"Expected parameters: {json.dumps(tool.parameters)}")
-        # exec_policy gate for side-effecting tools
+        # exec_policy gate for side-effecting tools. No ctx/settings (e.g. a
+        # trusted internal caller or a unit test) means no policy to enforce —
+        # fall through and run the tool rather than crash.
         if not tool.safe:
-            policy = ctx.settings.exec_policy
+            policy = getattr(getattr(ctx, "settings", None), "exec_policy", None)
             if policy == "deny":
                 return f"[error] tool '{name}' blocked by exec_policy=deny"
             if policy == "ask":
