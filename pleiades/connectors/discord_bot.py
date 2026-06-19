@@ -9,16 +9,24 @@ in the Discord Developer Portal.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+import sys
+from pathlib import Path
 from typing import Optional
 
 from ..engine import Engine
 from ..profiles import Profile
 
 
+def _safe_service_name(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name.lower())
+
+
 def _systemctl_env() -> dict:
     # webui/CLI are often started from a process with no session D-Bus —
-    # same fix as _discord_service() in cli.py.
+    # same fix as _discord_service_linux() in cli.py. POSIX-only (os.getuid),
+    # only ever called from the Linux branch below.
     env = dict(os.environ)
     uid = os.getuid()
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
@@ -26,10 +34,81 @@ def _systemctl_env() -> dict:
     return env
 
 
+def _service_state_linux(name: str) -> tuple[str, str, "int | None", "str | None"]:
+    unit = f"pleiades-discord-{_safe_service_name(name)}.service"
+    state, substate, restarts, last_log = "unknown", "unknown", None, None
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "show", unit,
+             "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts"],
+            capture_output=True, text=True, timeout=5, env=_systemctl_env())
+        vals = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
+        state = vals.get("ActiveState", "unknown")
+        substate = vals.get("SubState", "unknown")
+        restarts = int(vals["NRestarts"]) if "NRestarts" in vals else None
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            ["journalctl", "--user", "-u", unit, "-n", "1", "--no-pager", "-o", "cat"],
+            capture_output=True, text=True, timeout=5, env=_systemctl_env())
+        last_log = r.stdout.strip() or None
+    except Exception:
+        pass
+    return state, substate, restarts, last_log
+
+
+def _service_state_macos(name: str) -> tuple[str, str, "int | None", "str | None"]:
+    label = f"com.pleiades.discord.{_safe_service_name(name)}"
+    domain = f"gui/{os.getuid()}"
+    state, substate, last_log = "unknown", "unknown", None
+    try:
+        r = subprocess.run(["launchctl", "print", f"{domain}/{label}"],
+                            capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            state, substate = "inactive", "not-loaded"
+        else:
+            running = "state = running" in r.stdout.lower()
+            state = "active" if running else "inactive"
+            substate = "running" if running else "loaded"
+    except Exception:
+        pass
+    log_path = (Path.home() / "Library" / "Logs"
+                / f"pleiades-discord-{_safe_service_name(name)}.log")
+    try:
+        if log_path.is_file():
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            last_log = lines[-1] if lines else None
+    except Exception:
+        pass
+    return state, substate, None, last_log
+
+
+def _service_state_windows(name: str) -> tuple[str, str, "int | None", "str | None"]:
+    task_name = f"Pleiades Discord {name}"
+    state, substate = "unknown", "unknown"
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/FO", "LIST", "/V"],
+                            capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            state, substate = "inactive", "not-installed"
+        else:
+            status_line = next((l for l in r.stdout.splitlines() if l.startswith("Status:")), "")
+            running = "running" in status_line.lower()
+            state = "active" if running else "inactive"
+            substate = status_line.split(":", 1)[-1].strip() or "unknown"
+    except Exception:
+        pass
+    # No stdout redirection wired into the scheduled task XML, so there's no
+    # log file to tail here the way Linux/macOS have one.
+    return state, substate, None, None
+
+
 def discord_status() -> list[dict]:
     """Per-character Discord bot status: service installed/running, token present,
     discord.py installed — the "logs and online status" the connector otherwise has
-    none of. Best-effort; degrades to 'unknown' if systemd/D-Bus isn't reachable."""
+    none of. Best-effort; degrades to 'unknown' if the OS service manager isn't
+    reachable. Linux: systemd --user. macOS: launchd. Windows: Task Scheduler."""
     try:
         import discord  # noqa: F401
         installed = True
@@ -44,27 +123,12 @@ def discord_status() -> list[dict]:
             continue
         with manager.open_vault(profile.name) as vault:
             has_token = bool(vault.get("discord.token"))
-        unit = f"pleiades-discord-{profile.name.lower()}.service"
-        state, substate, restarts = "unknown", "unknown", None
-        try:
-            r = subprocess.run(
-                ["systemctl", "--user", "show", unit,
-                 "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts"],
-                capture_output=True, text=True, timeout=5, env=_systemctl_env())
-            vals = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
-            state = vals.get("ActiveState", "unknown")
-            substate = vals.get("SubState", "unknown")
-            restarts = int(vals["NRestarts"]) if "NRestarts" in vals else None
-        except Exception:
-            pass
-        last_log = None
-        try:
-            r = subprocess.run(
-                ["journalctl", "--user", "-u", unit, "-n", "1", "--no-pager", "-o", "cat"],
-                capture_output=True, text=True, timeout=5, env=_systemctl_env())
-            last_log = r.stdout.strip() or None
-        except Exception:
-            pass
+        if sys.platform == "darwin":
+            state, substate, restarts, last_log = _service_state_macos(profile.name)
+        elif os.name == "nt":
+            state, substate, restarts, last_log = _service_state_windows(profile.name)
+        else:
+            state, substate, restarts, last_log = _service_state_linux(profile.name)
         out.append({
             "name": profile.name,
             "discordpy_installed": installed,

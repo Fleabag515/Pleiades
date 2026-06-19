@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -171,10 +174,11 @@ def chat(name: str, no_stream: bool) -> None:
     "service_action",
     type=click.Choice(["install", "uninstall", "status"]),
     default=None,
-    help="Manage a persistent systemd user service instead of running in the foreground.",
+    help="Manage a persistent background service instead of running in the foreground "
+         "(systemd on Linux, launchd on macOS, Task Scheduler on Windows).",
 )
 def discord(name: str, service_action: "str | None") -> None:
-    """Run the character as a Discord bot (blocks), or manage its systemd service.
+    """Run the character as a Discord bot (blocks), or manage its background service.
 
     \b
     Run in foreground (manual):
@@ -201,22 +205,38 @@ def discord(name: str, service_action: "str | None") -> None:
 
 
 def _discord_service(name: str, action: str) -> None:
-    """Create/remove/query the systemd user unit for a character's Discord bot."""
-    import os
-    import shutil
+    """Create/remove/query a persistent background service for a character's
+    Discord bot. Dispatches to the platform-appropriate service manager —
+    there's no single cross-platform "run on login" API."""
+    if sys.platform == "darwin":
+        _discord_service_macos(name, action)
+    elif os.name == "nt":
+        _discord_service_windows(name, action)
+    else:
+        _discord_service_linux(name, action)
 
+
+def _safe_service_name(name: str) -> str:
+    """Sanitize a character name for use in a unit/label/task name."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name.lower())
+
+
+def _pleiades_bin() -> str:
+    return shutil.which("pleiades") or str(Path(sys.executable).parent / "pleiades")
+
+
+def _discord_service_linux(name: str, action: str) -> None:
+    """Create/remove/query the systemd --user unit for a character's Discord bot."""
     # Ensure systemctl --user can reach the session D-Bus even when called
     # from a non-login shell (e.g. a script or MCP tool).
     uid = os.getuid()
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
     os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
 
-    unit_name = f"pleiades-discord-{name.lower()}.service"
+    unit_name = f"pleiades-discord-{_safe_service_name(name)}.service"
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_path = unit_dir / unit_name
-    pleiades_bin = shutil.which("pleiades") or str(
-        Path(sys.executable).parent / "pleiades"
-    )
+    pleiades_bin = _pleiades_bin()
 
     if action == "install":
         unit_dir.mkdir(parents=True, exist_ok=True)
@@ -261,6 +281,135 @@ def _discord_service(name: str, action: str) -> None:
     elif action == "status":
         result = subprocess.run(
             ["systemctl", "--user", "status", unit_name]
+        )
+        sys.exit(result.returncode)
+
+
+def _discord_service_macos(name: str, action: str) -> None:
+    """Create/remove/query a launchd LaunchAgent for a character's Discord bot."""
+    label = f"com.pleiades.discord.{_safe_service_name(name)}"
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    log_path = (Path.home() / "Library" / "Logs"
+                / f"pleiades-discord-{_safe_service_name(name)}.log")
+    domain = f"gui/{os.getuid()}"
+    pleiades_bin = _pleiades_bin()
+
+    if action == "install":
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0"><dict>\n'
+            f"  <key>Label</key><string>{label}</string>\n"
+            "  <key>ProgramArguments</key><array>\n"
+            f"    <string>{pleiades_bin}</string>\n"
+            "    <string>discord</string>\n"
+            f"    <string>{name}</string>\n"
+            "  </array>\n"
+            "  <key>RunAtLoad</key><true/>\n"
+            "  <key>KeepAlive</key><true/>\n"
+            f"  <key>StandardOutPath</key><string>{log_path}</string>\n"
+            f"  <key>StandardErrorPath</key><string>{log_path}</string>\n"
+            "</dict></plist>\n"
+        )
+        # Clear out a stale load from a previous install before re-registering.
+        subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", domain, str(plist_path)],
+                check=True, capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            # Pre-Big Sur macOS: bootstrap may be unavailable; legacy load -w still works.
+            try:
+                subprocess.run(
+                    ["launchctl", "load", "-w", str(plist_path)],
+                    check=True, capture_output=True,
+                )
+            except subprocess.CalledProcessError as e:
+                console.print(f"[red]launchctl failed: {e}[/red]")
+                sys.exit(1)
+        console.print(f"[green]Service '[bold]{label}[/bold]' installed and started.[/green]")
+        console.print(f"Logs:   [bold]tail -f {log_path}[/bold]")
+        console.print(f"Stop:   [bold]pleiades discord {name} --service uninstall[/bold]")
+
+    elif action == "uninstall":
+        if not plist_path.exists():
+            console.print(f"[yellow]No service '[bold]{label}[/bold]' found.[/yellow]")
+            return
+        r = subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+        if r.returncode != 0:
+            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        plist_path.unlink()
+        console.print(f"[green]Service '[bold]{label}[/bold]' stopped and removed.[/green]")
+
+    elif action == "status":
+        result = subprocess.run(["launchctl", "print", f"{domain}/{label}"])
+        sys.exit(result.returncode)
+
+
+def _discord_service_windows(name: str, action: str) -> None:
+    """Create/remove/query a Task Scheduler logon task for a character's Discord bot."""
+    import tempfile
+
+    task_name = f"Pleiades Discord {name}"
+    pleiades_bin = _pleiades_bin()
+
+    if action == "install":
+        xml = (
+            '<?xml version="1.0" encoding="UTF-16"?>\n'
+            '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+            "  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>\n"
+            '  <Actions Context="Author">\n'
+            "    <Exec>\n"
+            f"      <Command>{pleiades_bin}</Command>\n"
+            f"      <Arguments>discord {name}</Arguments>\n"
+            "    </Exec>\n"
+            "  </Actions>\n"
+            '  <Principals><Principal id="Author">\n'
+            "    <LogonType>InteractiveToken</LogonType>\n"
+            "    <RunLevel>LeastPrivilege</RunLevel>\n"
+            "  </Principal></Principals>\n"
+            "  <Settings>\n"
+            "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n"
+            "    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>\n"
+            "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n"
+            "  </Settings>\n"
+            "</Task>\n"
+        )
+        xml_path = (Path(tempfile.gettempdir())
+                    / f"pleiades-discord-{_safe_service_name(name)}-task.xml")
+        xml_path.write_text(xml, encoding="utf-16")
+        subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
+        try:
+            subprocess.run(
+                ["schtasks", "/Create", "/TN", task_name, "/XML", str(xml_path), "/F"],
+                check=True,
+            )
+            subprocess.run(["schtasks", "/Run", "/TN", task_name], check=False)
+        except subprocess.CalledProcessError as e:
+            console.print(f"[red]schtasks failed: {e}[/red]")
+            sys.exit(1)
+        finally:
+            xml_path.unlink(missing_ok=True)
+        console.print(f"[green]Service '[bold]{task_name}[/bold]' installed and started.[/green]")
+        console.print(f'Check:  [bold]schtasks /Query /TN "{task_name}"[/bold]')
+        console.print(f"Stop:   [bold]pleiades discord {name} --service uninstall[/bold]")
+
+    elif action == "uninstall":
+        check = subprocess.run(["schtasks", "/Query", "/TN", task_name], capture_output=True)
+        if check.returncode != 0:
+            console.print(f"[yellow]No service '[bold]{task_name}[/bold]' found.[/yellow]")
+            return
+        subprocess.run(["schtasks", "/End", "/TN", task_name], capture_output=True)
+        subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], check=False)
+        console.print(f"[green]Service '[bold]{task_name}[/bold]' stopped and removed.[/green]")
+
+    elif action == "status":
+        result = subprocess.run(
+            ["schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST"]
         )
         sys.exit(result.returncode)
 
