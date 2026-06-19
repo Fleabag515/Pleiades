@@ -62,11 +62,15 @@ _OVERHEAD = 1536 * 1024 ** 2
 _FIXED_S = 0.004        # per-token fixed cost: kernel launches, sampling, routing
 
 # How much slower (relative) a candidate may be than the fastest one and still
-# win on the strength of using less VRAM. The explicit goal: don't max out the
-# GPU for a marginal speed gain — prefer the CPU-heavier plan whenever it's
-# within this tolerance, since headroom avoids OOM/swap thrash that costs far
-# more speed than this tolerance ever would.
-_CPU_BIAS_TOLERANCE = 0.15
+# win on the strength of using less VRAM. Real OOM/swap-thrash protection is
+# the hard _OVERHEAD reserve above plus per-candidate feasibility checks, not
+# this number — this is only a tie-breaker for near-identical candidates.
+# Was 0.15 (could forfeit ~25%+ tok/s on a "safer" choice that was never
+# actually closer to the VRAM ceiling — observed picking 23.5 over an
+# already-feasible 29.6 tok/s moe_partial candidate on an 11GB 2080 Ti).
+# Owner wants max throughput the hardware can actually deliver, so this is
+# now just enough to avoid flapping between two candidates of equal speed.
+_CPU_BIAS_TOLERANCE = 0.03
 
 
 # --------------------------------------------------------------------------- #
