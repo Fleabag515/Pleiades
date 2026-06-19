@@ -20,7 +20,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -230,97 +229,18 @@ class ModelManager:
         return "\n".join(text.splitlines()[-lines:])
 
     def _build_launch(self, m: dict) -> tuple[list, str]:
-        """Assemble the server command via autofit: MoE-aware on the native
-        llama-server runtime, layer-split on the python fallback."""
-        from . import runtime
-        from .autofit import RuntimeCaps, place
-        from .hardware import read_gguf_meta
+        """Assemble the server command via the shared autofit-aware planner
+        (same logic the single-model legacy engine uses — see launch.py)."""
+        from .launch import build_command
 
-        from .hardware import resolve_context
-        n_ctx, n_ctx_max, ctx_why = resolve_context(m.get("n_ctx", "auto"), m["path"])
-        self._last_ctx = (n_ctx, n_ctx_max)
-        self._last_ctx_why = ctx_why
-        explicit = m.get("n_gpu_layers", "auto")
-        meta = read_gguf_meta(m["path"])
-        cps = runtime.caps()
-        native = runtime.find_native() if cps.native else None
-        threads = max((os.cpu_count() or 8) // 2, 4)   # physical cores beat SMT
-
-        pl = place(meta, n_ctx, caps=cps if native else RuntimeCaps())
-        forced = None
-        if not (isinstance(explicit, str) and str(explicit).strip().lower() in ("", "auto")):
-            try:
-                forced = int(explicit)
-            except (TypeError, ValueError):
-                forced = None
-
-        if native:
-            ngl = forced if forced is not None else (999 if pl.n_gpu_layers == -1
-                                                     else pl.n_gpu_layers)
-            cmd = [native, "-m", m["path"],
-                   "--host", m["host"], "--port", str(m["port"]),
-                   "-c", str(n_ctx), "-ngl", str(ngl), "-t", str(threads),
-                   "--alias", m["name"],
-                   "--jinja"]
-            from .config import Settings as _Settings
-            _eff = _Settings.load()
-            if _eff.flash_attn:
-                cmd += ["-fa", _eff.flash_attn]
-            if _eff.kv_cache_type:          # KV-cache compaction (e.g. q8_0)
-                cmd += ["-ctk", _eff.kv_cache_type, "-ctv", _eff.kv_cache_type]
-            if getattr(_eff, "n_batch", 0):
-                cmd += ["-b", str(_eff.n_batch)]
-            if getattr(_eff, "n_ubatch", 0):
-                cmd += ["-ub", str(_eff.n_ubatch)]
-            if getattr(_eff, "mlock", False):
-                cmd += ["--mlock"]
-            if getattr(_eff, "draft_model_path", "") and __import__("os").path.isfile(_eff.draft_model_path):
-                cmd += ["-md", _eff.draft_model_path]   # speculative decoding draft
-            if forced is None and pl.n_cpu_moe and cps.moe_offload:
-                cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
-            why = (f"runtime=llama-server strategy={pl.strategy} "
-                   f"ngl={ngl}" + (f" n_cpu_moe={pl.n_cpu_moe}" if pl.n_cpu_moe else "")
-                   + f" est={pl.est_tps} tok/s — {pl.reason}")
-            if forced is not None:
-                why = f"runtime=llama-server ngl={forced} (explicit override)"
-            return cmd, why
-
-        layers = forced if forced is not None else pl.n_gpu_layers
-        if os.environ.get("PLEIADES_ENGINE", "elastic").lower() == "llama_cpp":
-            # escape hatch: bundled llama-cpp-python server (fixed window)
-            cmd = [
-                sys.executable, "-m", "llama_cpp.server",
-                "--model", m["path"],
-                "--model_alias", m["name"],
-                "--host", m["host"], "--port", str(m["port"]),
-                "--n_ctx", str(n_ctx),
-                "--n_gpu_layers", str(layers),
-                "--n_threads", str(threads),
-                "--flash_attn", "true",
-            ]
-            if m.get("chat_format"):
-                cmd += ["--chat_format", m["chat_format"]]
-        else:
-            # our elastic server: weights stay loaded, KV resizes in place
-            # (POST /resize; prompt overflow auto-upshifts within the ceiling)
-            cmd = [
-                sys.executable, "-m", "pleiades.inference.server",
-                "--model", m["path"],
-                "--host", m["host"], "--port", str(m["port"]),
-                "--n-ctx", str(n_ctx), "--n-ctx-max", str(n_ctx_max),
-                "--n-gpu-layers", str(layers),
-                "--alias", str(m.get("name", "local")),
-            ]
-            if m.get("chat_format"):
-                cmd += ["--chat-format", m["chat_format"]]
-        why = (f"runtime=python strategy={pl.strategy} n_gpu_layers={layers} "
-               f"est={pl.est_tps} tok/s — {pl.reason}")
-        if forced is not None:
-            why = f"runtime=python n_gpu_layers={forced} (explicit override)"
-        if meta.is_moe and not cps.moe_offload:
-            why += (" · TIP: `pleiades runtime install` adds the native runtime "
-                    "with MoE expert offload — much faster for this model")
-        return cmd, why
+        plan = build_command(
+            m["path"], m["host"], m["port"], name=str(m.get("name", "local")),
+            n_ctx=m.get("n_ctx", "auto"), n_gpu_layers=m.get("n_gpu_layers", "auto"),
+            chat_format=m.get("chat_format", ""),
+        )
+        self._last_ctx = (plan.n_ctx, plan.n_ctx_max)
+        self._last_ctx_why = plan.ctx_why
+        return plan.cmd, plan.why
 
     def start(self, name: str, *, wait: bool = True, timeout: float = 180.0) -> str:
         m = self.get(name)

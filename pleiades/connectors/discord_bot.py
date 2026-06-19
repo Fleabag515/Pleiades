@@ -8,10 +8,73 @@ in the Discord Developer Portal.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from typing import Optional
 
 from ..engine import Engine
 from ..profiles import Profile
+
+
+def _systemctl_env() -> dict:
+    # webui/CLI are often started from a process with no session D-Bus —
+    # same fix as _discord_service() in cli.py.
+    env = dict(os.environ)
+    uid = os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+    return env
+
+
+def discord_status() -> list[dict]:
+    """Per-character Discord bot status: service installed/running, token present,
+    discord.py installed — the "logs and online status" the connector otherwise has
+    none of. Best-effort; degrades to 'unknown' if systemd/D-Bus isn't reachable."""
+    try:
+        import discord  # noqa: F401
+        installed = True
+    except ImportError:
+        installed = False
+
+    from ..profiles import ProfileManager
+    out: list[dict] = []
+    manager = ProfileManager()
+    for profile in manager.list():
+        if not profile.discord_enabled:
+            continue
+        with manager.open_vault(profile.name) as vault:
+            has_token = bool(vault.get("discord.token"))
+        unit = f"pleiades-discord-{profile.name.lower()}.service"
+        state, substate, restarts = "unknown", "unknown", None
+        try:
+            r = subprocess.run(
+                ["systemctl", "--user", "show", unit,
+                 "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts"],
+                capture_output=True, text=True, timeout=5, env=_systemctl_env())
+            vals = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
+            state = vals.get("ActiveState", "unknown")
+            substate = vals.get("SubState", "unknown")
+            restarts = int(vals["NRestarts"]) if "NRestarts" in vals else None
+        except Exception:
+            pass
+        last_log = None
+        try:
+            r = subprocess.run(
+                ["journalctl", "--user", "-u", unit, "-n", "1", "--no-pager", "-o", "cat"],
+                capture_output=True, text=True, timeout=5, env=_systemctl_env())
+            last_log = r.stdout.strip() or None
+        except Exception:
+            pass
+        out.append({
+            "name": profile.name,
+            "discordpy_installed": installed,
+            "has_token": has_token,
+            "service_state": state,
+            "service_substate": substate,
+            "restarts": restarts,
+            "last_log": last_log,
+        })
+    return out
 
 
 def run_discord_bot(name: str, *, engine: Optional[Engine] = None) -> None:
@@ -38,7 +101,10 @@ def run_discord_bot(name: str, *, engine: Optional[Engine] = None) -> None:
 
     @client.event
     async def on_ready():
-        print(f"[pleiades] {name} connected to Discord as {client.user}.")
+        # flush=True: under systemd, stdout is a pipe (block-buffered), so this
+        # otherwise never reaches `journalctl` — which was the actual "no online
+        # status" complaint, since the gateway connects fine but you can't see it.
+        print(f"[pleiades] {name} connected to Discord as {client.user}.", flush=True)
 
     def _channel_allowed(message) -> bool:
         allow = [c.strip().lower() for c in

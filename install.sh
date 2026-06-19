@@ -7,15 +7,16 @@
 #   curl -fsSL .../install.sh | bash -s -- --gpu --dir ~/apps/Pleiades
 #
 # Options:
-#   --dir DIR       install location           (default: ~/Pleiades, or $PLEIADES_DIR)
-#   --branch NAME   git branch                 (default: main, or $PLEIADES_BRANCH)
-#   --cpu           force CPU build of llama-cpp-python
-#   --gpu           force GPU build of llama-cpp-python
-#   --core          core only (skip browser, SearXNG, Discord)
-#   --no-browser    skip Camoufox
-#   --no-searxng    skip SearXNG (Docker)
-#   --no-discord    skip the Discord extra
-#   -h, --help      show this help
+#   --dir DIR             install location     (default: ~/Pleiades, or $PLEIADES_DIR)
+#   --branch NAME         git branch           (default: main, or $PLEIADES_BRANCH)
+#   --cpu                 force CPU build of llama-cpp-python
+#   --gpu                 force GPU build of llama-cpp-python
+#   --core                core only (skip browser, SearXNG, Discord, native runtime)
+#   --no-browser          skip Camoufox
+#   --no-searxng          skip SearXNG (Docker)
+#   --no-discord          skip the Discord extra
+#   --no-native-runtime   skip 'pleiades runtime install' (native llama-server)
+#   -h, --help            show this help
 set -euo pipefail
 
 REPO_URL="${PLEIADES_REPO:-https://github.com/Fleabag515/Pleiades.git}"
@@ -25,6 +26,7 @@ GPU_MODE="auto"          # auto | cpu | gpu
 WITH_BROWSER=1
 WITH_SEARXNG=1
 WITH_DISCORD=1
+WITH_NATIVE_RUNTIME=1
 
 # ---- pretty output ---------------------------------------------------------
 if [ -t 1 ]; then B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'; else B=""; G=""; Y=""; R=""; N=""; fi
@@ -42,10 +44,11 @@ while [ $# -gt 0 ]; do
     --branch) BRANCH="${2:?}"; shift 2;;
     --cpu) GPU_MODE="cpu"; shift;;
     --gpu) GPU_MODE="gpu"; shift;;
-    --core) WITH_BROWSER=0; WITH_SEARXNG=0; WITH_DISCORD=0; shift;;
+    --core) WITH_BROWSER=0; WITH_SEARXNG=0; WITH_DISCORD=0; WITH_NATIVE_RUNTIME=0; shift;;
     --no-browser) WITH_BROWSER=0; shift;;
     --no-searxng) WITH_SEARXNG=0; shift;;
     --no-discord) WITH_DISCORD=0; shift;;
+    --no-native-runtime) WITH_NATIVE_RUNTIME=0; shift;;
     -h|--help) sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0;;
     *) warn "ignoring unknown option: $1"; shift;;
   esac
@@ -235,6 +238,20 @@ fetch_browser() {
   ( cd "$INSTALL_DIR" && . .venv/bin/activate && python -m camoufox fetch ) || warn "camoufox fetch failed; run 'python -m camoufox fetch' later."
 }
 
+install_native_runtime() {
+  # The native llama-server binary (ggml-org/llama.cpp releases) is what
+  # unlocks MoE expert offload (--n-cpu-moe) and is generally faster than the
+  # bundled python server — autofit (pleiades/autofit.py) only gets to use
+  # the good placement strategies when this is present. Without it, every
+  # model launch silently falls back to the dense-only python path.
+  [ "$WITH_NATIVE_RUNTIME" = "1" ] || return 0
+  say "Installing native llama-server runtime (MoE expert offload)"
+  if ! ( cd "$INSTALL_DIR" && "$INSTALL_DIR/.venv/bin/pleiades" runtime install ); then
+    warn "Native runtime install failed; falling back to the bundled python server."
+    info "Run it later from the venv:  pleiades runtime install"
+  fi
+}
+
 make_env() {
   if [ ! -f "$INSTALL_DIR/.env" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
@@ -292,6 +309,7 @@ main() {
   install_python_pkg
   install_anamnesis
   fetch_browser
+  install_native_runtime
   make_env
   start_searxng
   link_cli

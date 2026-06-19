@@ -18,7 +18,6 @@ kernel; the engine layer is ours.
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 from typing import Optional
 
@@ -83,39 +82,20 @@ class InferenceServer:
             raise InferenceError(
                 "PLEIADES_MODEL_PATH is not set. Point it at a .gguf model file."
             )
-        import os
+        # Same autofit-aware planner the multi-model registry uses: native
+        # llama-server + MoE expert offload when available, dense layer-split
+        # on the bundled python server otherwise. (Used to be a separate,
+        # dumber, dense-only path here — see launch.py for why that changed.)
+        from ..launch import build_command
 
-        from ..hardware import resolve_context, resolve_layers
-
-        n_ctx, n_ctx_max, ctx_why = resolve_context(self.settings.n_ctx,
-                                                    self.settings.model_path)
-        layers, why = resolve_layers(self.settings.n_gpu_layers,
-                                     self.settings.model_path, n_ctx)
-        print(f"[pleiades] inference: context — {ctx_why}")
-        print(f"[pleiades] inference: n_gpu_layers={layers} — {why}")
-        if os.environ.get("PLEIADES_ENGINE", "elastic").lower() == "llama_cpp":
-            # escape hatch: bundled llama-cpp-python server (fixed window)
-            cmd = [
-                sys.executable, "-m", "llama_cpp.server",
-                "--model", self.settings.model_path,
-                "--host", self.host, "--port", str(self.port),
-                "--n_ctx", str(n_ctx),
-                "--n_gpu_layers", str(layers),
-            ]
-            if self.settings.chat_format:
-                cmd += ["--chat_format", self.settings.chat_format]
-            return cmd
-        # our elastic server: weights stay loaded, KV resizes in place
-        cmd = [
-            sys.executable, "-m", "pleiades.inference.server",
-            "--model", self.settings.model_path,
-            "--host", self.host, "--port", str(self.port),
-            "--n-ctx", str(n_ctx), "--n-ctx-max", str(n_ctx_max),
-            "--n-gpu-layers", str(layers),
-        ]
-        if self.settings.chat_format:
-            cmd += ["--chat-format", self.settings.chat_format]
-        return cmd
+        plan = build_command(
+            self.settings.model_path, self.host, self.port, name="local",
+            n_ctx=self.settings.n_ctx, n_gpu_layers=self.settings.n_gpu_layers,
+            chat_format=self.settings.chat_format, settings=self.settings,
+        )
+        print(f"[pleiades] inference: context — {plan.ctx_why}")
+        print(f"[pleiades] inference: {plan.why}")
+        return plan.cmd
 
     def start(self, *, wait: bool = True, timeout: float = 120.0) -> str:
         """Launch the server (idempotent). Returns the OpenAI-compatible base URL."""

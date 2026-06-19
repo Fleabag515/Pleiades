@@ -699,9 +699,7 @@ async function loadConn(){
   let up={};try{const st=await api('/api/status');up=st.services||{}}catch(e){}
   const sx=!!(up.searxng&&up.searxng.up),an=!!(up.anamnesis&&up.anamnesis.up);
   const box=document.getElementById('connectors');box.innerHTML='';
-  [['&#x2709;','Email · IMAP/SMTP','per-character inbox + send'],
-   ['◈','Discord','host a character as a bot'],
-   ['◐','Camoufox browser','headed, anti-fingerprint browsing']
+  [['&#x2709;','Email · IMAP/SMTP','per-character inbox + send']
   ].forEach(([ic,nm,ds])=>{
     const e=document.createElement('div');e.className='conn';
     e.innerHTML='<div class="ci">'+ic+'</div><div class="info"><div class="nm">'+nm+'</div><div class="ds">'+ds+'</div></div>'+
@@ -709,6 +707,50 @@ async function loadConn(){
       '<div class="acts"><button class="btn sm" onclick="go(\'characters\')">&#x2192; Characters</button></div>';
     box.append(e);
   });
+  (()=>{const e=document.createElement('div');e.className='conn';
+    e.innerHTML='<div class="ci">◐</div><div class="info"><div class="nm">Camoufox browser</div><div class="ds" id="cam-ds">headed, anti-fingerprint browsing</div></div>'+
+      '<span class="tagp tp-idle" id="cam-tag">checking…</span>'+
+      '<div class="acts"><button class="btn sm" onclick="go(\'characters\')">&#x2192; Characters</button></div>';
+    box.append(e);
+    api('/api/browser/status').then(s=>{
+      const tag=document.getElementById('cam-tag'),ds=document.getElementById('cam-ds');
+      if(!tag||!ds)return;
+      if(s.backend==='camoufox'){tag.className='tagp tp-run';tag.textContent='camoufox · live';}
+      else if(s.backend==='playwright'){tag.className='tagp tp-warn';tag.textContent='playwright fallback';}
+      else if(!s.camoufox_installed){tag.className='tagp tp-warn';tag.textContent='camoufox not installed';}
+      else if(!s.display){tag.className='tagp tp-warn';tag.textContent='no display';}
+      else{tag.className='tagp tp-idle';tag.textContent='idle';}
+      let detail='profile: '+s.profile_dir;
+      if(s.display)detail+=' · DISPLAY='+s.display;else detail+=' · DISPLAY unset';
+      if(!s.camoufox_installed)detail+=' · camoufox package missing, using Playwright Firefox';
+      if(s.last_error)detail+=' · last error: '+s.last_error;
+      ds.textContent=detail;ds.title=s.last_error||'';
+    }).catch(()=>{const tag=document.getElementById('cam-tag');if(tag){tag.className='tagp tp-warn';tag.textContent='status unavailable';}});
+  })();
+  (()=>{const e=document.createElement('div');e.className='conn';
+    e.innerHTML='<div class="ci">◈</div><div class="info"><div class="nm">Discord</div><div class="ds" id="dc-ds">host a character as a bot</div></div>'+
+      '<span class="tagp tp-idle" id="dc-tag">checking…</span>'+
+      '<div class="acts"><button class="btn sm" onclick="go(\'characters\')">&#x2192; Characters</button></div>';
+    box.append(e);
+    api('/api/discord/status').then(s=>{
+      const tag=document.getElementById('dc-tag'),ds=document.getElementById('dc-ds');
+      if(!tag||!ds)return;
+      const chars=s.characters||[];
+      if(!chars.length){tag.className='tagp tp-idle';tag.textContent='not configured';ds.textContent='no character has Discord enabled';return;}
+      const online=chars.filter(c=>c.service_state==='active'&&c.service_substate==='running');
+      if(online.length===chars.length){tag.className='tagp tp-run';tag.textContent=chars.length>1?online.length+'/'+chars.length+' online':'online';}
+      else if(online.length>0){tag.className='tagp tp-warn';tag.textContent=online.length+'/'+chars.length+' online';}
+      else{tag.className='tagp tp-warn';tag.textContent='offline';}
+      ds.textContent=chars.map(c=>{
+        let bits=c.name+': '+c.service_state+'/'+c.service_substate;
+        if(!c.discordpy_installed)bits+=' · discord.py missing';
+        if(!c.has_token)bits+=' · no token in vault';
+        if(c.restarts!=null&&c.restarts>0)bits+=' · '+c.restarts+' restarts';
+        return bits;
+      }).join('  ·  ');
+      ds.title=chars.map(c=>c.name+': '+(c.last_log||'(no log line)')).join('\n');
+    }).catch(()=>{const tag=document.getElementById('dc-tag');if(tag){tag.className='tagp tp-warn';tag.textContent='status unavailable';}});
+  })();
   (()=>{const e=document.createElement('div');e.className='conn';
     e.innerHTML='<div class="ci">&#x2315;</div><div class="info"><div class="nm">SearXNG</div><div class="ds">local web search</div></div>'+
       '<span class="tagp '+(sx?'tp-run':'tp-warn')+'">'+(sx?'running':'stopped')+'</span><div class="acts"></div>';

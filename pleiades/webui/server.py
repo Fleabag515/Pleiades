@@ -949,6 +949,20 @@ def create_app() -> FastAPI:
             "runtime": runtime.status(),
         }
 
+    @app.get("/api/browser/status")
+    def browser_status_api() -> dict:
+        """Camoufox/Playwright backend, profile dir, and last launch error —
+        the "logs and settings" the browser tool otherwise has none of."""
+        from ..harness.builtins.browser import browser_status
+        return browser_status()
+
+    @app.get("/api/discord/status")
+    def discord_status_api() -> dict:
+        """Per-character Discord bot service state, token presence, and last log
+        line — the "logs and online status" the connector otherwise has none of."""
+        from ..connectors.discord_bot import discord_status
+        return {"characters": discord_status()}
+
     @app.post("/api/runtime/install")
     def runtime_install_api() -> dict:
         from .. import runtime

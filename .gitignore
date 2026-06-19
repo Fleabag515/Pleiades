@@ -31,6 +31,10 @@ models/
 .DS_Store
 Thumbs.db
 
+# editor/manual backups + uv (project uses pip/venv, not uv)
+*.bak
+uv.lock
+
 # vendored/runtime
 __pycache__/
 *.pyc

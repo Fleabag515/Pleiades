@@ -62,23 +62,79 @@ def _headless() -> bool:
     return os.environ.get("PLEIADES_BROWSER_HEADLESS", "0") == "1"
 
 
+def _ensure_display() -> None:
+    """Headed Firefox needs an X display. The webui/CLI/Discord bot are often
+    started from a process (nohup, systemd --user) that doesn't inherit the
+    desktop session's DISPLAY, so launches fail with "cannot open display"
+    and no obvious reason why. Default to :0 (this machine is single-seat) —
+    set PLEIADES_DISPLAY to override on a multi-seat/remote setup."""
+    if os.environ.get("DISPLAY"):
+        return
+    os.environ["DISPLAY"] = os.environ.get("PLEIADES_DISPLAY", ":0")
+
+
+_LAST_ERROR: dict[str, str | None] = {"error": None}
+
+
+def browser_status() -> dict:
+    """Current browser backend/profile/last-launch-error — for UI status, not the model."""
+    return {
+        "backend": _B["backend"],
+        "page_open": _B["page"] is not None,
+        "profile_dir": _BOUND_PROFILE["dir"] or _profile_dir(),
+        "camoufox_installed": _camoufox_importable(),
+        "display": os.environ.get("DISPLAY") or None,
+        "last_error": _LAST_ERROR["error"],
+    }
+
+
+def _camoufox_importable() -> bool:
+    try:
+        import camoufox.sync_api  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def _ensure_page():
     """Lazily launch the browser (Camoufox if present, else Playwright Firefox)
     with a persistent profile, and return a Page. Raises with an install hint."""
     if _B["page"] is not None:
         return _B["page"]
 
-    profile, headless = _profile_dir(), _headless()
+    _ensure_display()
+    base, headless = _profile_dir(), _headless()
+    # Each backend gets its own subdir under the character's profile — Camoufox
+    # ships its own Firefox build (currently v135), so a profile dir previously
+    # populated by Playwright's Firefox (e.g. while camoufox wasn't installed)
+    # makes Camoufox fail to launch ("Can't find profile directory"). Keeping
+    # them apart means installing/removing camoufox later never corrupts state.
 
     # 1) Camoufox (stealth Firefox) — preferred
     try:
         from camoufox.sync_api import Camoufox
-        cam = Camoufox(headless=headless, persistent_context=True,
-                       user_data_dir=profile)
-        ctx = cam.start() if hasattr(cam, "start") else cam.__enter__()
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        _B.update(page=page, ctx=ctx, pw=cam, backend="camoufox")
-        return page
+        profile = os.path.join(base, "camoufox")
+        Path(profile).mkdir(parents=True, exist_ok=True)
+        # A brand-new profile dir does first-run setup (search-engine config,
+        # places.sqlite, ...) which can outrun Playwright's default 30s launch
+        # timeout under load, killing the browser mid-handshake ("Target page,
+        # context or browser has been closed") on the very first open. One
+        # retry with a longer timeout absorbs that; every later launch reuses
+        # the warmed profile and is fast.
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                cam = Camoufox(headless=headless, persistent_context=True,
+                               user_data_dir=profile, timeout=60000)
+                ctx = cam.start() if hasattr(cam, "start") else cam.__enter__()
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                _B.update(page=page, ctx=ctx, pw=cam, backend="camoufox")
+                return page
+            except ImportError:
+                raise
+            except Exception as e:
+                last_exc = e
+        raise last_exc
     except ImportError:
         pass  # fall through to Playwright
 
@@ -90,6 +146,8 @@ def _ensure_page():
             "No browser backend installed. Install one:\n"
             "  pip install playwright && python -m playwright install firefox\n"
             "  (optional stealth) pip install camoufox[geoip]")
+    profile = os.path.join(base, "playwright")
+    Path(profile).mkdir(parents=True, exist_ok=True)
     pw = sync_playwright().start()
     ctx = pw.firefox.launch_persistent_context(user_data_dir=profile,
                                                headless=headless)
@@ -164,7 +222,9 @@ def browser_open(url: str) -> str:
     try:
         page = _ensure_page()
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        _LAST_ERROR["error"] = None
     except Exception as e:
+        _LAST_ERROR["error"] = str(e)
         return f"Error opening {url}: {e}"
     ch = _detect_challenge(page)
     note = (f"\n[!] Verification challenge detected ({ch}). I won't try to solve "
