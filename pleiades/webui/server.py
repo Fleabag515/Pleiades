@@ -111,14 +111,14 @@ class VaultEntry(BaseModel):
 class ModelCreate(BaseModel):
     name: str
     path: str
-    n_ctx: int = 8192
+    n_ctx: "int | str" = "auto"          # "auto" = planned from hardware at launch
     n_gpu_layers: "int | str" = "auto"   # "auto" = planned from hardware at launch
     chat_format: str = ""
 
 
 class ModelUpdate(BaseModel):
     path: Optional[str] = None
-    n_ctx: Optional[int] = None
+    n_ctx: "Optional[int | str]" = None
     n_gpu_layers: "Optional[int | str]" = None
     chat_format: Optional[str] = None
 
@@ -931,7 +931,15 @@ def create_app() -> FastAPI:
         plans = []
         for m in mm.list():
             meta = hardware.read_gguf_meta(m["path"])
-            p = place(meta, int(m.get("n_ctx", 8192)), det, cps)
+            try:
+                ctx_for_plan = int(m.get("n_ctx", 8192))
+            except (TypeError, ValueError):
+                # "auto" (the default since this session's ctx-planning fix) —
+                # show the placement for what actually launches: the elastic
+                # ceiling plan_context() already verified fits, same value
+                # launch.py uses for the native runtime.
+                ctx_for_plan = hardware.plan_context(meta, det, caps=cps).n_ctx_max
+            p = place(meta, ctx_for_plan, det, cps)
             plans.append({"model": m["name"],
                           "n_gpu_layers": p.n_gpu_layers,
                           "n_layers": meta.n_layers,

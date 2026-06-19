@@ -150,7 +150,8 @@ def _default_name(repo: str) -> str:
     return base.lower()
 
 
-def fetch_model(repo: str, *, name: str = "", quant: str = "", n_ctx: int = 8192,
+def fetch_model(repo: str, *, name: str = "", quant: str = "",
+                n_ctx: "int | str" = "auto",
                 hw: Optional[hardware.Hardware] = None,
                 progress: Optional[Callable[[str, int, int], None]] = None,
                 client: Optional[httpx.Client] = None) -> dict:
@@ -159,6 +160,14 @@ def fetch_model(repo: str, *, name: str = "", quant: str = "", n_ctx: int = 8192
     Returns the registered model entry plus 'chosen' (filename), 'why', and
     'local_path'. `quant` (e.g. "Q4_K_M") overrides the hardware-based pick.
     `progress(filename, done_bytes, total_bytes)` is optional.
+
+    `n_ctx` registers the SAME way `pleiades model add` does: "auto" (default)
+    plans the context window from the GGUF + detected hardware at each launch;
+    an explicit int pins it. It used to hard-default to 8192 here, which meant
+    every model pulled through the foundry launched with a small, non-elastic
+    window regardless of what the machine could actually support — starving
+    memory-rich Anamnesis characters of context no matter how much VRAM/RAM
+    was free.
     """
     files = list_repo_ggufs(repo, client=client)
     if not files:
@@ -184,8 +193,15 @@ def fetch_model(repo: str, *, name: str = "", quant: str = "", n_ctx: int = 8192
             smallest = min(grouped, key=lambda g: g["size"])
             meta_hint = remote_gguf_meta(repo, sorted(smallest["parts"])[0],
                                          client=client)
+        # choose_quant's placement math needs a concrete ctx to budget VRAM
+        # against; "auto" itself is resolved per-launch later by plan_context,
+        # once the actual file is on disk and its real GGUF header is read.
+        try:
+            ctx_estimate = int(n_ctx)
+        except (TypeError, ValueError):
+            ctx_estimate = 8192
         pref = config.Settings.load().autofit_preference
-        choice = choose_quant(files, hw or hardware.detect(), n_ctx=n_ctx,
+        choice = choose_quant(files, hw or hardware.detect(), n_ctx=ctx_estimate,
                               preference=pref, caps=runtime.caps(),
                               meta_hint=meta_hint)
         if choice is None:

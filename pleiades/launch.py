@@ -48,13 +48,23 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     runtime (autodetected), layer-split on the bundled python fallback."""
     eff = settings or Settings.load()
 
-    n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path)
-    meta = read_gguf_meta(model_path)
     cps = runtime.caps()
     native = runtime.find_native() if cps.native else None
+    # caps before resolve_context: a MoE model's real ceiling depends on
+    # whether THIS runtime actually offloads experts (hardware.py's
+    # _moe_ceiling_fits) — without it, ctx planning falls back to the
+    # dense-only check and starves a MoE model down to the smallest gear.
+    n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path, caps=cps)
+    meta = read_gguf_meta(model_path)
     threads = max((os.cpu_count() or 8) // 2, 4)   # physical cores beat SMT
 
-    pl = place(meta, n_ctx_v, caps=cps if native else RuntimeCaps())
+    # Placement must be sized against whichever ctx will ACTUALLY launch —
+    # native runs fixed at n_ctx_max (see below), so planning layers/expert
+    # split against the smaller n_ctx_v would under-provision VRAM for the
+    # real KV cost at the real window (the swap-thrash bug fixed earlier
+    # this session, reintroduced via a mismatched ctx instead of a bad margin).
+    place_ctx = n_ctx_max if native else n_ctx_v
+    pl = place(meta, place_ctx, caps=cps if native else RuntimeCaps())
     forced = None
     if not (isinstance(n_gpu_layers, str) and n_gpu_layers.strip().lower() in ("", "auto")):
         try:
@@ -63,13 +73,25 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             forced = None
 
     if native:
+        # llama-server's context window is fixed at launch — ModelManager.resize()
+        # 404s on it, there's no live grow-into-the-ceiling like the python
+        # elastic engine. So "start modest, elastic ceiling later" (n_ctx_v)
+        # would just be a smaller, permanent window for no benefit: launch
+        # directly at n_ctx_max, the ceiling plan_context() already verified
+        # fits. (Pinned configs are unaffected — there n_ctx_v == n_ctx_max.)
+        launch_ctx = n_ctx_max
         ngl = forced if forced is not None else (999 if pl.n_gpu_layers == -1
                                                   else pl.n_gpu_layers)
         cmd = [native, "-m", model_path,
                "--host", host, "--port", str(port),
-               "-c", str(n_ctx_v), "-ngl", str(ngl), "-t", str(threads),
+               "-c", str(launch_ctx), "-ngl", str(ngl), "-t", str(threads),
                "--alias", name,
-               "--jinja"]
+               "--jinja",
+               # One character = one conversation at a time through its Anamnesis
+               # proxy. llama-server's "auto" default spins up 4 parallel slots,
+               # each with its own compute-buffer VRAM allocation — wasted memory
+               # we'd rather have as headroom (see autofit's CPU-bias margin).
+               "--parallel", "1"]
         if eff.flash_attn:
             cmd += ["-fa", eff.flash_attn]
         if eff.kv_cache_type:          # KV-cache compaction (e.g. q8_0)
@@ -89,7 +111,8 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                + f" est={pl.est_tps} tok/s — {pl.reason}")
         if forced is not None:
             why = f"runtime=llama-server ngl={forced} (explicit override)"
-        return LaunchPlan(cmd, why, ctx_why, n_ctx_v, n_ctx_max)
+        # n_ctx == n_ctx_max here: what's recorded/shown is what's really running.
+        return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max)
 
     layers = forced if forced is not None else pl.n_gpu_layers
     if os.environ.get("PLEIADES_ENGINE", "elastic").lower() == "llama_cpp":

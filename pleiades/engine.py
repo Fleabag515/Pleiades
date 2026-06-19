@@ -32,6 +32,25 @@ from .tools import ToolBelt, ToolContext, build_default_belt
 _KEY_COOLDOWN: dict[str, float] = {}   # raw key -> unix ts when it's usable again
 _LAST_KEY: dict[str, str] = {}         # "provider:profile" -> last key picked
 
+# The openai SDK's own default timeout is very long (read: effectively
+# unbounded for a chat call) and stacks with its own retry/backoff. A stalled
+# upstream (model wedged, Anamnesis proxy down, network hiccup) then blocks
+# inside client.chat.completions.create() for ages before anything raises —
+# "loading forever" in the UI even though server.py's NDJSON generator (and
+# next.html's talkSend(), which already renders {"type":"error"} correctly)
+# are both ready to surface the failure the moment it actually arrives.
+#
+# 120s was the first guess; a live trace on this machine showed it's too
+# tight for a real (not stalled) chat turn — _client_for() bridges the FULL
+# harness tool belt (60+ tools) into every chat message, which alone is a
+# ~20k-token system prompt. On a 35B-A3B MoE model with experts offloaded to
+# CPU (measured ~120 tok/s prompt-eval, ~20 tok/s generation here), that's
+# 150-200s of prefill before generation even starts — a genuinely slow but
+# *working* request, not a hang. 120s would abort it with a spurious timeout
+# error. Generous but still bounded: a real stall (proxy down, wedged
+# process) should never take 10 minutes to surface either way.
+_UPSTREAM_TIMEOUT = 600.0
+
 
 def _provider_for(model: str) -> Optional[str]:
     if model.startswith("openrouter:"):
@@ -236,7 +255,8 @@ class Engine:
         hand back a fresh client. Cheap when the key hasn't actually changed —
         _point_upstream's set_upstream() no-ops in that case."""
         from openai import OpenAI
-        return OpenAI(base_url=self._point_upstream(profile), api_key="pleiades")
+        return OpenAI(base_url=self._point_upstream(profile), api_key="pleiades",
+                      timeout=_UPSTREAM_TIMEOUT)
 
     def _handle_upstream_error(self, profile: Profile, exc: Exception) -> bool:
         """On a rate-limit/quota error from a multi-key cloud provider, bench
@@ -281,11 +301,14 @@ class Engine:
         from openai import OpenAI
 
         proxy_url = self._point_upstream(profile)
-        client = OpenAI(base_url=proxy_url, api_key="pleiades")
+        client = OpenAI(base_url=proxy_url, api_key="pleiades", timeout=_UPSTREAM_TIMEOUT)
 
         # 3. Tools, scoped to this character — the chat IS the agent, so the
-        # full harness tool registry (files, shell, git, web, browser, memory,
-        # subagents, ...) is bridged in alongside the chat-native tools.
+        # harness's lazy tool-search trio (find_tools/list_catalog/call_tool;
+        # see _bridge_harness_tools) is bridged in alongside the chat-native
+        # tools, giving on-demand reach into the full harness registry
+        # (files, shell, git, web, browser, memory, subagents, ...) without
+        # paying for 60+ full schemas on every turn.
         vault = self.manager.open_vault(profile.name)
         ctx = ToolContext(profile=profile, vault=vault, settings=self.settings)
         belt = build_default_belt(ctx)
@@ -293,16 +316,32 @@ class Engine:
         return client, ctx, belt
 
     def _bridge_harness_tools(self, belt: ToolBelt, profile: Profile) -> None:
-        """Expose every harness tool in chat (chat-native names win on clash).
+        """Expose the harness's lazy tool-search trio in chat, not its full
+        registry.
 
-        Bridged tools go through the harness permission gate (execute_tool +
-        exec_policy), exactly like `pleiades work` — chat must not be the
-        unguarded side door. `ask` prompts via self.approve (console y/N by
-        default; UIs can inject their own callback).
+        This used to loop `registry.all()` and bridge a full schema for
+        every harness tool (files, shell, git, web, browser, memory,
+        subagents, ... 60+) into the chat belt on EVERY turn — a ~20k-token
+        system prompt before the model produced a single reply token, even
+        for "hi" (see _UPSTREAM_TIMEOUT's comment above for the measured
+        prefill cost this caused). The harness already solved exactly this
+        problem for `pleiades work` via pleiades/harness/toolsearch.py:
+        find_tools/list_catalog discover tools on demand, call_tool invokes
+        them by name. Bridging those 3 small dispatch tools instead of the
+        raw registry gives chat the same reach for ~3 schemas instead of 60+,
+        loaded lazily — the model calls find_tools only when a turn actually
+        needs a capability beyond the chat-native belt.
+
+        Bridged calls go through the harness permission gate (execute_tool +
+        exec_policy / toolsearch.bind_dispatch), exactly like `pleiades work`
+        — chat must not be the unguarded side door. `ask` prompts via
+        self.approve (console y/N by default; UIs can inject their own
+        callback).
         """
         try:
             from .harness import builtins as _builtins      # noqa: F401  registers
             from .harness import identity as _identity
+            from .harness import toolsearch
             from .harness.agent import execute_tool
             from .harness.tools import registry
             from .tools import Tool
@@ -325,6 +364,9 @@ class Engine:
                 pass
 
             approve = getattr(self, "approve", None) or self._console_approve
+            # find_tools/list_catalog/call_tool read this module-level binding
+            # to apply the same approval policy call_tool dispatches into.
+            toolsearch.bind_dispatch(approve)
 
             class _Bridge(Tool):
                 def __init__(self, ht):
@@ -332,12 +374,24 @@ class Engine:
                     self.name = ht.name
                     self.description = ht.description
                     self.parameters = ht.schema
+                    # Propagate safe=True so find_tools/list_catalog/call_tool
+                    # (all dispatch plumbing, none unsafe by itself) skip
+                    # ToolBelt.dispatch's own ask-gate — without this every
+                    # lookup nags for approval under exec_policy=ask, defeating
+                    # "lazy/on-demand" before the model even reaches a real
+                    # tool. The actual target call_tool dispatches to still
+                    # gets gated correctly: execute_tool() inside run() below
+                    # checks THAT tool's own safe flag via toolsearch's bound
+                    # approve callback (see toolsearch.bind_dispatch above).
+                    self.safe = ht.safe
 
                 def run(self, ctx, **kwargs):
                     out, _err = execute_tool(self._ht, kwargs, approve)
                     return str(out)
 
-            for ht in registry.all():
+            # tags=["search"] is exactly the 3 toolsearch.py dispatch tools —
+            # not the 60+ tools they discover/invoke on the model's behalf.
+            for ht in registry.select(tags=["search"]):
                 if ht.name not in belt:
                     belt.add(_Bridge(ht))
         except Exception:

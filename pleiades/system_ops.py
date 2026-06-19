@@ -34,7 +34,13 @@ def hardware_report() -> str:
         from .models import ModelManager
         for m in ModelManager().list():
             meta = hardware.read_gguf_meta(m["path"])
-            p = place(meta, int(m.get("n_ctx", 8192)), det, cps)
+            try:
+                ctx_for_plan = int(m.get("n_ctx", 8192))
+            except (TypeError, ValueError):
+                # "auto" — report the placement for the elastic ceiling that
+                # actually launches (same value launch.py picks).
+                ctx_for_plan = hardware.plan_context(meta, det, caps=cps).n_ctx_max
+            p = place(meta, ctx_for_plan, det, cps)
             running = " (running)" if m.get("running") else ""
             lines.append(f"\nmodel '{m['name']}'{running}: {p.strategy} "
                          f"~{p.est_tps} tok/s — {p.reason}")

@@ -611,18 +611,52 @@ def _gears_for(meta: GGUFMeta, floor: int) -> list[int]:
     return gears
 
 
+def _moe_ceiling_fits(meta: GGUFMeta, n_ctx: int, hw: Hardware, caps) -> bool:
+    """MoE-aware ceiling check, additive to plan()'s dense-only one.
+
+    plan()'s fits_fully asks "does the WHOLE file fit in VRAM at this ctx?" —
+    right for dense models, but a MoE model's cold expert pool never needs to
+    be in VRAM at all (autofit.place()'s moe_cpu/moe_partial strategies park
+    it in RAM regardless of ctx). Checked against the dense rule, a 30B+ MoE
+    model never fits on a consumer GPU at any gear, so plan_context() fell
+    back to the smallest floor for no physical reason. The real ceiling for
+    MoE is "does the always-hot share (attention/shared/embeddings) + KV
+    fit" — only meaningful when the runtime in play actually supports expert
+    offload (`caps.moe_offload`); with no caps passed, this returns False and
+    plan_context()'s behaviour is unchanged (used by every existing caller
+    that doesn't know about runtime caps, and by every dense-model test).
+
+    Same VRAM margin as autofit.place() (1536 MiB, not this module's own 800
+    MiB _OVERHEAD) — 800 MiB measured too thin in practice this session
+    (swap-thrash near the ceiling); reusing autofit's already-corrected
+    margin here avoids reintroducing that on a second code path.
+    """
+    gpu = hw.gpu
+    if gpu is None or not meta.is_moe or not (caps and getattr(caps, "moe_offload", False)):
+        return False
+    from .autofit import _OVERHEAD as _moe_overhead
+    from .autofit import decompose
+    dec = decompose(meta)
+    return dec.rest + _kv_bytes(meta, n_ctx) <= gpu.vram_free - _moe_overhead
+
+
 def plan_context(meta: GGUFMeta, hw: Optional[Hardware] = None, *,
-                 floor: int = 4096) -> ContextPlan:
+                 floor: int = 4096, caps=None) -> ContextPlan:
     """Choose the launch context gear and the elastic ceiling for this machine.
 
     Policy:
       - ceiling: the largest gear whose KV still allows FULL layer offload
-        (VRAM), or — CPU / nothing fits — the largest gear whose KV fits a
-        conservative slice of available RAM. Never beyond the model's trained
-        context.
+        (VRAM) — or, for a MoE model on a runtime that offloads experts
+        (`caps`), the largest gear whose KV + always-hot share fits — or,
+        nothing fits, the largest gear whose KV fits a conservative slice of
+        available RAM. Never beyond the model's trained context.
       - launch gear: min(16k-ish target, ceiling) but never a gear that costs
         full offload when a smaller one keeps it. Elasticity upshifts later;
         layers-on-GPU is the thing worth protecting at launch.
+
+    `caps` (optional, e.g. runtime.caps()) is only used to recognize MoE
+    headroom that plan()'s dense-only check would otherwise miss; omitting
+    it reproduces the exact pre-existing dense-only behaviour.
     """
     hw = hw or detect()
     gears = _gears_for(meta, floor)
@@ -642,16 +676,19 @@ def plan_context(meta: GGUFMeta, hw: Optional[Hardware] = None, *,
                            f"elastic up to {ceiling} ({_gb(per_tok * ceiling)} KV; "
                            f"{train_note})")
 
-    # Ceiling: largest gear that still fully offloads. Falls back to the
-    # smallest gear (best-effort partial offload) when nothing does.
+    # Ceiling: largest gear that still fully offloads (dense), OR'd with the
+    # largest gear whose MoE hot-share + KV fits (additive — see
+    # _moe_ceiling_fits; a no-op for dense models / callers with no caps).
     full = [g for g in gears if plan(meta, g, hw).fits_fully]
-    if full:
-        ceiling = full[-1]
+    moe_full = [g for g in gears if g not in full and _moe_ceiling_fits(meta, g, hw, caps)]
+    if full or moe_full:
+        ceiling = max(full[-1] if full else 0, moe_full[-1] if moe_full else 0)
         start = min(_START_GEAR_TARGET, ceiling)
         start = max([g for g in gears if g <= start] or [gears[0]])
+        offload = "full offload" if ceiling in full else "MoE: experts on CPU, rest on GPU"
         return ContextPlan(start, ceiling,
                            f"launch {start} ctx (KV {_gb(per_tok * start)}), elastic up to "
-                           f"{ceiling} with full offload on {gpu.name} "
+                           f"{ceiling} — {offload} on {gpu.name} "
                            f"({_gb(gpu.vram_free)} free; {train_note})")
 
     start = gears[0]
@@ -662,12 +699,14 @@ def plan_context(meta: GGUFMeta, hw: Optional[Hardware] = None, *,
 
 
 def resolve_context(value: "int | str", model_path: str,
-                    hw: Optional[Hardware] = None) -> tuple[int, int, str]:
+                    hw: Optional[Hardware] = None, caps=None) -> tuple[int, int, str]:
     """Turn an `n_ctx` setting into concrete (n_ctx, n_ctx_max, reason).
 
     Integers (and integer strings) pass through pinned — the user said a
     number, so the engine launches there and never resizes past it.
-    "auto"/"" plans from the GGUF + hardware.
+    "auto"/"" plans from the GGUF + hardware. `caps` (optional) lets the plan
+    recognize MoE expert-offload headroom on the runtime actually in use —
+    see plan_context().
     """
     if isinstance(value, bool):
         value = int(value)
@@ -680,6 +719,6 @@ def resolve_context(value: "int | str", model_path: str,
             return v, v, "explicit setting"
         except ValueError:
             pass
-    cp = plan_context(read_gguf_meta(model_path), hw)
+    cp = plan_context(read_gguf_meta(model_path), hw, caps=caps)
     return cp.n_ctx, cp.n_ctx_max, cp.reason
 

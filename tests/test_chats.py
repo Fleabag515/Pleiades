@@ -3,7 +3,7 @@
 from pleiades import chats
 from pleiades.engine import Engine
 from pleiades.profiles import Profile
-from pleiades.tools import ToolBelt
+from pleiades.tools import ToolBelt, ToolContext
 
 
 def test_chat_crud_roundtrip():
@@ -38,7 +38,10 @@ def test_base_messages_inject_local_time():
 
 
 def test_harness_tools_bridge_into_chat_belt():
-    """The chat IS the agent: harness tools appear in the chat tool belt."""
+    """The chat IS the agent: harness tools are reachable from the chat tool
+    belt — but lazily, via find_tools/list_catalog/call_tool, not as 60+
+    full schemas bridged in directly on every turn (that was the ~20k-token
+    prefill bloat described in engine.py's _UPSTREAM_TIMEOUT comment)."""
     e = Engine.__new__(Engine)
     from pleiades import config
 
@@ -46,4 +49,13 @@ def test_harness_tools_bridge_into_chat_belt():
     belt = ToolBelt([])
     e._bridge_harness_tools(belt, Profile(name="bridge-test"))
     names = set(belt.names())
-    assert {"read_file", "run_shell", "web_search"} <= names, names
+    assert {"find_tools", "list_catalog", "call_tool"} <= names, names
+    # dispatch plumbing is safe (no-op by itself) so it never trips
+    # ToolBelt's own ask-gate before the model even tries a real tool
+    assert all(belt._tools[n].safe for n in ("find_tools", "list_catalog", "call_tool"))
+    # individual harness tools are no longer bridged in directly
+    assert not {"read_file", "run_shell", "web_search"} & names
+
+    ctx = ToolContext(profile=Profile(name="bridge-test"), vault=None, settings=e.settings)
+    catalog = belt.dispatch("list_catalog", {}, ctx)
+    assert "read_file" in catalog and "run_shell" in catalog and "web_search" in catalog

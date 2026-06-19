@@ -55,8 +55,18 @@ _SPEED_QUALITY_FLOOR = 0.973
 _MIN_TPS = {"speed": 0.0, "balanced": 10.0, "quality": 3.0}
 
 # Reserved VRAM for compute graph/scratch (same spirit as hardware._OVERHEAD).
-_OVERHEAD = 800 * 1024 ** 2
+# 800 MiB measured too thin in practice (observed <100 MiB free after real loads,
+# alongside swap thrash and OOM-adjacent hangs) — the compute graph, KV-cache
+# growth, and CUDA/Vulkan allocator fragmentation all eat into this margin.
+_OVERHEAD = 1536 * 1024 ** 2
 _FIXED_S = 0.004        # per-token fixed cost: kernel launches, sampling, routing
+
+# How much slower (relative) a candidate may be than the fastest one and still
+# win on the strength of using less VRAM. The explicit goal: don't max out the
+# GPU for a marginal speed gain — prefer the CPU-heavier plan whenever it's
+# within this tolerance, since headroom avoids OOM/swap thrash that costs far
+# more speed than this tolerance ever would.
+_CPU_BIAS_TOLERANCE = 0.15
 
 
 # --------------------------------------------------------------------------- #
@@ -237,7 +247,11 @@ def place(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None,
                             f"only {meta.expert_used} experts "
                             f"({_gb(dec.active_expert)}) read per token")))
                 # 2b. Pull expert layers back into leftover VRAM where possible.
-                spare = vram_budget - hot
+                # Only claim a fraction of "spare" — filling it to the last byte
+                # leaves zero cushion beyond _OVERHEAD for KV growth/fragmentation
+                # once real generation starts (this is what was paging into swap
+                # and hanging chat requests near the VRAM ceiling).
+                spare = (vram_budget - hot) * 0.6
                 expert_per_layer = dec.expert / n_layers
                 gpu_expert_layers = min(int(spare // max(expert_per_layer, 1)), n_layers)
                 if gpu_expert_layers > 0:
@@ -281,7 +295,23 @@ def place(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None,
         worst = candidates[0]
         worst.reason += " — WARNING: model may not fit this machine at all"
         return worst
-    return max(viable, key=lambda c: c.est_tps)
+    return _pick_cpu_biased(viable)
+
+
+def _pick_cpu_biased(viable: list[Placement]) -> Placement:
+    """Among candidates within _CPU_BIAS_TOLERANCE of the fastest, take the one
+    that uses the least VRAM — i.e. push more onto the CPU/RAM whenever the
+    speed loss for doing so is small. Maxing out VRAM for a marginal tok/s gain
+    just trades a few % speed for OOM/swap risk; that's a bad trade."""
+    best_tps = max(c.est_tps for c in viable)
+    floor = best_tps * (1 - _CPU_BIAS_TOLERANCE)
+    pool = [c for c in viable if c.est_tps >= floor]
+    chosen = min(pool, key=lambda c: c.vram_used)
+    if chosen.vram_used < max(pool, key=lambda c: c.vram_used).vram_used:
+        chosen.reason += (f" — picked over a faster option to leave more VRAM "
+                          f"headroom (within {_CPU_BIAS_TOLERANCE:.0%} of best "
+                          f"est. {best_tps} tok/s)")
+    return chosen
 
 
 # --------------------------------------------------------------------------- #

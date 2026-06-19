@@ -314,9 +314,12 @@ class ModelManager:
         return self.base_url(name)
 
     def _wait_ready(self, name: str, proc: subprocess.Popen, timeout: float) -> None:
+        """Block until the server is actually answering HTTP (state == 'running'),
+        not merely until the process exists (state == 'loading') — a caller that
+        waits expects to be able to send a request the moment this returns."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.is_running(name):
+            if self.state(name) == "running":
                 return
             if proc.poll() is not None:
                 raise ModelError(

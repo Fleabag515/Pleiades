@@ -546,7 +546,7 @@ def hw(model_name: str | None) -> None:
         meta = hardware.read_gguf_meta(m["path"])
         raw_ctx = m.get("n_ctx", "auto")
         if str(raw_ctx).strip().lower() in ("", "auto"):
-            cp = hardware.plan_context(meta, det)
+            cp = hardware.plan_context(meta, det, caps=cps)
             n_ctx_val, ctx_line = cp.n_ctx, f"\n  [dim]ctx: {cp.reason}[/dim]"
         else:
             n_ctx_val, ctx_line = int(raw_ctx), ""
@@ -684,8 +684,10 @@ def model_resize(name: str, n_ctx: int) -> None:
 @click.argument("repo")
 @click.option("--name", default="", help="Registry name (default: derived from repo).")
 @click.option("--quant", default="", help="Force a quant (e.g. Q4_K_M); default: auto-pick for this machine.")
-@click.option("--ctx", "n_ctx", default=8192, show_default=True, help="Context window to plan for.")
-def model_fetch(repo: str, name: str, quant: str, n_ctx: int) -> None:
+@click.option("--ctx", "n_ctx", default="auto", show_default=True,
+              help="Context window to register: 'auto' (planned from VRAM at each "
+                   "launch, elastic at runtime) or a number to pin it.")
+def model_fetch(repo: str, name: str, quant: str, n_ctx: str) -> None:
     """Download the best GGUF quant for THIS machine from a Hugging Face REPO.
 
     Example: pleiades model fetch bartowski/Llama-3.2-3B-Instruct-GGUF
