@@ -43,7 +43,9 @@ def _running_json() -> Path:
 class Model:
     name: str
     path: str
-    n_ctx: int = 8192
+    # "auto" (default) plans the launch window + elastic ceiling from the GGUF
+    # and detected VRAM at each start; an int pins the window (no elasticity).
+    n_ctx: "int | str" = "auto"
     # "auto" plans offload from detected hardware at each launch; int overrides
     # (0 = CPU, -1 = all layers on GPU — CUDA, ROCm, or Metal build).
     n_gpu_layers: "int | str" = "auto"
@@ -132,7 +134,7 @@ class ModelManager:
     def _save(self, data: dict) -> None:
         _models_json().write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    def add(self, name: str, path: str, *, n_ctx: int = 8192,
+    def add(self, name: str, path: str, *, n_ctx: "int | str" = "auto",
             n_gpu_layers: "int | str" = "auto",
             chat_format: str = "", port: int = 0) -> dict:
         p = Path(path).expanduser()
@@ -234,7 +236,10 @@ class ModelManager:
         from .autofit import RuntimeCaps, place
         from .hardware import read_gguf_meta
 
-        n_ctx = int(m.get("n_ctx", 8192))
+        from .hardware import resolve_context
+        n_ctx, n_ctx_max, ctx_why = resolve_context(m.get("n_ctx", "auto"), m["path"])
+        self._last_ctx = (n_ctx, n_ctx_max)
+        self._last_ctx_why = ctx_why
         explicit = m.get("n_gpu_layers", "auto")
         meta = read_gguf_meta(m["path"])
         cps = runtime.caps()
@@ -281,18 +286,33 @@ class ModelManager:
             return cmd, why
 
         layers = forced if forced is not None else pl.n_gpu_layers
-        cmd = [
-            sys.executable, "-m", "llama_cpp.server",
-            "--model", m["path"],
-            "--model_alias", m["name"],
-            "--host", m["host"], "--port", str(m["port"]),
-            "--n_ctx", str(n_ctx),
-            "--n_gpu_layers", str(layers),
-            "--n_threads", str(threads),
-            "--flash_attn", "true",
-        ]
-        if m.get("chat_format"):
-            cmd += ["--chat_format", m["chat_format"]]
+        if os.environ.get("PLEIADES_ENGINE", "elastic").lower() == "llama_cpp":
+            # escape hatch: bundled llama-cpp-python server (fixed window)
+            cmd = [
+                sys.executable, "-m", "llama_cpp.server",
+                "--model", m["path"],
+                "--model_alias", m["name"],
+                "--host", m["host"], "--port", str(m["port"]),
+                "--n_ctx", str(n_ctx),
+                "--n_gpu_layers", str(layers),
+                "--n_threads", str(threads),
+                "--flash_attn", "true",
+            ]
+            if m.get("chat_format"):
+                cmd += ["--chat_format", m["chat_format"]]
+        else:
+            # our elastic server: weights stay loaded, KV resizes in place
+            # (POST /resize; prompt overflow auto-upshifts within the ceiling)
+            cmd = [
+                sys.executable, "-m", "pleiades.inference.server",
+                "--model", m["path"],
+                "--host", m["host"], "--port", str(m["port"]),
+                "--n-ctx", str(n_ctx), "--n-ctx-max", str(n_ctx_max),
+                "--n-gpu-layers", str(layers),
+                "--alias", str(m.get("name", "local")),
+            ]
+            if m.get("chat_format"):
+                cmd += ["--chat-format", m["chat_format"]]
         why = (f"runtime=python strategy={pl.strategy} n_gpu_layers={layers} "
                f"est={pl.est_tps} tok/s — {pl.reason}")
         if forced is not None:
@@ -344,6 +364,8 @@ class ModelManager:
         logf = open(logdir / f"model-{name}.log", "ab")
         if port_note:
             logf.write(port_note.encode())
+        if getattr(self, "_last_ctx_why", ""):
+            logf.write(f"[pleiades] ctx plan: {self._last_ctx_why}\n".encode())
         logf.write(f"[pleiades] {why}\n".encode())
         logf.flush()
 
@@ -362,7 +384,9 @@ class ModelManager:
             ) from e
 
         run = self._load_running()
-        run[name] = {"pid": proc.pid, "host": m["host"], "port": m["port"]}
+        n_ctx_run, n_ctx_max_run = getattr(self, "_last_ctx", (None, None))
+        run[name] = {"pid": proc.pid, "host": m["host"], "port": m["port"],
+                     "n_ctx": n_ctx_run, "n_ctx_max": n_ctx_max_run}
         self._save_running(run)
 
         if wait:
@@ -422,6 +446,29 @@ class ModelManager:
         del run[name]
         self._save_running(run)
         return True
+
+    def resize(self, name: str, n_ctx: int) -> dict:
+        """Resize a RUNNING elastic server's context window in place."""
+        run = self._load_running().get(name)
+        if not run:
+            raise ModelError(f"model '{name}' is not running")
+        try:
+            r = httpx.post(f"http://{run['host']}:{run['port']}/resize",
+                           json={"n_ctx": int(n_ctx)}, timeout=600.0)
+        except httpx.HTTPError as e:
+            raise ModelError(f"resize failed: {e}") from e
+        if r.status_code == 404:
+            raise ModelError(
+                "this model is not running on the elastic backend (native "
+                "llama-server or PLEIADES_ENGINE=llama_cpp) — restart to resize")
+        if r.status_code != 200:
+            raise ModelError(f"resize failed: {r.text}")
+        out = r.json()
+        allr = self._load_running()
+        if name in allr:
+            allr[name]["n_ctx"] = out.get("n_ctx", int(n_ctx))
+            self._save_running(allr)
+        return out
 
     def running(self) -> list[dict]:
         out = []

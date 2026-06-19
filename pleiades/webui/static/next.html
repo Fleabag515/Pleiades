@@ -638,11 +638,19 @@ async function loadLib(){const box=document.getElementById('library');
       e.innerHTML='<div><div class="ttl">'+m.name+'</div><div class="meta">'+((m.path||'').split('/').pop())+' · '+m.n_gpu_layers+' gpu-layers'+(m.port?' · :'+m.port:'')+'</div></div>'+
         '<div class="right" style="display:flex;gap:8px;align-items:center"><span class="tagp '+(run?'tp-run':'tp-idle')+'">'+(run?'running':'idle')+'</span>'+
         '<button class="btn sm" onclick="modelAct(\''+m.name+'\',\''+( run?'stop':'start')+'\')">'+(run?'Stop':'Start')+'</button>'+
+        (run?'<button class="btn sm" title="Resize context window" onclick="openResize(\''+m.name+'\')" style="margin-left:4px">↕ ctx</button>':'')+
         (!run?'<button class="btn sm" style="color:var(--bad);margin-left:4px" onclick="deleteModel(\''+m.name+'\')" title="Remove">&#x2715;</button>':'')+
         '</div>';box.append(e)});
   }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+e.message+'</div>'}
 }
 async function modelAct(name,act){try{await fetch('/api/models/'+encodeURIComponent(name)+'/'+act,{method:'POST'});setTimeout(function(){loadLib();try{loadDeck()}catch(e){}},700)}catch(e){}}
+function openResize(name){
+  const n=prompt('New context window size for "'+name+'" (elastic resize — no model reload):','16384');
+  if(!n||isNaN(parseInt(n)))return;
+  fetch('/api/models/'+encodeURIComponent(name)+'/resize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({n_ctx:parseInt(n)})})
+    .then(r=>r.json()).then(d=>{alert('Resized to n_ctx='+d.n_ctx+' in '+(d.took_ms||'?')+' ms');loadLib();})
+    .catch(e=>alert('Resize failed: '+e.message));
+}
 async function refreshState(){
   try{const h=await api('/api/hardware');const g=h.gpus&&h.gpus[0];
     if(g&&g.vram_total){const used=g.vram_total-g.vram_free;const pct=Math.round(used/g.vram_total*100);

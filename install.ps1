@@ -160,11 +160,14 @@ function Resolve-Gpu {
 function Clone-Repo {
   if (Test-Path (Join-Path $Dir ".git")) {
     Say "Updating existing checkout at $Dir"
-    git -C $Dir fetch origin $Branch 2>$null
+    # 2>&1 | Out-Null: merges stderr into stdout then discards both; avoids
+    # $ErrorActionPreference=Stop treating git's informational stderr as a
+    # terminating error (the 2>$null form is unreliable in irm|iex context).
+    git -C $Dir fetch origin $Branch 2>&1 | Out-Null
     # Hard-reset to the remote branch so shallow clones update cleanly; untracked
     # files (e.g. your .env) are preserved.
-    git -C $Dir reset --hard "origin/$Branch" 2>$null
-    if ($LASTEXITCODE -ne 0) { git -C $Dir pull --ff-only 2>$null }
+    git -C $Dir reset --hard "origin/$Branch" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { git -C $Dir pull --ff-only 2>&1 | Out-Null }
   } else {
     Say "Cloning Pleiades into $Dir"
     git clone --branch $Branch $Repo $Dir

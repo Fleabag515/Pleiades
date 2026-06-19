@@ -1142,6 +1142,17 @@ def create_app() -> FastAPI:
     def models_stop(name: str) -> dict:
         return {"ok": mm.stop(name)}
 
+    class ResizeBody(BaseModel):
+        n_ctx: int
+
+    @app.post("/api/models/{name}/resize")
+    def models_resize(name: str, body: ResizeBody) -> dict:
+        """Resize a running elastic server's KV cache in place (no model reload)."""
+        try:
+            return mm.resize(name, body.n_ctx)
+        except ModelError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     @app.get("/api/email/presets")
     def email_presets() -> dict:
         return config.EMAIL_PRESETS

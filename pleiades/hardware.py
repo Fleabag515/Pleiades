@@ -262,6 +262,7 @@ class GGUFMeta:
     n_embd: int = 0
     n_head: int = 0
     n_head_kv: int = 0
+    n_ctx_train: int = 0
     quant: str = ""
     architecture: str = ""
     # FFN / MoE structure (0 = absent/unknown)
@@ -338,6 +339,7 @@ def read_gguf_meta(path: "str | Path") -> GGUFMeta:
         meta.n_embd = _i("embedding_length")
         meta.n_head = _i("attention.head_count")
         meta.n_head_kv = _i("attention.head_count_kv") or meta.n_head
+        meta.n_ctx_train = _i("context_length")
         meta.ffn_len = _i("feed_forward_length")
         meta.expert_count = _i("expert_count")
         meta.expert_used = _i("expert_used_count")
@@ -384,10 +386,8 @@ def _kv_bytes(meta: GGUFMeta, n_ctx: int) -> int:
     """KV cache estimate (f16 K+V per layer)."""
     if not (meta.n_layers and meta.n_embd and meta.n_head):
         # ~order-of-magnitude fallback: 1 MiB per layer per 1k ctx
-        layers = meta.n_layers or _DEFAULT_LAYERS
-        return layers * max(n_ctx, 512) * 1024
-    head_dim = meta.n_embd // meta.n_head
-    return meta.n_layers * n_ctx * meta.n_head_kv * head_dim * 2 * 2
+        return kv_bytes_per_token(meta) * max(n_ctx, 512)
+    return kv_bytes_per_token(meta) * n_ctx
 
 
 def plan(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None) -> Plan:
@@ -566,3 +566,120 @@ def pick_quant(files: list[dict], hw: Optional[Hardware] = None,
     smallest = min(candidates, key=lambda c: c["size"])
     smallest["why"] = "smallest available quant (machine is tight on memory)"
     return smallest
+
+
+# --------------------------------------------------------------------------- #
+# Context planning (virtual context / elastic engine)
+# --------------------------------------------------------------------------- #
+
+# Discrete context "gears". The engine launches in a modest gear and the
+# elastic server upshifts under pressure (or on prompt overflow), so VRAM is
+# only ever spent on context a workload actually needed.
+CONTEXT_GEARS = [4096, 8192, 16384, 32768, 65536, 131072]
+
+# Launch gear preference: big enough for almost every chat / short agentic
+# turn, small enough to leave VRAM for layers. Elasticity covers the rest.
+_START_GEAR_TARGET = 16384
+
+
+def kv_bytes_per_token(meta: GGUFMeta, bytes_per_elem: int = 2) -> int:
+    """KV cache cost of ONE context token (K+V, all layers), f16 by default."""
+    if not (meta.n_layers and meta.n_embd and meta.n_head):
+        # order-of-magnitude fallback: ~1 KiB per layer per token
+        return (meta.n_layers or _DEFAULT_LAYERS) * 1024
+    head_dim = meta.n_embd // meta.n_head
+    return meta.n_layers * meta.n_head_kv * head_dim * 2 * bytes_per_elem
+
+
+@dataclass
+class ContextPlan:
+    n_ctx: int        # launch gear
+    n_ctx_max: int    # elastic ceiling (resize never exceeds this)
+    reason: str
+
+    def describe(self) -> str:
+        return self.reason
+
+
+def _gears_for(meta: GGUFMeta, floor: int) -> list[int]:
+    ceiling = meta.n_ctx_train or CONTEXT_GEARS[-1]
+    gears = [g for g in CONTEXT_GEARS if floor <= g <= ceiling]
+    if not gears:
+        gears = [min(max(floor, CONTEXT_GEARS[0]), ceiling)]
+    if ceiling not in gears and ceiling > gears[-1]:
+        gears.append(ceiling)
+    return gears
+
+
+def plan_context(meta: GGUFMeta, hw: Optional[Hardware] = None, *,
+                 floor: int = 4096) -> ContextPlan:
+    """Choose the launch context gear and the elastic ceiling for this machine.
+
+    Policy:
+      - ceiling: the largest gear whose KV still allows FULL layer offload
+        (VRAM), or — CPU / nothing fits — the largest gear whose KV fits a
+        conservative slice of available RAM. Never beyond the model's trained
+        context.
+      - launch gear: min(16k-ish target, ceiling) but never a gear that costs
+        full offload when a smaller one keeps it. Elasticity upshifts later;
+        layers-on-GPU is the thing worth protecting at launch.
+    """
+    hw = hw or detect()
+    gears = _gears_for(meta, floor)
+    per_tok = kv_bytes_per_token(meta)
+    gpu = hw.gpu
+    train_note = (f"trained ctx {meta.n_ctx_train}" if meta.n_ctx_train
+                  else "trained ctx unknown")
+
+    if gpu is None:
+        ram_slice = int(hw.ram_available * 0.25)
+        fitting = [g for g in gears if g * per_tok <= ram_slice] or [gears[0]]
+        ceiling = fitting[-1]
+        start = min(_START_GEAR_TARGET, ceiling)
+        start = max([g for g in gears if g <= start] or [gears[0]])
+        return ContextPlan(start, ceiling,
+                           f"CPU: KV {_gb(per_tok * start)} at {start} ctx in RAM; "
+                           f"elastic up to {ceiling} ({_gb(per_tok * ceiling)} KV; "
+                           f"{train_note})")
+
+    # Ceiling: largest gear that still fully offloads. Falls back to the
+    # smallest gear (best-effort partial offload) when nothing does.
+    full = [g for g in gears if plan(meta, g, hw).fits_fully]
+    if full:
+        ceiling = full[-1]
+        start = min(_START_GEAR_TARGET, ceiling)
+        start = max([g for g in gears if g <= start] or [gears[0]])
+        return ContextPlan(start, ceiling,
+                           f"launch {start} ctx (KV {_gb(per_tok * start)}), elastic up to "
+                           f"{ceiling} with full offload on {gpu.name} "
+                           f"({_gb(gpu.vram_free)} free; {train_note})")
+
+    start = gears[0]
+    p = plan(meta, start, hw)
+    return ContextPlan(start, start,
+                       f"tight VRAM: {start} ctx is the floor (KV {_gb(per_tok * start)}; "
+                       f"{p.n_gpu_layers}/{p.n_layers} layers on {gpu.name}; {train_note})")
+
+
+def resolve_context(value: "int | str", model_path: str,
+                    hw: Optional[Hardware] = None) -> tuple[int, int, str]:
+    """Turn an `n_ctx` setting into concrete (n_ctx, n_ctx_max, reason).
+
+    Integers (and integer strings) pass through pinned — the user said a
+    number, so the engine launches there and never resizes past it.
+    "auto"/"" plans from the GGUF + hardware.
+    """
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, int):
+        return value, value, "explicit setting"
+    text = str(value).strip().lower()
+    if text not in ("", "auto"):
+        try:
+            v = int(text)
+            return v, v, "explicit setting"
+        except ValueError:
+            pass
+    cp = plan_context(read_gguf_meta(model_path), hw)
+    return cp.n_ctx, cp.n_ctx_max, cp.reason
+
