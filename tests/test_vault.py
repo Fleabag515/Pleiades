@@ -43,3 +43,10 @@ def test_passphrase_key_is_stable():
 
 def test_site_key():
     assert Vault.site_key("Example.COM") == "site:example.com"
+
+
+def test_site_key_strips_www():
+    # 'instagram.com' and 'www.instagram.com' must resolve to the same key --
+    # otherwise a secret stored under one form is unreachable under the other.
+    assert Vault.site_key("www.instagram.com") == "site:instagram.com"
+    assert Vault.site_key("Instagram.com") == Vault.site_key("WWW.Instagram.COM")

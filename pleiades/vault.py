@@ -162,4 +162,10 @@ class Vault:
     # -- helpers ------------------------------------------------------------ #
     @staticmethod
     def site_key(domain: str) -> str:
-        return f"{SITE_PREFIX}{domain.lower().strip()}"
+        """Canonicalize a domain into its vault key. Lowercased, and a leading
+        'www.' is stripped, so 'instagram.com' and 'www.instagram.com' always
+        resolve to the same secret regardless of which form was used to store it."""
+        domain = domain.lower().strip()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return f"{SITE_PREFIX}{domain}"

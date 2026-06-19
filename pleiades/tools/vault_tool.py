@@ -48,9 +48,14 @@ class VaultTool(Tool):
     @staticmethod
     def _normalize(name: str) -> str:
         name = name.strip()
-        # Keep reserved keys as-is; namespace bare domains under site:.
-        if name in RESERVED_KEYS or name.startswith("site:"):
+        # Reserved keys are exact, Pleiades-managed names -- never touched.
+        if name in RESERVED_KEYS:
             return name
+        # Site credentials always go through site_key() so 'instagram.com',
+        # 'www.instagram.com', 'Instagram.com', and 'site:WWW.Instagram.com'
+        # all resolve to the one stored secret, however the model phrases it.
+        if name.startswith("site:"):
+            return Vault.site_key(name[len("site:"):])
         if "." in name and " " not in name:
             return Vault.site_key(name)
         return name
