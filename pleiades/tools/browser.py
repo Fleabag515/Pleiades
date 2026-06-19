@@ -1,105 +1,43 @@
-"""Headed browser control via Camoufox (anti-fingerprint Firefox).
+"""Headed browser control — delegates to the harness browser module.
 
-Each character gets a persistent browser context at ~/.pleiades/profiles/<name>/browser
-so logins and cookies survive across sessions. The browser is headed (headless=False)
-so it runs visibly alongside the user.
+Single implementation: `harness/builtins/browser.py` already does Camoufox
+(anti-fingerprint Firefox) with a Playwright fallback, persistent per-profile
+cookies, CAPTCHA/challenge detection, and clickable/input-field hints. This
+module just binds that shared implementation to the current character's
+browser_dir and exposes it as a chat-path Tool — the same delegation
+tools/search.py does against harness/builtins/web.py's web_search().
 
-Requires the [browser] extra and a one-time `camoufox fetch` to download the browser.
-The session is kept alive across tool calls within a turn (see ToolContext.browser()).
+The harness module keeps ONE browser window per process (module-level state,
+not per-character) — fine for its usual one-character-per-process callers
+(Discord bot, `pleiades work`). The chat path can serve several characters
+from one process (e.g. the webui), so `_bind()` force-closes the shared
+window whenever the active character changes, ensuring two characters' pages
+never overlap. True concurrent browser use by two characters at once isn't
+supported here (it isn't really a coherent scenario for a single headed
+window anyway) — ponytail: no locking added for that; revisit if a real
+multi-character-at-once browser need shows up.
+
+Requires the [browser] extra and a one-time `camoufox fetch` to download the
+browser.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+import os
 
 from . import Tool, ToolContext
-from ..config import browser_dir
+
+_LAST_PROFILE: dict[str, str | None] = {"dir": None}
 
 
-class BrowserSession:
-    """A lazily-started, persistent, headed Camoufox session for one character."""
+def _bind(ctx: ToolContext) -> None:
+    from ..harness.builtins import browser as hb
 
-    def __init__(self, profile, headless: bool = False):
-        self.profile = profile
-        self.headless = headless
-        self._cm = None       # the Camoufox context manager
-        self._browser = None  # BrowserContext (persistent) or Browser
-        self._page = None
-
-    def _ensure_page(self):
-        if self._page is not None:
-            return self._page
-        try:
-            from camoufox.sync_api import Camoufox
-        except ImportError as e:
-            raise RuntimeError(
-                "Camoufox is not installed. Install the [browser] extra and run `camoufox fetch`."
-            ) from e
-
-        user_data = browser_dir(self.profile.name)
-        user_data.mkdir(parents=True, exist_ok=True)
-
-        self._cm = Camoufox(
-            headless=self.headless,
-            persistent_context=True,
-            user_data_dir=str(user_data),
-        )
-        self._browser = self._cm.__enter__()
-        # Persistent contexts expose .pages / .new_page directly.
-        pages = getattr(self._browser, "pages", None)
-        if pages:
-            self._page = pages[0]
-        else:
-            self._page = self._browser.new_page()
-        return self._page
-
-    # -- actions ------------------------------------------------------------ #
-    def goto(self, url: str) -> str:
-        page = self._ensure_page()
-        page.goto(url, wait_until="domcontentloaded")
-        return f"Loaded {page.url} — title: {page.title()}"
-
-    def click(self, selector: Optional[str] = None, text: Optional[str] = None) -> str:
-        page = self._ensure_page()
-        if text and not selector:
-            page.get_by_text(text, exact=False).first.click()
-            return f"Clicked element with text: {text!r}"
-        if selector:
-            page.click(selector)
-            return f"Clicked: {selector}"
-        return "[browser error] click needs a selector or text."
-
-    def type(self, selector: str, text: str, submit: bool = False) -> str:
-        page = self._ensure_page()
-        page.fill(selector, text)
-        if submit:
-            page.press(selector, "Enter")
-        return f"Typed into {selector}" + (" and submitted." if submit else ".")
-
-    def read(self, selector: Optional[str] = None, max_chars: int = 4000) -> str:
-        page = self._ensure_page()
-        if selector:
-            el = page.query_selector(selector)
-            text = el.inner_text() if el else ""
-        else:
-            text = page.inner_text("body")
-        text = " ".join(text.split())
-        return text[:max_chars]
-
-    def screenshot(self, path: Optional[str] = None) -> str:
-        page = self._ensure_page()
-        out = path or str(browser_dir(self.profile.name) / "screenshot.png")
-        page.screenshot(path=out, full_page=True)
-        return f"Saved screenshot to {out}"
-
-    def close(self) -> None:
-        if self._cm is not None:
-            try:
-                self._cm.__exit__(None, None, None)
-            finally:
-                self._cm = None
-                self._browser = None
-                self._page = None
+    target = ctx.profile.browser_dir
+    if _LAST_PROFILE["dir"] not in (None, target):
+        hb.browser_close()
+    _LAST_PROFILE["dir"] = target
+    hb.bind_browser_profile(target)
 
 
 class BrowserTool(Tool):
@@ -126,20 +64,28 @@ class BrowserTool(Tool):
     }
 
     def run(self, ctx: ToolContext, action: str, **kw) -> str:
-        session = ctx.browser()
+        from ..harness.builtins import browser as hb
+
+        _bind(ctx)
         action = action.lower().strip()
         if action == "goto":
             if not kw.get("url"):
                 return "[browser error] 'goto' needs a 'url'."
-            return session.goto(kw["url"])
+            return hb.browser_open(kw["url"])
         if action == "click":
-            return session.click(selector=kw.get("selector"), text=kw.get("text"))
+            target = kw.get("text") or kw.get("selector")
+            if not target:
+                return "[browser error] 'click' needs a 'selector' or 'text'."
+            return hb.browser_click(target)
         if action == "type":
             if not kw.get("selector") or kw.get("text") is None:
                 return "[browser error] 'type' needs 'selector' and 'text'."
-            return session.type(kw["selector"], kw["text"], submit=bool(kw.get("submit")))
+            out = hb.browser_fill(kw["selector"], kw["text"])
+            if kw.get("submit"):
+                out = out + " " + hb.browser_press("Enter")
+            return out
         if action == "read":
-            return session.read(selector=kw.get("selector"))
+            return hb.browser_read()
         if action == "screenshot":
-            return session.screenshot()
+            return hb.browser_screenshot(os.path.join(ctx.profile.browser_dir, "screenshot.png"))
         return f"[browser error] unknown action '{action}'."

@@ -110,13 +110,20 @@ def _retryable_key_error_status(exc: Exception) -> Optional[int]:
 
 
 _REFLECTION = (
-    "\n\n[Self-check after {n} steps — keep going; do NOT end your turn or stop here] "
-    "Quickly evaluate, then CONTINUE working:\n"
-    "- Are you making real progress, or repeating the same actions/tool calls (looping)?\n"
-    "- If you are looping or stuck, do NOT give up or finish — change strategy: re-read the "
-    "goal, try a different tool or angle, break the task down, or gather missing info.\n"
-    "- Only give a final answer once the goal is genuinely accomplished; otherwise take the "
-    "next concrete action toward it."
+    "\n\n[Self-check after {n} steps] Before continuing, genuinely evaluate — this is "
+    "not a formality:\n"
+    "- Progress: what concrete, verifiable progress have you made since the last check? "
+    "If you can't point to any, that's a real signal, not a reason to push harder the "
+    "same way.\n"
+    "- Looping: are you repeating the same actions/tool calls without new information? "
+    "If so, you must change approach now — a different tool, a different angle, breaking "
+    "the task into smaller pieces, or gathering missing info — before your next action.\n"
+    "- Blocked/impossible: if you've made several genuinely different attempts and the "
+    "goal is still not achievable (missing access or permissions, a contradiction in the "
+    "request, a tool or resource that doesn't exist), STOP here. Say plainly that you're "
+    "blocked, explain what you tried, and end your turn — do not keep repeating attempts "
+    "that already failed.\n"
+    "Otherwise, take one concrete next step toward the goal."
 )
 
 
@@ -472,10 +479,19 @@ class Engine:
         tools = belt.openai_schema()
 
         interval = max(0, getattr(self.settings, "eval_interval", 40))
+        ceiling = max(1, getattr(self.settings, "max_rounds", 400))
         round_i = 0
+        last_text = ""
         while True:
             if interval and round_i and round_i % interval == 0:
                 messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
+            if round_i >= ceiling:
+                # Absolute safety net: the self-check above gets ~ceiling/interval
+                # chances to resolve a loop/blocker first; this only fires if it never did.
+                return last_text or (
+                    f"(stopped: hit the {ceiling}-round safety ceiling without a final "
+                    f"answer — the self-check every {interval} rounds never resolved it.)"
+                )
             round_i += 1
             resp, client = self._chat_create(
                 client, profile,
@@ -485,6 +501,8 @@ class Engine:
                 tool_choice="auto" if tools else None,
             )
             msg = resp.choices[0].message
+            if msg.content:
+                last_text = msg.content
             tool_calls = getattr(msg, "tool_calls", None)
 
             if not tool_calls:
@@ -547,6 +565,7 @@ class Engine:
             import time as _time
 
             interval = max(0, getattr(self.settings, "eval_interval", 40))
+            ceiling = max(1, getattr(self.settings, "max_rounds", 400))
             round_i = 0
             while True:
                 if should_stop and should_stop():
@@ -555,6 +574,19 @@ class Engine:
                 if interval and round_i and round_i % interval == 0:
                     messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
                     yield {"type": "reasoning", "text": "[self-check] evaluating progress and checking for loops…"}
+                if round_i >= ceiling:
+                    # Absolute safety net: the self-check above gets ~ceiling/interval
+                    # chances to resolve a loop/blocker first; this only fires if it never did.
+                    msg_text = (
+                        f"(stopped: hit the {ceiling}-round safety ceiling without a final "
+                        f"answer — the self-check every {interval} rounds never resolved it.)"
+                    )
+                    yield {"type": "token", "text": msg_text}
+                    n_tokens += max(1, len(msg_text) // 4)
+                    now = _time.time()
+                    t_first = t_first or now
+                    t_last = now
+                    break
                 round_i += 1
                 content = ""
                 calls: dict[int, dict] = {}

@@ -103,13 +103,20 @@ _WARN_NOTICE = (
 )
 
 _REFLECTION = (
-    "\n\n[Self-check after {n} steps — keep going; do NOT end your turn or stop here] "
-    "Quickly evaluate, then CONTINUE working:\n"
-    "- Are you making real progress, or repeating the same actions/tool calls (looping)?\n"
-    "- If you are looping or stuck, do NOT give up or finish — change strategy: re-read the "
-    "goal, try a different tool or angle, break the task down, or gather missing info.\n"
-    "- Only give a final answer once the goal is genuinely accomplished; otherwise take the "
-    "next concrete action toward it."
+    "\n\n[Self-check after {n} steps] Before continuing, genuinely evaluate — this is "
+    "not a formality:\n"
+    "- Progress: what concrete, verifiable progress have you made since the last check? "
+    "If you can't point to any, that's a real signal, not a reason to push harder the "
+    "same way.\n"
+    "- Looping: are you repeating the same actions/tool calls without new information? "
+    "If so, you must change approach now — a different tool, a different angle, breaking "
+    "the task into smaller pieces, or gathering missing info — before your next action.\n"
+    "- Blocked/impossible: if you've made several genuinely different attempts and the "
+    "goal is still not achievable (missing access or permissions, a contradiction in the "
+    "request, a tool or resource that doesn't exist), STOP here. Say plainly that you're "
+    "blocked, explain what you tried, and end your turn — do not keep repeating attempts "
+    "that already failed.\n"
+    "Otherwise, take one concrete next step toward the goal."
 )
 
 
@@ -208,12 +215,22 @@ class Agent:
         warned = False
         fails = 0
         interval = max(0, getattr(self.cfg, "eval_interval", 40))
+        ceiling = max(1, getattr(self.cfg, "max_rounds", 400))
 
         step = 0
         while True:
             if interval and step and step % interval == 0:
                 messages.append({"role": "user", "content": _REFLECTION.format(n=step)})
                 emit("reflect", {"step": step})
+            if step >= ceiling:
+                # Absolute safety net: the self-check above gets ~ceiling/interval
+                # chances to resolve a loop/blocker first; this only fires if it never did.
+                answer = answer or (
+                    f"(stopped: hit the {ceiling}-step safety ceiling without a final "
+                    f"answer — the self-check every {interval} steps never resolved it.)"
+                )
+                emit("done", answer)
+                return AgentResult(answer=answer, steps=step, transcript=messages)
             try:
                 reply = self.llm.chat(messages, active, tier, system=system)
                 fails = 0

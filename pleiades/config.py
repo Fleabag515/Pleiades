@@ -263,8 +263,14 @@ class Settings:
     # --- Agent harness: execution policy + loop ---
     exec_policy: str = "ask"          # ask | allow | deny (read-only tools always run)
     workspace_root: str = "."
-    max_steps: int = 40           # hard cap for Claude-lab/subagents; the main loop is unbounded
-    eval_interval: int = 40       # inject a self-evaluation nudge every N agent turns (0 = off)
+    max_steps: int = 40           # hard cap for Claude-lab/subagents
+    eval_interval: int = 40       # self-evaluation check every N agent turns (0 = off); the
+                                   # check can itself end the turn if the model decides it's
+                                   # stuck/looping/blocked — see _REFLECTION in engine.py/agent.py
+    max_rounds: int = 400         # absolute safety ceiling for the main chat loop (engine.py,
+                                   # harness/agent.py). Set well above eval_interval so the
+                                   # self-eval gets several chances to resolve a loop first;
+                                   # this only fires if the model never takes that out.
     max_subagent_depth: int = 3
     context_budget: int = 180_000
     tool_mode: str = "auto"           # auto | all | search
@@ -348,6 +354,7 @@ class Settings:
         if os.environ.get("PLEIADES_EXEC_POLICY"):
             s.exec_policy = os.environ["PLEIADES_EXEC_POLICY"]
         s.eval_interval = _int("PLEIADES_EVAL_INTERVAL", s.eval_interval)
+        s.max_rounds = _int("PLEIADES_MAX_ROUNDS", s.max_rounds)
 
         # The "openai" backend defaults to our local inference engine.
         if not s.openai_host:

@@ -24,7 +24,6 @@ class ToolContext:
     profile: "Profile"
     vault: "Vault"
     settings: "Settings"
-    _browser: Any = field(default=None, repr=False)
     _http: Any = field(default=None, repr=False)
 
     @property
@@ -35,23 +34,10 @@ class ToolContext:
             self._http = httpx.Client(timeout=30.0)
         return self._http
 
-    def browser(self):
-        """Lazily create (and reuse) the per-character browser session."""
-        if self._browser is None:
-            from .browser import BrowserSession
-
-            self._browser = BrowserSession(self.profile)
-        return self._browser
-
     def close(self) -> None:
         if self._http is not None:
             self._http.close()
             self._http = None
-        if self._browser is not None:
-            try:
-                self._browser.close()
-            finally:
-                self._browser = None
 
 
 class Tool:
