@@ -78,6 +78,25 @@ def test_cpu_when_no_gpu():
     assert pl.strategy == "cpu"
 
 
+def test_ubatch_auto_picked_when_vram_has_headroom():
+    """Generous VRAM beyond the chosen placement: autofit steps -ub up."""
+    pl = place(_dense_meta(6), 4096, _hw(vram_gb=24))
+    assert pl.strategy == "full_gpu"
+    assert pl.n_ubatch == 2048
+
+
+def test_ubatch_default_when_vram_is_tight():
+    """Just barely fits: no spare VRAM to risk a bigger batch buffer."""
+    pl = place(_dense_meta(10), 4096, _hw(vram_gb=11))
+    assert pl.n_ubatch == 0
+
+
+def test_ubatch_default_on_cpu_only():
+    pl = place(_dense_meta(6), 4096, _hw(vram_gb=0))
+    assert pl.strategy == "cpu"
+    assert pl.n_ubatch == 0
+
+
 def test_known_gpu_bandwidth_used():
     from pleiades.autofit import gpu_bandwidth
     assert gpu_bandwidth(GPU("nvidia", "NVIDIA GeForce RTX 2080 Ti", 0, 0)) == 616e9

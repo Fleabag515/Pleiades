@@ -195,11 +195,31 @@ class Placement:
     strategy: str                  # full_gpu | moe_cpu | moe_partial | layers | cpu
     n_gpu_layers: int = -1
     n_cpu_moe: int = 0             # layers whose experts live on CPU (native only)
+    n_ubatch: int = 0              # physical batch (-ub); 0 = runtime default (512)
     est_tps: float = 0.0
     quality: float = 0.0
     vram_used: int = 0
     reason: str = ""
     feasible: bool = True
+
+
+# -ub 2048 roughly doubles prompt-prefill throughput over llama.cpp's default
+# 512 (measured: 206->391 tok/s) for ~1.3GiB extra VRAM, no decode-speed or
+# quality cost — but that's ONE measurement on ONE 11GiB NVIDIA card. -ub 4096
+# tested *worse* on the same box (less headroom left, slower prefill), so this
+# never auto-picks past 2048. Only step up when a GPU candidate has real spare
+# VRAM beyond what it already plans to use — never just to hit a target batch
+# size on hardware this hasn't been measured on.
+# ponytail: a one-box gear table, not a fitted curve. Widen it (more steps,
+# AMD/Apple-specific constants) once it's been measured on more hardware —
+# until then, "no auto step-up" is the safe default everywhere else.
+_UBATCH_HEADROOM = int(1.5 * 1024 ** 3)
+
+
+def _pick_ubatch(vram_budget: int, vram_used: int) -> int:
+    """vram_budget is already net of `_OVERHEAD` — this checks for slack
+    *beyond* that safety reserve, not just "fits at all"."""
+    return 2048 if (vram_budget - vram_used) >= _UBATCH_HEADROOM else 0
 
 
 def _tps(seconds_per_token: float) -> float:
@@ -233,9 +253,10 @@ def place(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None,
         # 1. Everything in VRAM.
         if dec.total + kv <= vram_budget:
             t = dec.active / gbw + _FIXED_S
+            vu = dec.total + kv
             candidates.append(Placement(
                 "full_gpu", n_gpu_layers=-1, est_tps=_tps(t),
-                vram_used=dec.total + kv,
+                vram_used=vu, n_ubatch=_pick_ubatch(vram_budget, vu),
                 reason=f"whole model + KV fits {_gb(gpu.vram_free)} free VRAM"))
 
         # 2. MoE: hot path in VRAM, expert pool in RAM.
@@ -245,7 +266,7 @@ def place(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None,
                 t = dec.rest / gbw + dec.active_expert / cpu_bw + _FIXED_S
                 candidates.append(Placement(
                     "moe_cpu", n_gpu_layers=-1, n_cpu_moe=n_layers,
-                    est_tps=_tps(t), vram_used=hot,
+                    est_tps=_tps(t), vram_used=hot, n_ubatch=_pick_ubatch(vram_budget, hot),
                     reason=(f"MoE split: attention/shared ({_gb(dec.rest)}) on GPU, "
                             f"{meta.expert_count} experts ({_gb(dec.expert)}) in RAM — "
                             f"only {meta.expert_used} experts "
@@ -263,10 +284,11 @@ def place(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None,
                     cpu_share = n_cpu / n_layers
                     t = (dec.rest + dec.active_expert * (1 - cpu_share)) / gbw \
                         + dec.active_expert * cpu_share / cpu_bw + _FIXED_S
+                    vu = hot + int(gpu_expert_layers * expert_per_layer)
                     candidates.append(Placement(
                         "moe_partial", n_gpu_layers=-1, n_cpu_moe=n_cpu,
                         est_tps=_tps(t),
-                        vram_used=hot + int(gpu_expert_layers * expert_per_layer),
+                        vram_used=vu, n_ubatch=_pick_ubatch(vram_budget, vu),
                         reason=(f"MoE split: experts of {n_cpu}/{n_layers} layers in "
                                 f"RAM, the rest fully in VRAM")))
 
@@ -278,9 +300,10 @@ def place(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None,
         if 0 < fit < n_layers:
             f = fit / n_layers
             t = dec.active * f / gbw + dec.active * (1 - f) / cpu_bw + _FIXED_S
+            vu = int(fit * (per_layer + kv_per_layer))
             candidates.append(Placement(
                 "layers", n_gpu_layers=fit, est_tps=_tps(t),
-                vram_used=int(fit * (per_layer + kv_per_layer)),
+                vram_used=vu, n_ubatch=_pick_ubatch(vram_budget, vu),
                 reason=f"dense split: {fit}/{n_layers} layers in VRAM",
                 feasible=dec.total * (1 - f) <= ram_budget))
 

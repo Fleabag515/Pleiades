@@ -98,8 +98,11 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             cmd += ["-ctk", eff.kv_cache_type, "-ctv", eff.kv_cache_type]
         if getattr(eff, "n_batch", 0):
             cmd += ["-b", str(eff.n_batch)]
-        if getattr(eff, "n_ubatch", 0):
-            cmd += ["-ub", str(eff.n_ubatch)]
+        # Explicit PLEIADES_N_UBATCH always wins; otherwise take autofit's
+        # hardware-sized pick (0 = runtime default, no flag passed).
+        ub = getattr(eff, "n_ubatch", 0) or pl.n_ubatch
+        if ub:
+            cmd += ["-ub", str(ub)]
         if getattr(eff, "mlock", False):
             cmd += ["--mlock"]
         if getattr(eff, "draft_model_path", "") and os.path.isfile(eff.draft_model_path):
@@ -108,6 +111,7 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
         why = (f"runtime=llama-server strategy={pl.strategy} "
                f"ngl={ngl}" + (f" n_cpu_moe={pl.n_cpu_moe}" if pl.n_cpu_moe else "")
+               + (f" ub={ub}" if ub else "")
                + f" est={pl.est_tps} tok/s — {pl.reason}")
         if forced is not None:
             why = f"runtime=llama-server ngl={forced} (explicit override)"
