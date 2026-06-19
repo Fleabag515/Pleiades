@@ -37,7 +37,10 @@ button{font-family:inherit}
 .kq .kbd{font-family:var(--mono);font-size:10.5px;background:var(--surf2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:var(--faint)}
 
 /* sidebar */
-.side{grid-area:side;background:var(--bg2);border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:3px}
+#app{transition:grid-template-columns .18s ease}
+#app.nav-collapsed{grid-template-columns:0px 1fr}
+#app.nav-collapsed .side{opacity:0;pointer-events:none}
+.side{grid-area:side;background:var(--bg2);border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:3px;overflow:hidden;transition:opacity .15s ease}
 .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
 .brand svg{width:28px;height:28px}.brand .bn{font-weight:800;font-size:16px}.brand .bs{font-size:9.5px;color:var(--faint);letter-spacing:.5px;text-transform:uppercase}
 .nl{font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:var(--faint);padding:12px 9px 4px}
@@ -150,7 +153,10 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 
 /* TALK */
 .talk{display:grid;grid-template-columns:1fr 300px;grid-template-rows:auto 1fr auto;
-  grid-template-areas:"modes rail" "scroll rail" "composer rail";height:100%;gap:0}
+  grid-template-areas:"modes rail" "scroll rail" "composer rail";height:100%;gap:0;
+  transition:grid-template-columns .18s ease}
+.talk.rail-collapsed{grid-template-columns:1fr 0px}
+.talk.rail-collapsed .rail{opacity:0;pointer-events:none;padding:14px 0;overflow:hidden;border-left:0}
 .modes{grid-area:modes;display:flex;align-items:center;gap:8px;padding:14px 18px 10px}
 .modes .seg{display:flex;background:var(--surf);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .modes .seg button{border:0;background:transparent;color:var(--muted);padding:7px 14px;cursor:pointer;font-size:12.5px;font-weight:600}
@@ -160,7 +166,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 .talkscroll{grid-area:scroll;overflow-y:auto;padding:6px 18px 10px}
 .composer{grid-area:composer;display:flex;gap:9px;padding:12px 18px 16px;border-top:1px solid var(--line)}
 .composer input{flex:1;border-radius:13px;padding:13px 15px}
-.rail{grid-area:rail;border-left:1px solid var(--line);background:var(--bg2);padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:13px}
+.rail{grid-area:rail;border-left:1px solid var(--line);background:var(--bg2);padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:13px;transition:opacity .15s ease}
 .rail .rc{background:var(--surf);border:1px solid var(--line);border-radius:12px;padding:13px}
 .rail .rc h4{margin:0 0 9px;font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--faint)}
 .spark{display:flex;align-items:flex-end;gap:2px;height:30px;margin-top:6px}
@@ -376,8 +382,10 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <section class="view flexcol" id="v-talk">
       <div class="talk">
         <div class="modes">
+          <button class="btn sm" id="btn-nav-toggle" onclick="toggleNav()" style="font-size:11px" title="Collapse the left navigation to focus on chat">‹ nav</button>
           <span class="ttl">Talk · <span id="talk-ttl">—</span></span><button class="btn sm" onclick="newTalkSession()" style="margin-left:6px;font-size:11px">+ New</button><select id="talk-sess" style="width:auto;margin-left:6px;font-size:11px" onchange="switchSession()"><option value="">— new chat —</option></select>
           <div class="sp"></div>
+          <button class="btn sm" id="btn-rail-toggle" onclick="toggleRail()" style="font-size:11px;margin-right:6px" title="Collapse the memory/throughput panel">panel ›</button>
           <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">character</span>
             <select id="talk-char" style="width:auto" onchange="charChanged()"></select></div>
         </div>
@@ -1223,6 +1231,20 @@ async function deleteCharPfp(){if(!curChar)return;
   try{await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/avatar',{method:'DELETE'});
     configChar(curChar);loadChars();}catch(e){}}
 loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);loadClaude();hfSearch();loadLib();setInterval(loadLib,2500);loadFoundryChars();
+
+// sidebar collapse (left nav + talk-view memory rail) — state persists across
+// reloads since this is our own served page, not a sandboxed artifact.
+function toggleNav(){
+  const on=document.getElementById('app').classList.toggle('nav-collapsed');
+  localStorage.setItem('pls-nav-collapsed',on?'1':'0');
+  document.getElementById('btn-nav-toggle').textContent=on?'nav ›':'‹ nav';}
+function toggleRail(){
+  const t=document.querySelector('.talk');if(!t)return;
+  const on=t.classList.toggle('rail-collapsed');
+  localStorage.setItem('pls-rail-collapsed',on?'1':'0');
+  document.getElementById('btn-rail-toggle').textContent=on?'‹ panel':'panel ›';}
+if(localStorage.getItem('pls-nav-collapsed')==='1')toggleNav();
+if(localStorage.getItem('pls-rail-collapsed')==='1')toggleRail();
 </script>
 </body>
 </html>
