@@ -512,7 +512,7 @@ async function loadChars(){
       const avUrl='/api/profiles/'+encodeURIComponent(pf.name)+'/avatar?_='+Date.now();
       e.innerHTML='<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">'+
         '<div style="position:relative;width:40px;height:40px;flex-shrink:0">'+
-        '<img src="'+avUrl+'" style="width:40px;height:40px;border-radius:50%;object-fit:cover" onerror="this.style.display=\'none\'"/>'+
+        '<img src="'+avUrl+'" style="width:40px;height:40px;border-radius:50%;object-fit:cover" onload="this.nextElementSibling.style.display=\'none\'" onerror="this.style.display=\'none\'"/>'+
         '<div class="avatar" style="position:absolute;inset:0;width:40px;height:40px;font-size:15px">'+pf.name.charAt(0).toUpperCase()+'</div></div>'+
         '<div style="flex:1"><div style="font-weight:600">'+pf.name+'</div>'+
         '<div style="font-size:11.5px;color:var(--muted)">'+(pf.model||'default engine')+'</div></div>'+
@@ -747,9 +747,44 @@ async function newTalkSession(){
   const sess=document.getElementById('talk-sess');if(sess)sess.value='';
   const cs=document.getElementById('talk-char');if(cs){cs.disabled=false;cs.title='';}
 }
+function renderChat(chat){
+  const s=document.getElementById('talkscroll');if(!s)return;s.innerHTML='';
+  const character=chat.character||'';
+  (chat.messages||[]).forEach(m=>{
+    if(m.role==='user'){
+      const u=document.createElement('div');u.className='tmsg u';
+      u.innerHTML='<div class="bub">'+escapeHtml(m.content||'')+'</div>';s.append(u);
+    }else if(m.role==='assistant'){
+      const wrap=document.createElement('div');wrap.className='tmsg';
+      wrap.innerHTML='<div class="who"><span class="avatar" style="background:linear-gradient(135deg,var(--a1),var(--a2))">'+
+        escapeHtml((character[0]||'?').toLowerCase())+'</span>'+escapeHtml(character)+'</div>';
+      const items=m.items||[];
+      const tools=items.filter(it=>it.t==='tool');
+      const text=items.filter(it=>it.t==='text').map(it=>it.text||'').join('');
+      if(tools.length){
+        const nodesEl=document.createElement('div');nodesEl.className='pipe-nodes';
+        const detailEl=document.createElement('div');detailEl.className='pipe-detail';detailEl.style.display='none';
+        tools.forEach((t,i)=>{
+          if(i>0){const ar=document.createElement('div');ar.className='pipe-arrow';ar.textContent='→';nodesEl.append(ar);}
+          const nd=document.createElement('div');nd.className='pipe-node'+(t.ok===false?' err':' ok');nd.textContent=t.name||'tool';
+          nd.onclick=()=>{document.querySelectorAll('.pipe-node').forEach(n=>n.classList.remove('sel'));nd.classList.add('sel');showNodeDetail(detailEl,t);};
+          nodesEl.append(nd);
+        });
+        wrap.append(nodesEl,detailEl);
+      }
+      const textEl=document.createElement('div');textEl.className='pipe-text';textEl.textContent=text||'(no response)';
+      wrap.append(textEl);s.append(wrap);
+    }
+  });
+  s.scrollTop=s.scrollHeight;
+}
 async function switchSession(){
   const sess=document.getElementById('talk-sess');const id=sess&&sess.value;
   const s=document.getElementById('talkscroll');if(s)s.innerHTML='';curChatId=id||null;
+  const cs=document.getElementById('talk-char');if(cs){cs.disabled=!!curChatId;cs.title=curChatId?'Start a new session (→ + New) to switch characters':'';}
+  if(!curChatId)return;
+  try{const chat=await api('/api/chats/'+encodeURIComponent(curChatId));renderChat(chat);}
+  catch(e){if(s)s.innerHTML='<div class="tmsg"><div style="color:var(--bad);font-size:13px;padding:8px 0">Failed to load session: '+escapeHtml(e.message)+'</div></div>';}
 }
 async function memInspect(){}
 async function refreshTalkRail(){

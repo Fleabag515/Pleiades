@@ -696,18 +696,29 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     # ----------------------------- avatar ----------------------------------- #
-    def _avatar_path(name: str):
-        return config.profile_dir(name) / "avatar.png"
+    _AVATAR_MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+
+    def _avatar_path(name: str, ext: str):
+        return config.profile_dir(name) / f"avatar.{ext}"
+
+    def _avatar_existing(name: str):
+        d = config.profile_dir(name)
+        for ext in ("png", "jpg", "jpeg", "webp"):
+            p = d / f"avatar.{ext}"
+            if p.is_file():
+                return p
+        return None
 
     @app.get("/api/profiles/{name}/avatar")
     def avatar_get(name: str):
         try:
-            p = _avatar_path(name)
+            p = _avatar_existing(name)
         except ValueError:
             raise HTTPException(400, "bad name")
-        if not p.is_file():
+        if not p:
             raise HTTPException(404, "no avatar")
-        return FileResponse(str(p), media_type="image/png",
+        mt = _AVATAR_MIME.get(p.suffix.lstrip("."), "image/png")
+        return FileResponse(str(p), media_type=mt,
                             headers={"Cache-Control": "no-cache"})
 
     @app.post("/api/profiles/{name}/avatar")
@@ -720,22 +731,26 @@ def create_app() -> FastAPI:
         m = re.match(r"data:image/(png|jpeg|jpg|webp);base64,(.+)", body.data, re.S)
         if not m:
             raise HTTPException(400, "Expected a data URL (png/jpeg/webp).")
+        fmt = m.group(1).lower()
         try:
             blob = base64.b64decode(m.group(2))
         except Exception:
             raise HTTPException(400, "Invalid base64 image data.")
         if len(blob) > 2 * 1024 * 1024:
             raise HTTPException(400, "Image too large (max 2 MB).")
-        _avatar_path(name).write_bytes(blob)
+        old = _avatar_existing(name)
+        if old:
+            old.unlink()
+        _avatar_path(name, fmt).write_bytes(blob)
         return {"ok": True}
 
     @app.delete("/api/profiles/{name}/avatar")
     def avatar_delete(name: str) -> dict:
         try:
-            p = _avatar_path(name)
+            p = _avatar_existing(name)
         except ValueError:
             raise HTTPException(400, "bad name")
-        if p.is_file():
+        if p:
             p.unlink()
         return {"ok": True}
 
