@@ -1318,6 +1318,9 @@ def create_app() -> FastAPI:
     # while the engine waits inside the approve callback, so the frontend
     # polls GET /approval and answers via POST /approval.
     chat_approvals: dict[str, dict] = {}
+    # Per-chat stop flags for the emergency-stop button: set() to cut a
+    # streaming run short between rounds/chunks (see Engine.stream_events).
+    chat_stops: dict[str, threading.Event] = {}
 
     def _chat_approve_cb(chat_id: str):
         import threading
@@ -1359,6 +1362,19 @@ def create_app() -> FastAPI:
         ctl["event"].set()
         return {"ok": True}
 
+    @app.post("/api/chats/{chat_id}/stop")
+    def chats_stop(chat_id: str) -> dict:
+        """Emergency stop: cut a streaming run short at the next round or chunk."""
+        evt = chat_stops.get(chat_id)
+        if not evt:
+            raise HTTPException(409, "No run in progress for this chat.")
+        evt.set()
+        ctl = chat_approvals.get(chat_id)
+        if ctl and ctl["pending"]:  # unblock a tool stuck waiting on approval
+            ctl["answer"]["ok"] = False
+            ctl["event"].set()
+        return {"ok": True}
+
     @app.post("/api/chats/{chat_id}/message")
     def chats_message(chat_id: str, body: ChatMessage) -> StreamingResponse:
         """One unified chat/agent turn, streamed as NDJSON events.
@@ -1381,12 +1397,15 @@ def create_app() -> FastAPI:
             items: list[dict] = []
             text_acc = ""
             meta: dict = {}
+            stop_evt = threading.Event()
+            chat_stops[chat_id] = stop_evt
             try:
                 from ..engine import Engine
                 engine = Engine(settings=config.Settings.load(),
                                 manager=pm, anamnesis=an,
                                 approve=_chat_approve_cb(chat_id))
-                for evt in engine.stream_events(p, body.message, system=body.system):
+                for evt in engine.stream_events(p, body.message, system=body.system,
+                                                should_stop=stop_evt.is_set):
                     if evt["type"] == "token":
                         text_acc += evt["text"]
                     elif evt["type"] in ("tool_call", "tool_result"):
@@ -1405,6 +1424,8 @@ def create_app() -> FastAPI:
                                     break
                     elif evt["type"] == "done":
                         meta = {k: evt[k] for k in ("tokens", "seconds", "tps")}
+                    elif evt["type"] == "stopped":
+                        meta["stopped"] = True
                     yield _json.dumps(evt, ensure_ascii=False) + "\n"
                 if text_acc:
                     items.append({"t": "text", "text": text_acc})
@@ -1416,6 +1437,7 @@ def create_app() -> FastAPI:
                 yield _json.dumps({"type": "error", "error": str(e)}) + "\n"
             finally:
                 chat_approvals.pop(chat_id, None)  # no stale approval cards
+                chat_stops.pop(chat_id, None)
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
 

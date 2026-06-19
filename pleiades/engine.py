@@ -15,7 +15,7 @@ Memory is Anamnesis's job — we never re-send long histories or separately pers
 from __future__ import annotations
 
 import os
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from . import config
 from .anamnesis import Anamnesis
@@ -461,7 +461,8 @@ class Engine:
                 )
 
     def stream_events(self, profile: Union[str, Profile], user_message: str,
-                      *, system: Optional[str] = None):
+                      *, system: Optional[str] = None,
+                      should_stop: Optional[Callable[[], bool]] = None):
         """The full turn as a stream of structured events.
 
         Yields dicts, in order:
@@ -469,9 +470,16 @@ class Engine:
             {"type": "tool_call", "name": str, "args": str}
             {"type": "tool_result", "name": str, "output": str, "ok": bool}
             {"type": "done", "tokens": int, "seconds": float, "tps": float}
+            {"type": "stopped"}                      should_stop() fired early
         Tokens stream live from llama.cpp; each turn runs exactly once, so
         Anamnesis stores exactly what the caller sees. Falls back to a
         non-streamed request if the backend rejects stream+tools.
+
+        `should_stop` is polled between rounds and between streamed chunks so
+        an "emergency stop" button can cut a run short; it can't interrupt a
+        single blocking tool call already in flight (e.g. a slow browser
+        action) — ponytail: add cooperative cancellation to tools if that
+        turns out to matter in practice.
         """
         if isinstance(profile, str):
             profile = self.manager.get(profile)
@@ -487,6 +495,9 @@ class Engine:
             interval = max(0, getattr(self.settings, "eval_interval", 40))
             round_i = 0
             while True:
+                if should_stop and should_stop():
+                    yield {"type": "stopped"}
+                    return
                 if interval and round_i and round_i % interval == 0:
                     messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
                     yield {"type": "reasoning", "text": "[self-check] evaluating progress and checking for loops…"}
@@ -502,6 +513,15 @@ class Engine:
                         tool_choice="auto" if tools else None, stream=True,
                     )
                     for chunk in stream:
+                        if should_stop and should_stop():
+                            close = getattr(stream, "close", None)
+                            if close:
+                                try:
+                                    close()
+                                except Exception:
+                                    pass
+                            yield {"type": "stopped"}
+                            return
                         if not chunk.choices:
                             continue
                         delta = chunk.choices[0].delta
