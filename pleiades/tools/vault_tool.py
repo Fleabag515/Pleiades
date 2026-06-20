@@ -7,8 +7,14 @@ Use this to save credentials for accounts the character creates and retrieve the
 
 from __future__ import annotations
 
+import re
+
 from . import Tool, ToolContext
 from ..vault import RESERVED_KEYS, Vault
+
+# Generic tokens that appear in almost every site key ('site:', '.com', 'www.') --
+# excluded from did-you-mean matching so they don't make unrelated keys look related.
+_STOP_TOKENS = {"site", "com", "net", "org", "io", "co", "www"}
 
 
 class VaultTool(Tool):
@@ -60,6 +66,27 @@ class VaultTool(Tool):
             return Vault.site_key(name)
         return name
 
+    @staticmethod
+    def _tokens(name: str) -> set:
+        return set(re.findall(r"[a-z0-9]+", name.lower())) - _STOP_TOKENS
+
+    @classmethod
+    def _did_you_mean(cls, name: str, vault: Vault) -> str:
+        """Suggest stored keys that share a meaningful token with `name`.
+
+        Covers guesses that never reach site_key() canonicalization at all --
+        e.g. 'instagram:steph_berry' or bare 'instagram' for a secret actually
+        stored as 'site:instagram.com'. Mirrors the 'did you mean' pattern
+        ToolBelt.dispatch() already uses for unknown tool names.
+        """
+        wanted = cls._tokens(name)
+        if not wanted:
+            return ""
+        matches = [e["key"] for e in vault.list() if cls._tokens(e["key"]) & wanted]
+        if not matches:
+            return ""
+        return " Did you mean: " + ", ".join(matches[:3]) + "?"
+
     def run(self, ctx: ToolContext, action: str, name: str = "", secret: str = "", note: str = "") -> str:
         vault = ctx.vault
         action = action.lower().strip()
@@ -88,7 +115,7 @@ class VaultTool(Tool):
             key = self._normalize(name)
             value = vault.get(key)
             if value is None:
-                return f"No secret stored under '{key}'."
+                return f"No secret stored under '{key}'." + self._did_you_mean(name, vault)
             return f"{key} = {value}"
 
         return f"[vault error] unknown action '{action}'. Use store, get, or list."
