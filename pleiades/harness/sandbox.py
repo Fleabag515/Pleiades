@@ -28,16 +28,28 @@ What's real vs. best-effort here, stated plainly (don't oversell this):
     `enabled`/exec_policy entirely. It blocks whole-system patterns (rm -rf /,
     mkfs, diskpart, fork bombs, reg delete HKLM, recursive-force-delete of a
     drive root). It is a denylist, not a guarantee -- it catches the obvious
-    catastrophic cases, not every way to phrase them.
+    catastrophic cases, not every way to phrase them. The patterns specifically
+    tolerate quoting/chaining around the dangerous target (e.g. `rm -rf "/"`,
+    `rm -rf /; rest`, `rd /s /q C:\\ && more`) via a negative lookahead instead
+    of a hard end-of-string anchor, since a plain end anchor is trivially
+    defeated by anything trailing the command -- including a closing quote,
+    which is unremarkable, not adversarial, shell style.
   - Filesystem scope: run_python gets a real in-process guard -- open() in a
-    write/append/delete mode, os.remove, os.unlink, os.rmdir, and
-    shutil.rmtree are wrapped to deny paths outside the workspace root +
-    extra_roots *before user code runs*. This is enforceable because we
-    control the script. run_shell does NOT get a true filesystem jail --
-    Windows has no chroot/namespace primitive without containers (WSL2 /
-    Docker), so beyond the hard-deny floor above, a shell command can still
-    touch anything the OS account can. A real jail is a bigger lift, tracked
-    as a follow-up, not pretended away here.
+    write/append/delete mode, os.remove, os.unlink, os.rmdir, shutil.rmtree,
+    AND the pathlib.Path equivalents (open/write_text/write_bytes/unlink/
+    rmdir, patched directly on the Path class rather than via builtins.open /
+    io.open -- pathlib's accessor layer caches its own open reference per
+    Python version in ways that make patching builtins.open/io.open
+    unreliable across 3.10-3.12, confirmed by hand) are wrapped to deny paths
+    outside the workspace root + extra_roots *before user code runs*. The
+    containment check resolves symlinks (realpath, not abspath) so a symlink
+    planted inside the workspace that points outside it doesn't fool the
+    check. This is enforceable because we control the script. run_shell does
+    NOT get a true filesystem jail -- Windows has no chroot/namespace
+    primitive without containers (WSL2 / Docker), so beyond the hard-deny
+    floor above, a shell command can still touch anything the OS account can.
+    A real jail is a bigger lift, tracked as a follow-up, not pretended away
+    here.
   - Network egress: opt-in via `network="deny"` (default stays "allow" --
     this does not change default behavior). run_python gets a real in-process
     socket block. run_shell gets a static pattern check against well-known
@@ -45,14 +57,16 @@ What's real vs. best-effort here, stated plainly (don't oversell this):
     catches the obvious cases, not a determined adversary rewriting the
     command to dodge the regex. Same honesty caveat as filesystem scope.
 
-A determined, deliberately adversarial model could route around the run_shell
-and run_python protections above (e.g. shell out to a second interpreter that
-never imports our guard, or split a denylisted command across variables).
-Defending against that needs OS-level isolation (a container or VM), which is
-GOLDEN_BASELINE.md's documented harder follow-up, not this v1. What this DOES
-reliably stop: accidental self-destructive actions (typo'd rm -rf, a careless
-cleanup script, a runaway loop) and careless-but-not-adversarial autonomous
-runs -- which is the actual failure mode this was built for.
+A determined, deliberately adversarial model could still route around the
+run_shell and run_python protections above -- e.g. shell out to a second
+interpreter that never imports our guard (os.system, subprocess, ctypes), or
+split a denylisted command across variables. Defending against that needs
+OS-level isolation (a container or VM), which is GOLDEN_BASELINE.md's
+documented harder follow-up, not this v1. What this DOES reliably stop:
+accidental self-destructive actions (typo'd rm -rf, a careless cleanup
+script, a runaway loop, a plain `Path(...).write_text(...)` outside the
+workspace) and careless-but-not-adversarial autonomous runs -- which is the
+actual failure mode this was built for.
 """
 
 from __future__ import annotations
@@ -112,16 +126,25 @@ def load_policy(cfg=None) -> SandboxPolicy:
 # --------------------------------------------------------------------------- #
 # Hard, unconditional floor (not gated by `enabled` -- see module docstring)
 # --------------------------------------------------------------------------- #
+# Note on the rm-rf-root / rd-s-q-root / remove-item-root patterns below:
+# they deliberately do NOT end on a hard `$` (end-of-string) anchor. An
+# end-of-string anchor is defeated by anything trailing the dangerous
+# target -- a closing quote (`rm -rf "/"`), a chained command
+# (`rm -rf /; rest`), redirection, etc. -- none of which is adversarial,
+# just ordinary shell style. Instead they use a negative lookahead that
+# only rejects the match when the "root" is actually the start of a longer
+# path (e.g. `/home`, `C:\Users`), so legitimate subdirectory deletions
+# still pass through untouched.
 _HARD_DENY_PATTERNS = [
-    r"rm\s+-rf\s+/(?:\s|$)",                       # rm -rf /
+    r"rm\s+-rf\s+[\"']?/[\"']?(?![\w./-])",         # rm -rf / (+ quotes/chaining)
     r"rm\s+-rf\s+/\*",                             # rm -rf /*
     r":\(\)\{\s*:\|:&\s*\};:",                      # classic shell fork bomb
     r"\bmkfs\b",
     r"\bdd\s+[^\n]*of=/dev/(?:sd|nvme|disk|hd)",   # dd ... of=/dev/sdX
     r"\bdiskpart\b",
     r"\bformat\s+[a-zA-Z]:",                        # format C:
-    r"rd\s+/s\s+/q\s+[a-zA-Z]:\\\\?\s*$",          # rd /s /q C:\
-    r"remove-item\s+[^\n]*-recurse[^\n]*-force[^\n]*[a-zA-Z]:\\\\?\s*$",
+    r"rd\s+/s\s+/q\s+[a-zA-Z]:\\\\?(?![\w\\/-])",   # rd /s /q C:\ (+ chaining)
+    r"remove-item\s+[^\n]*-recurse[^\n]*-force[^\n]*[a-zA-Z]:\\\\?(?![\w\\/-])",
     r"reg\s+delete\s+hklm",
 ]
 _HARD_DENY_RE = re.compile("|".join(_HARD_DENY_PATTERNS), re.IGNORECASE)
@@ -287,19 +310,29 @@ def attach_watchdog(pid: int, policy: SandboxPolicy) -> "_MemWatchdog":
 # --------------------------------------------------------------------------- #
 # run_python in-process guard
 # --------------------------------------------------------------------------- #
-_PY_GUARD = '''\
+# Patches builtins.open/os.remove/os.unlink/os.rmdir/shutil.rmtree (the
+# plain-function entry points) AND the equivalent pathlib.Path methods
+# directly (open/write_text/write_bytes/unlink/rmdir). pathlib does NOT
+# reliably route through builtins.open/io.open across Python versions --
+# confirmed by hand on 3.10: Path.write_text/open bottom out through an
+# accessor layer that, once io.open is reassigned to a plain Python function,
+# triggers descriptor auto-binding and silently corrupts the call's
+# positional arguments instead of cleanly dispatching to our wrapper. Patching
+# Path's own methods sidesteps that whole hazard and is the standard, well
+# understood way to monkeypatch a class.
+_PY_GUARD = '''\\
 # --- Pleiades sandbox guard (auto-injected, runs before your code) ---
-import builtins as _b, os as _os, shutil as _shutil, socket as _socket
+import builtins as _b, os as _os, pathlib as _pathlib, shutil as _shutil, socket as _socket
 _FS_ROOT = {fs_root!r}
 _EXTRA = {extra_roots!r}
 _NET_DENY = {net_deny!r}
 
 def _inside(path):
     try:
-        p = _os.path.abspath(_os.fspath(path))
+        p = _os.path.realpath(_os.fspath(path))
     except Exception:
         return False
-    roots = [_os.path.abspath(r) for r in ([_FS_ROOT] + _EXTRA)]
+    roots = [_os.path.realpath(r) for r in ([_FS_ROOT] + _EXTRA)]
     return any(p == r or p.startswith(r + _os.sep) for r in roots)
 
 _real_open = _b.open
@@ -321,6 +354,41 @@ _os.remove = _guard_path_call(_os.remove, "os.remove")
 _os.unlink = _guard_path_call(_os.unlink, "os.unlink")
 _os.rmdir = _guard_path_call(_os.rmdir, "os.rmdir")
 _shutil.rmtree = _guard_path_call(_shutil.rmtree, "shutil.rmtree")
+
+_real_path_open = _pathlib.Path.open
+def _guarded_path_open(self, mode="r", *a, **kw):
+    if any(m in mode for m in ("w", "a", "x", "+")) and not _inside(self):
+        raise PermissionError(f"sandbox: write outside workspace root denied: {{self}}")
+    return _real_path_open(self, mode, *a, **kw)
+_pathlib.Path.open = _guarded_path_open
+
+_real_write_text = _pathlib.Path.write_text
+def _guarded_write_text(self, *a, **kw):
+    if not _inside(self):
+        raise PermissionError(f"sandbox: write outside workspace root denied: {{self}}")
+    return _real_write_text(self, *a, **kw)
+_pathlib.Path.write_text = _guarded_write_text
+
+_real_write_bytes = _pathlib.Path.write_bytes
+def _guarded_write_bytes(self, *a, **kw):
+    if not _inside(self):
+        raise PermissionError(f"sandbox: write outside workspace root denied: {{self}}")
+    return _real_write_bytes(self, *a, **kw)
+_pathlib.Path.write_bytes = _guarded_write_bytes
+
+_real_path_unlink = _pathlib.Path.unlink
+def _guarded_path_unlink(self, *a, **kw):
+    if not _inside(self):
+        raise PermissionError(f"sandbox: unlink outside workspace root denied: {{self}}")
+    return _real_path_unlink(self, *a, **kw)
+_pathlib.Path.unlink = _guarded_path_unlink
+
+_real_path_rmdir = _pathlib.Path.rmdir
+def _guarded_path_rmdir(self, *a, **kw):
+    if not _inside(self):
+        raise PermissionError(f"sandbox: rmdir outside workspace root denied: {{self}}")
+    return _real_path_rmdir(self, *a, **kw)
+_pathlib.Path.rmdir = _guarded_path_rmdir
 
 if _NET_DENY:
     def _blocked_connect(self, *a, **kw):

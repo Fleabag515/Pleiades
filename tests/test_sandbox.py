@@ -5,7 +5,9 @@ Layering under test, per sandbox.py's own docstring:
   - the hard, unconditional destructive-command floor (always on, regardless
     of policy.enabled / exec_policy)
   - opt-in network-pattern blocking (network="deny")
-  - run_python's real in-process filesystem write-guard
+  - run_python's real in-process filesystem write-guard (builtins.open AND
+    the pathlib.Path equivalents)
+  - the symlink-escape closing realpath-based containment check
   - the memory watchdog (psutil-based; this is what actually enforces a
     ceiling on Windows, where POSIX rlimits aren't available)
   - config.py -> sandbox.load_policy() wiring (sandbox_enabled/sandbox_mem_mb/
@@ -59,6 +61,44 @@ def test_benign_commands_pass_safety_check():
     sb.check_command_safety("ls -la /tmp", policy)
     sb.check_command_safety("git status", policy)
     sb.check_command_safety("python script.py --flag value", policy)
+
+
+# --------------------------------------------------------------------------- #
+# Regex-anchor bypass regression (security review finding #1): the original
+# patterns ended on a trailing whitespace-or-end-of-string anchor, which is
+# defeated by completely ordinary shell syntax -- quoting, chaining,
+# redirection -- around the dangerous target. These must all still be caught
+# by the negative-lookahead-based patterns.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("cmd", [
+    'rm -rf "/"',
+    "rm -rf '/'",
+    "rm -rf /;",
+    "rm -rf / && echo done",
+    "rm -rf / # cleanup",
+    "rd /s /q C:\\;",
+    "rd /s /q C:\\ && echo done",
+    "Remove-Item -Recurse -Force C:\\;",
+    "Remove-Item -Recurse -Force C:\\ ; echo done",
+])
+def test_hard_deny_blocks_quoted_and_chained_destructive_variants(cmd):
+    policy = sb.SandboxPolicy(enabled=False)
+    with pytest.raises(sb.SandboxViolation):
+        sb.check_command_safety(cmd, policy)
+
+
+@pytest.mark.parametrize("cmd", [
+    "rm -rf /home/user/tmp",
+    "rm -rf /home/user/tmp/build",
+    "rd /s /q C:\\Users\\me\\AppData\\Temp",
+    "Remove-Item -Recurse -Force C:\\Users\\me\\scratch",
+])
+def test_hard_deny_allows_legitimate_subpaths(cmd):
+    # Regression guard for the negative-lookahead rewrite: it must keep
+    # rejecting "this is actually a longer path", not just re-broaden back
+    # to matching any rm -rf/rd/Remove-Item invocation at all.
+    policy = sb.SandboxPolicy(enabled=False)
+    sb.check_command_safety(cmd, policy)  # must NOT raise
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +169,109 @@ def test_run_python_allows_write_inside_workspace_root(tmp_path, monkeypatch):
     assert out.startswith("[exit 0]")
     assert target.exists()
     assert target.read_text() == "fine"
+
+
+# --------------------------------------------------------------------------- #
+# pathlib write-guard bypass regression (security review finding #2): the
+# original guard only patched builtins.open/os.remove/os.unlink/os.rmdir/
+# shutil.rmtree. Path.write_text/write_bytes/open/unlink/rmdir route through
+# pathlib's own accessor layer and were NOT covered -- confirmed to bypass
+# the old guard entirely. These must now be blocked the same as plain open().
+# --------------------------------------------------------------------------- #
+def test_run_python_blocks_pathlib_write_text_outside_workspace_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+
+    policy = sb.SandboxPolicy(enabled=True, fs_root=str(workspace), network="allow")
+    monkeypatch.setattr(sb, "load_policy", lambda cfg=None: policy)
+
+    code = f"from pathlib import Path\nPath(r'{outside}').write_text('pwned')\n"
+    out = shell.run_python(code, timeout=20)
+
+    assert not outside.exists()
+    assert "permission" in out.lower() or "denied" in out.lower()
+
+
+def test_run_python_blocks_pathlib_open_outside_workspace_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+
+    policy = sb.SandboxPolicy(enabled=True, fs_root=str(workspace), network="allow")
+    monkeypatch.setattr(sb, "load_policy", lambda cfg=None: policy)
+
+    code = (
+        f"from pathlib import Path\n"
+        f"with Path(r'{outside}').open('w') as f:\n    f.write('pwned')\n"
+    )
+    out = shell.run_python(code, timeout=20)
+
+    assert not outside.exists()
+    assert "permission" in out.lower() or "denied" in out.lower()
+
+
+def test_run_python_blocks_pathlib_unlink_outside_workspace_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not delete me")
+
+    policy = sb.SandboxPolicy(enabled=True, fs_root=str(workspace), network="allow")
+    monkeypatch.setattr(sb, "load_policy", lambda cfg=None: policy)
+
+    code = f"from pathlib import Path\nPath(r'{outside}').unlink()\n"
+    out = shell.run_python(code, timeout=20)
+
+    assert outside.exists()
+    assert outside.read_text() == "do not delete me"
+    assert "permission" in out.lower() or "denied" in out.lower()
+
+
+def test_run_python_allows_pathlib_write_text_inside_workspace_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "ok.txt"
+
+    policy = sb.SandboxPolicy(enabled=True, fs_root=str(workspace), network="allow")
+    monkeypatch.setattr(sb, "load_policy", lambda cfg=None: policy)
+
+    code = f"from pathlib import Path\nPath(r'{target}').write_text('fine')\n"
+    out = shell.run_python(code, timeout=20)
+
+    assert out.startswith("[exit 0]")
+    assert target.exists()
+    assert target.read_text() == "fine"
+
+
+# --------------------------------------------------------------------------- #
+# Symlink-escape regression (security review finding #3): os.path.abspath()
+# does not resolve symlinks, so a symlink planted inside the workspace root
+# but pointing outside it used to pass the containment check while the
+# actual write/delete landed outside the sandbox. The guard now resolves
+# symlinks (realpath) before the containment check.
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(sys.platform == "win32",
+                     reason="symlink creation needs elevation/dev-mode on Windows CI runners")
+def test_run_python_blocks_write_through_symlink_escaping_workspace_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    secret_dir = tmp_path / "secret_outside"
+    secret_dir.mkdir()
+    secret = secret_dir / "secret.txt"
+    secret.write_text("should not be touched")
+
+    link = workspace / "innocent_link.txt"
+    link.symlink_to(secret)
+
+    policy = sb.SandboxPolicy(enabled=True, fs_root=str(workspace), network="allow")
+    monkeypatch.setattr(sb, "load_policy", lambda cfg=None: policy)
+
+    code = f"with open(r'{link}', 'w') as f:\n    f.write('pwned')\n"
+    out = shell.run_python(code, timeout=20)
+
+    assert secret.read_text() == "should not be touched"
+    assert "permission" in out.lower() or "denied" in out.lower()
 
 
 # --------------------------------------------------------------------------- #
