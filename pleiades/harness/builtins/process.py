@@ -17,6 +17,13 @@ across interpreter restarts (by design — no orphaned subprocesses on crash).
 Design constraint: all output is buffered in a background thread into a capped
 deque so read_process_output is instant and non-blocking. The buffer holds the
 last `_BUFFER_LINES` lines; older output is discarded.
+
+Sandbox note: start_process is the same risk class as run_shell (harness/
+builtins/shell.py) — an arbitrary command, possibly running unattended for a
+long time. It gets the same hard, unconditional destructive-command floor and
+the same memory watchdog from harness/sandbox.py. It does not get a wall-clock
+timeout (by design — that's the point of a background process), so the memory
+ceiling is the main backstop against a runaway background job.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Deque
 
 from ..tools import tool
+from .. import sandbox as _sb
 
 _BUFFER_LINES = 2000   # lines of stdout+stderr to keep per process
 
@@ -41,6 +49,7 @@ class _Proc:
     read_pos: int = 0                 # lines already returned by read_process_output
     done: bool = False
     returncode: int | None = None
+    watchdog: "_sb._MemWatchdog | None" = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -59,6 +68,8 @@ def _reader(p: _Proc) -> None:
         with p._lock:
             p.done = True
             p.returncode = p.proc.returncode
+        if p.watchdog is not None:
+            p.watchdog.stop()
 
 
 @tool(tags=("process",))
@@ -69,9 +80,20 @@ def start_process(command: str, cwd: str = "") -> str:
     kill_process to stop it, and list_processes to see all running processes.
     stdout and stderr are merged.
 
+    Runs inside the Pleiades sandbox (see sandbox.py): whole-system-destructive
+    patterns are blocked unconditionally, and the process is killed if it
+    exceeds the configured memory ceiling (there is no wall-clock timeout for
+    background processes — that's the point of start_process).
+
     command: shell command to run (e.g. "python -m http.server 8080").
     cwd: working directory for the process (default: current directory).
     """
+    policy = _sb.load_policy()
+    try:
+        _sb.check_command_safety(command, policy)
+    except _sb.SandboxViolation as e:
+        return f"Error: {e}"
+
     try:
         proc = subprocess.Popen(
             command, shell=True,
@@ -83,6 +105,8 @@ def start_process(command: str, cwd: str = "") -> str:
         return f"Error starting process: {e}"
 
     p = _Proc(pid=proc.pid, command=command, proc=proc)
+    if policy.enabled and policy.mem_mb:
+        p.watchdog = _sb.attach_watchdog(proc.pid, policy)
     t = threading.Thread(target=_reader, args=(p,), daemon=True)
     t.start()
 
@@ -113,12 +137,15 @@ def read_process_output(pid: int, tail: int = 80) -> str:
         p.read_pos = len(buf)
         done = p.done
         rc = p.returncode
+        killed_for_memory = p.watchdog.triggered if p.watchdog else False
 
     if tail > 0:
         new_lines = new_lines[-tail:]
 
     out = "\n".join(new_lines) if new_lines else "(no new output)"
-    if done:
+    if killed_for_memory:
+        out += "\n[killed: exceeded sandbox memory ceiling]"
+    elif done:
         out += f"\n[process exited with code {rc}]"
     return out
 
@@ -157,6 +184,8 @@ def kill_process(pid: int) -> str:
             p.proc.kill()
         except Exception:
             pass
+    if p.watchdog is not None:
+        p.watchdog.stop()
     return f"Terminated PID={pid}."
 
 
