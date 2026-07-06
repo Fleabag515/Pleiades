@@ -183,12 +183,15 @@ class ProfileManager:
         profile = self._load(name)
         profile.model = model
         self._save(profile)
-        # If the model server is already up, update the character's upstream now.
+        # If the model server is already up, repoint the character's upstream now.
+        # Use set_upstream (not update_character): it restarts a running proxy so
+        # the new port actually takes effect instead of just landing in config.json
+        # while the live process keeps the stale upstream in memory.
         try:
             from .models import ModelManager
             mm = ModelManager()
             if mm.get(model) and mm.is_running(model):
-                self.anamnesis.update_character(name, upstream={"baseUrl": mm.base_url(model)})
+                self.anamnesis.set_upstream(name, {"baseUrl": mm.base_url(model)})
         except Exception:
             pass
         return profile
