@@ -57,11 +57,19 @@ def find_native(prefer_moe_opts: bool = False) -> Optional[str]:
     if managed:
         def rank(p: Path) -> int:
             s = str(p)
-            if "moe-fork" in s:
-                return 0 if prefer_moe_opts else 2   # fork first only for MoE models
+            # Benchmarked on this box (RTX 2080 Ti, PCIe 3.0, Ornith-35B
+            # 256-expert MoE, -ncmoe 40, ub 2048, r=2, quiet machine):
+            #   mainline: pp2048 735 t/s · tg64 26.8 t/s
+            #   fork+opts: pp2048 794 t/s (+8%) · tg64 24.9 t/s (−5%)
+            # Chat is decode-bound → mainline stays the default everywhere.
+            # The fork's pinning/prefetch pays on PCIe4 boxes and prefill-
+            # heavy batch jobs; opt in via PLEIADES_RUNTIME_BIN.
             if "cuda-main" in s:
-                return 1                             # our mainline CUDA build
-            return 3                                 # legacy prebuilts (e.g. vulkan zip)
+                return 0                             # our mainline CUDA build
+            if "moe-fork" in s:
+                return 1                             # benchmarked: opt-in only
+            return 2                                 # legacy prebuilts (e.g. vulkan zip)
+        _ = prefer_moe_opts  # kept for API stability; see benchmark note
         return str(min(managed, key=rank))
     return shutil.which("llama-server")
 
