@@ -17,6 +17,7 @@ kernel; the engine layer is ours.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from typing import Optional
@@ -95,6 +96,7 @@ class InferenceServer:
         )
         print(f"[pleiades] inference: context — {plan.ctx_why}")
         print(f"[pleiades] inference: {plan.why}")
+        self._plan_env = plan.env or {}
         return plan.cmd
 
     def start(self, *, wait: bool = True, timeout: float = 120.0) -> str:
@@ -102,10 +104,13 @@ class InferenceServer:
         if self.is_running():
             return self.base_url
         try:
+            cmd = self._build_cmd()
+            env = {**os.environ, **self._plan_env} if getattr(self, "_plan_env", None) else None
             self._proc = subprocess.Popen(
-                self._build_cmd(),
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
+                env=env,
             )
         except FileNotFoundError as e:
             raise InferenceError(

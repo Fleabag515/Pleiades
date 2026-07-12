@@ -234,6 +234,9 @@ class Settings:
     n_ubatch: int = 0             # -ub physical batch (0 = default 512)
     mlock: bool = False           # --mlock: keep weights resident, avoid swap
     draft_model_path: str = ""    # speculative decoding draft GGUF (huge model, fast)
+    cache_reuse: int = 256        # --cache-reuse: min KV chunk re-used across prompts (0 = off)
+    spec_type: str = "auto"       # --spec-type: auto → draft-free ngram speculation (native runtime)
+    moe_prefill_opts: bool = True # env-gated MoE prefill opts when the fork runtime is active
 
     # --- Autofit: speed/quality preference for quant choice (speed|balanced|quality) ---
     autofit_preference: str = "balanced"
@@ -332,6 +335,12 @@ class Settings:
         s.n_batch = _int("PLEIADES_N_BATCH", s.n_batch)
         s.n_ubatch = _int("PLEIADES_N_UBATCH", s.n_ubatch)
         s.draft_model_path = os.environ.get("PLEIADES_DRAFT_MODEL", s.draft_model_path)
+        s.cache_reuse = _int("PLEIADES_CACHE_REUSE", s.cache_reuse)
+        s.spec_type = os.environ.get("PLEIADES_SPEC_TYPE", s.spec_type)
+        if "PLEIADES_MOE_PREFILL_OPTS" in os.environ:
+            s.moe_prefill_opts = (
+                os.environ["PLEIADES_MOE_PREFILL_OPTS"].strip().lower() in ("1", "true", "yes")
+            )
         if os.environ.get("PLEIADES_MLOCK"):
             s.mlock = os.environ["PLEIADES_MLOCK"].strip().lower() in ("1", "true", "yes")
         s.searxng_url = os.environ.get("PLEIADES_SEARXNG_URL", s.searxng_url)

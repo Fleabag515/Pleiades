@@ -228,7 +228,7 @@ class ModelManager:
             return ""
         return "\n".join(text.splitlines()[-lines:])
 
-    def _build_launch(self, m: dict) -> tuple[list, str]:
+    def _build_launch(self, m: dict) -> tuple[list, str, dict]:
         """Assemble the server command via the shared autofit-aware planner
         (same logic the single-model legacy engine uses — see launch.py)."""
         from .launch import build_command
@@ -240,7 +240,7 @@ class ModelManager:
         )
         self._last_ctx = (plan.n_ctx, plan.n_ctx_max)
         self._last_ctx_why = plan.ctx_why
-        return plan.cmd, plan.why
+        return plan.cmd, plan.why, plan.env or {}
 
     def start(self, name: str, *, wait: bool = True, timeout: float = 180.0) -> str:
         m = self.get(name)
@@ -277,7 +277,7 @@ class ModelManager:
             port_note = (f"[pleiades] port {old_port} is in use by another "
                          f"application — moved '{name}' to port {new_port}\n")
 
-        cmd, why = self._build_launch(m)
+        cmd, why, plan_env = self._build_launch(m)
 
         logdir = config.PLEIADES_HOME / "logs"
         logdir.mkdir(parents=True, exist_ok=True)
@@ -295,6 +295,8 @@ class ModelManager:
         else:
             kwargs["creationflags"] = 0x00000200        # CREATE_NEW_PROCESS_GROUP
 
+        if plan_env:
+            kwargs["env"] = {**os.environ, **plan_env}
         try:
             proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, **kwargs)
         except FileNotFoundError as e:

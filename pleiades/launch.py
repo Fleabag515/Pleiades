@@ -39,6 +39,7 @@ class LaunchPlan:
     ctx_why: str         # context-window planning reason, for logs/UI
     n_ctx: int
     n_ctx_max: int
+    env: Optional[dict] = None   # extra environment for the server process
 
 
 def build_command(model_path: str, host: str, port: int, *, name: str = "local",
@@ -48,14 +49,17 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     runtime (autodetected), layer-split on the bundled python fallback."""
     eff = settings or Settings.load()
 
-    cps = runtime.caps()
-    native = runtime.find_native() if cps.native else None
+    # meta before caps: with two managed runtimes (mainline + the MoE-
+    # prefill fork), which binary we prefer depends on whether THIS model
+    # is MoE.
+    meta = read_gguf_meta(model_path)
+    cps = runtime.caps(prefer_moe_opts=meta.is_moe)
+    native = runtime.find_native(prefer_moe_opts=meta.is_moe) if cps.native else None
     # caps before resolve_context: a MoE model's real ceiling depends on
     # whether THIS runtime actually offloads experts (hardware.py's
     # _moe_ceiling_fits) — without it, ctx planning falls back to the
     # dense-only check and starves a MoE model down to the smallest gear.
     n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path, caps=cps)
-    meta = read_gguf_meta(model_path)
     threads = max((os.cpu_count() or 8) // 2, 4)   # physical cores beat SMT
 
     # Placement must be sized against whichever ctx will ACTUALLY launch —
@@ -92,10 +96,21 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                # each with its own compute-buffer VRAM allocation — wasted memory
                # we'd rather have as headroom (see autofit's CPU-bias margin).
                "--parallel", "1"]
-        if eff.flash_attn:
-            cmd += ["-fa", eff.flash_attn]
+        fa = eff.flash_attn
+        if eff.kv_cache_type and fa == "auto":
+            # A quantized V-cache requires flash attention; "auto" can
+            # resolve to off for some architectures and then -ctv fails at
+            # boot. Forcing it on is safe everywhere -ctv is requested.
+            fa = "on"
+        if fa:
+            cmd += ["-fa", fa]
         if eff.kv_cache_type:          # KV-cache compaction (e.g. q8_0)
             cmd += ["-ctk", eff.kv_cache_type, "-ctv", eff.kv_cache_type]
+        if getattr(eff, "cache_reuse", 0):
+            # Re-use matching KV prefix chunks across requests. Anamnesis
+            # rewrites the memory block every turn, which shifts everything
+            # after it — chunk re-use still salvages most of the re-prefill.
+            cmd += ["--cache-reuse", str(eff.cache_reuse)]
         if getattr(eff, "n_batch", 0):
             cmd += ["-b", str(eff.n_batch)]
         # Explicit PLEIADES_N_UBATCH always wins; otherwise take autofit's
@@ -105,18 +120,39 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             cmd += ["-ub", str(ub)]
         if getattr(eff, "mlock", False):
             cmd += ["--mlock"]
+        env = dict(runtime.native_env(native))  # relocatable managed builds
+        st = str(getattr(eff, "spec_type", "auto")).strip().lower()
         if getattr(eff, "draft_model_path", "") and os.path.isfile(eff.draft_model_path):
             cmd += ["-md", eff.draft_model_path]   # speculative decoding draft
+        elif st == "auto":
+            # Draft-free speculative decoding: the ngram speculator proposes
+            # continuations out of the prompt/history and the target model
+            # verifies them — output-identical, zero extra VRAM. Agent
+            # transcripts (tool schemas, quoted context, repeated names) are
+            # exactly the repetitive text it accelerates.
+            cmd += ["--spec-type", "ngram-simple"]
+        elif st not in ("", "off", "none"):
+            cmd += ["--spec-type", str(eff.spec_type).strip()]
         if forced is None and pl.n_cpu_moe and cps.moe_offload:
             cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
+            if getattr(eff, "moe_prefill_opts", True):
+                # Fable's MoE-offload prefill opts (thecodacus/llama.cpp
+                # fork): page-lock the host-resident expert weights so
+                # uploads run at DMA speed, and prefetch each layer's
+                # experts on a second CUDA stream so uploads overlap
+                # compute. Token-identical; a mainline build ignores both
+                # vars, so setting them is always safe.
+                env.update({"GGML_CUDA_REGISTER_HOST": "1",
+                            "GGML_SCHED_PREFETCH_EXPERTS": "1"})
         why = (f"runtime=llama-server strategy={pl.strategy} "
                f"ngl={ngl}" + (f" n_cpu_moe={pl.n_cpu_moe}" if pl.n_cpu_moe else "")
                + (f" ub={ub}" if ub else "")
+               + (" +moe-prefill-opts" if "GGML_SCHED_PREFETCH_EXPERTS" in env else "")
                + f" est={pl.est_tps} tok/s — {pl.reason}")
         if forced is not None:
             why = f"runtime=llama-server ngl={forced} (explicit override)"
         # n_ctx == n_ctx_max here: what's recorded/shown is what's really running.
-        return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max)
+        return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max, env)
 
     layers = forced if forced is not None else pl.n_gpu_layers
     if os.environ.get("PLEIADES_ENGINE", "elastic").lower() == "llama_cpp":

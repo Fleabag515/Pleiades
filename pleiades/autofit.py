@@ -188,6 +188,7 @@ class RuntimeCaps:
     """What the installed inference runtime can express."""
     moe_offload: bool = False      # --n-cpu-moe / --override-tensor available
     native: bool = False           # llama.cpp llama-server binary (vs python server)
+    moe_prefill_opts: bool = False # env-gated MoE prefill opts (pinned host mem + expert prefetch)
 
 
 @dataclass

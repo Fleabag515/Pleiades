@@ -38,21 +38,54 @@ def runtime_dir() -> Path:
     return d
 
 
-def find_native() -> Optional[str]:
-    """Path to a llama-server binary: our managed copy first, then PATH."""
+def find_native(prefer_moe_opts: bool = False) -> Optional[str]:
+    """Path to a llama-server binary.
+
+    Resolution order: PLEIADES_RUNTIME_BIN (explicit override) → managed
+    copies under ~/.pleiades/runtime → PATH. Two managed builds may
+    coexist: the mainline build and the MoE-prefill fork (thecodacus/
+    llama.cpp — pinned-host-memory + expert-prefetch, env-gated, token-
+    identical) under runtime/moe-fork/. MoE models prefer the fork when
+    present; dense models prefer mainline. Either runs both — this is a
+    preference, not a requirement.
+    """
     exe = "llama-server.exe" if os.name == "nt" else "llama-server"
-    managed = list(runtime_dir().rglob(exe))
+    override = os.environ.get("PLEIADES_RUNTIME_BIN", "").strip()
+    if override and Path(override).is_file():
+        return override
+    managed = sorted(runtime_dir().rglob(exe))
     if managed:
-        return str(managed[0])
+        def rank(p: Path) -> int:
+            s = str(p)
+            if "moe-fork" in s:
+                return 0 if prefer_moe_opts else 2   # fork first only for MoE models
+            if "cuda-main" in s:
+                return 1                             # our mainline CUDA build
+            return 3                                 # legacy prebuilts (e.g. vulkan zip)
+        return str(min(managed, key=rank))
     return shutil.which("llama-server")
+
+
+def native_env(binary: str) -> dict:
+    """Environment needed to RUN a managed llama-server binary.
+
+    Locally-built trees link their impl libraries with absolute rpaths that
+    break the moment the tree is moved or renamed (runtime/src →
+    runtime/cuda-main); official release zips use $ORIGIN and don't care.
+    Putting the binary's own directory on LD_LIBRARY_PATH makes both cases
+    relocatable. Callers merge this over os.environ.
+    """
+    d = str(Path(binary).parent)
+    cur = os.environ.get("LD_LIBRARY_PATH", "")
+    return {"LD_LIBRARY_PATH": f"{d}:{cur}" if cur else d}
 
 
 _caps_cache: dict[str, RuntimeCaps] = {}
 
 
-def caps() -> RuntimeCaps:
-    """What the best available runtime supports (probed once per process)."""
-    native = find_native()
+def caps(prefer_moe_opts: bool = False) -> RuntimeCaps:
+    """What the best available runtime supports (probed once per binary)."""
+    native = find_native(prefer_moe_opts=prefer_moe_opts)
     key = native or "python"
     if key in _caps_cache:
         return _caps_cache[key]
@@ -60,11 +93,17 @@ def caps() -> RuntimeCaps:
     if native:
         try:
             out = subprocess.run([native, "--help"], capture_output=True,
-                                 text=True, timeout=10)
+                                 text=True, timeout=10,
+                                 env={**os.environ, **native_env(native)})
             text = out.stdout + out.stderr
             c.native = True
             c.moe_offload = ("--n-cpu-moe" in text or "--override-tensor" in text
                              or "-ot" in text)
+            # Provenance-based: only our managed fork build ships the
+            # env-gated prefill opts. Setting the env vars on a mainline
+            # build is harmless (ignored), so a false negative here costs
+            # nothing and a false positive is impossible.
+            c.moe_prefill_opts = "moe-fork" in native
         except (OSError, subprocess.SubprocessError):
             pass
     _caps_cache[key] = c
