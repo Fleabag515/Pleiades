@@ -40,6 +40,23 @@ button{font-family:inherit}
 #app{transition:grid-template-columns .18s ease}
 #app.nav-collapsed{grid-template-columns:0px 1fr}
 #app.nav-collapsed .side{opacity:0;pointer-events:none}
+/* native panel handles — live on the panel edge, present in both states,
+   so any page can collapse/expand without hunting for a toolbar button */
+.phandle{position:fixed;top:50%;transform:translateY(-50%);width:15px;height:74px;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:60;
+  color:var(--faint);background:var(--bg2);border:1px solid var(--line);
+  border-radius:0 9px 9px 0;border-left:0;transition:left .18s ease,right .18s ease,color .12s;
+  font-size:12px;user-select:none}
+.phandle:hover{color:var(--text);background:var(--surf)}
+#nav-handle{left:212px}
+#nav-handle.at-left{left:0;border-radius:0 9px 9px 0}
+#rail-handle{position:absolute;right:300px;top:50%;transform:translateY(-50%);left:auto;
+  border-radius:9px 0 0 9px;border-left:1px solid var(--line);border-right:0;
+  width:15px;height:74px;display:flex;align-items:center;justify-content:center;cursor:pointer;
+  color:var(--faint);background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  font-size:12px;user-select:none;z-index:40;transition:right .18s ease,color .12s}
+#rail-handle:hover{color:var(--text);background:var(--surf)}
+.talk.rail-collapsed #rail-handle{right:0}
 .side{grid-area:side;background:var(--bg2);border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:3px;overflow:hidden;transition:opacity .15s ease}
 .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
 .brand svg{width:28px;height:28px}.brand .bn{font-weight:800;font-size:16px}.brand .bs{font-size:9.5px;color:var(--faint);letter-spacing:.5px;text-transform:uppercase}
@@ -154,7 +171,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 /* TALK */
 .talk{display:grid;grid-template-columns:1fr 300px;grid-template-rows:auto 1fr auto;
   grid-template-areas:"modes rail" "scroll rail" "composer rail";height:100%;gap:0;
-  transition:grid-template-columns .18s ease}
+  position:relative;transition:grid-template-columns .18s ease}
 .talk.rail-collapsed{grid-template-columns:1fr 0px}
 .talk.rail-collapsed .rail{opacity:0;pointer-events:none;padding:14px 0;overflow:hidden;border-left:0}
 .modes{grid-area:modes;display:flex;align-items:center;gap:8px;padding:14px 18px 10px}
@@ -273,6 +290,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <div class="nav" data-v="claude"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 5l1.5 3.5L17 12l-3.5 1.5L12 17l-1.5-3.5L7 12l3.5-1.5z"/></svg>Claude lab<span class="ct">Pro</span></div>
     <div class="nl">Operate</div>
     <div class="nav" data-v="talk"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>Talk</div>
+    <div class="nav" data-v="memory"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7zm-3 16h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-1z"/></svg>Memory</div>
     <div class="nav" data-v="settings"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.7-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L14 2.6h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L3.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.7 2 3.5 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.5zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>Settings</div>
     <div class="foot"><span class="dot up"></span>127.0.0.1 · local only</div>
   </aside>
@@ -382,16 +400,17 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <section class="view flexcol" id="v-talk">
       <div class="talk">
         <div class="modes">
-          <button class="btn sm" id="btn-nav-toggle" onclick="toggleNav()" style="font-size:11px" title="Collapse the left navigation to focus on chat">‹ nav</button>
+
           <span class="ttl">Talk · <span id="talk-ttl">—</span></span><button class="btn sm" onclick="newTalkSession()" style="margin-left:6px;font-size:11px">+ New</button><select id="talk-sess" style="width:auto;margin-left:6px;font-size:11px" onchange="switchSession()"><option value="">— new chat —</option></select>
           <div class="sp"></div>
-          <button class="btn sm" id="btn-rail-toggle" onclick="toggleRail()" style="font-size:11px;margin-right:6px" title="Collapse the memory/throughput panel">panel ›</button>
+
           <div class="mdl-pick"><span style="font-size:11px;color:var(--muted)">character</span>
             <select id="talk-char" style="width:auto" onchange="charChanged()"></select></div>
         </div>
         <div class="talkscroll" id="talkscroll"></div>
         <div class="composer"><input id="talkin" placeholder="Message — every tool always on… (Enter to send)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();talkSend()}"/><button class="btn" id="talk-stop" onclick="talkStop()" style="display:none;border-color:var(--bad);color:var(--bad)" title="Stop this run">■</button><button class="btn pri" id="talk-go" onclick="talkSend()">↑</button></div>
 
+        <div id="rail-handle" onclick="toggleRail()" title="Collapse / expand this panel">›</div>
         <aside class="rail">
           <div class="rc"><h4>Brain</h4><div id="rail-brain"><div class="kv"><span class="k">—</span></div></div>
             <h4 style="margin-top:12px">Throughput</h4><div class="spark" id="spark"></div>
@@ -406,6 +425,19 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
       </div>
     </section>
 
+    <section class="view" id="v-memory">
+      <div class="h1">Memory</div>
+      <div class="sub">What each character actually remembers — episodes, foresights, and memory health. Long-term memory lives in Anamnesis; deleting chats never touches it.</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+        <select id="mem-char" style="width:auto" onchange="loadMemory()"></select>
+        <div id="mem-chips" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+      <div id="mem-warns"></div>
+      <div class="grid" style="grid-template-columns:1.5fr 1fr;align-items:start" id="mem-grid">
+        <div id="mem-scenes"></div>
+        <div id="mem-side"></div>
+      </div>
+    </section>
     <section class="view" id="v-settings">
       <h1 class="h1">Settings</h1><p class="sub">Engine, agent loop, services, and optional cloud providers. Local inference is the default brain.</p>
       <div class="row2" style="align-items:start;gap:18px">
@@ -487,7 +519,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
   document.getElementById('main').classList.toggle('flush',v==='talk');
-  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='claude')loadClaude(); if(v==='settings'){loadSettings();loadRules();}}
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='memory')loadMemoryView(); if(v==='claude')loadClaude(); if(v==='settings'){loadSettings();loadRules();}}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -964,7 +996,13 @@ async function talkSend(){
         }else if(ev.type==='tool_call'){
           if(!started){started=true;textEl.textContent='';}nodesEl.style.display='';
           if(nodesEl.children.length){const ar=document.createElement('div');ar.className='pipe-arrow';ar.textContent='→';nodesEl.append(ar);}
-          const nd=document.createElement('div');nd.className='pipe-node running';nd.textContent=ev.name||'tool';
+          // call_tool is the lazy-belt dispatcher — surface the INNER tool
+          // name so the pipeline reads list_catalog → read_file, not
+          // call_tool → call_tool → call_tool.
+          let dispName=ev.name||'tool';
+          if(dispName==='call_tool'){try{const a=typeof ev.args==='string'?JSON.parse(ev.args):ev.args;
+            if(a&&a.name)dispName=a.name}catch(e){}}
+          const nd=document.createElement('div');nd.className='pipe-node running';nd.textContent=dispName;
           const tool={name:ev.name||'tool',args:typeof ev.args==='object'?JSON.stringify(ev.args,null,2):(ev.args||''),output:null,ok:null,nodeEl:nd};
           nd.onclick=()=>{document.querySelectorAll('.pipe-node').forEach(n=>n.classList.remove('sel'));nd.classList.add('sel');showNodeDetail(detailEl,tool);};
           nodesEl.append(nd);liveTools.push(tool);liveTool=tool;
@@ -990,7 +1028,10 @@ async function talkSend(){
     }
     if(!acc&&!liveTools.length&&!hadError&&!hadStop)
       textEl.innerHTML='<span style="color:var(--muted)">(no response — verify a model is assigned to this character)</span>';
-  }catch(e){if(!hadError)textEl.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';}
+  }catch(e){if(!hadError){
+    textEl.innerHTML=(acc?escapeHtml(acc)+'<br>':'')+
+      '<span style="color:var(--bad)">⚠ connection lost mid-reply'+(acc?' — kept what arrived':'')+'</span>'+
+      ' <span style="color:var(--muted);font-size:11px">'+escapeHtml(e.message||'')+'</span>';}}
   if(stopBtn)stopBtn.style.display='none';
   if(!thinkAcc)thinkEl.style.display='none';
   else thinkSum.textContent='💭 thinking ('+Math.round(thinkAcc.length/4)+' tok)';
@@ -998,6 +1039,46 @@ async function talkSend(){
 async function talkStop(){
   if(!curChatId)return;
   try{await fetch('/api/chats/'+encodeURIComponent(curChatId)+'/stop',{method:'POST'});}catch(e){}
+}
+/* ── memory view ── */
+function memAge(now,ts){const d=Math.max(0,now-ts);if(d<3600)return Math.max(1,Math.round(d/60))+'m';if(d<86400)return Math.round(d/3600)+'h';return Math.round(d/86400)+'d'}
+async function loadMemoryView(){
+  try{const d=await api('/api/profiles');const sel=document.getElementById('mem-char');
+    const names=(d.profiles||[]).map(p=>p.name);
+    const cur=sel.value;
+    sel.innerHTML=names.map(n=>'<option'+(n===cur?' selected':'')+'>'+n+'</option>').join('');
+    if(!names.length){document.getElementById('mem-scenes').innerHTML='<div class="sub">No characters yet.</div>';return}
+  }catch(e){return}
+  loadMemory();
+}
+async function loadMemory(){
+  const who=document.getElementById('mem-char').value;if(!who)return;
+  const S=document.getElementById('mem-scenes'),D=document.getElementById('mem-side'),
+        C=document.getElementById('mem-chips'),W=document.getElementById('mem-warns');
+  S.innerHTML='<div class="sub">loading…</div>';D.innerHTML='';C.innerHTML='';W.innerHTML='';
+  let m;try{m=await api('/api/memory/'+encodeURIComponent(who))}catch(e){S.innerHTML='<div class="sub">'+escapeHtml(e.message)+'</div>';return}
+  if(!m.exists){S.innerHTML='<div class="sub">No Anamnesis store yet — it appears after the first conversation.</div>';return}
+  C.innerHTML=[m.turns+' turns',m.engrams+' engrams',m.scenes_total+' episodes',m.foresights.length+' foresights']
+    .map(t=>'<span style="font-family:var(--mono);font-size:11px;background:var(--surf);border:1px solid var(--line);border-radius:99px;padding:3px 10px;color:var(--muted)">'+t+'</span>').join('');
+  const warns=[];
+  if((m.sessions||[]).length>1)warns.push('Memory is split across '+m.sessions.length+' session buckets — retrieval can\'t see across them. Fix: <code>anamnesis migrate-sessions '+who+'</code>');
+  if((m.vector_spaces||[]).filter(v=>v.n>5).length>1)warns.push('Turns span '+m.vector_spaces.length+' embedding vector spaces — old memories are invisible to search. Fix: <code>anamnesis reembed '+who+'</code>');
+  W.innerHTML=warns.map(w=>'<div class="rc" style="border-color:#7a5b2a;margin-bottom:10px;background:var(--surf)"><div style="color:var(--warn);font-size:12.5px">⚠ '+w+'</div></div>').join('');
+  const now=m.now||Math.floor(Date.now()/1000);
+  S.innerHTML='<h3 style="margin:0 0 4px;font-size:14px">Episodes</h3><div class="sub" style="margin-bottom:10px">Clustered long-term memories — injected into context when relevant to the conversation.</div>'+
+    ((m.scenes||[]).map(s=>'<div class="rc" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><b style="font-size:13px">'+escapeHtml(s.title||'(untitled)')+'</b>'+
+      '<span style="font-family:var(--mono);font-size:10.5px;color:var(--faint);white-space:nowrap">'+memAge(now,s.updated_at)+' ago · '+(s.engrams??'?')+' engrams · recalled '+(s.recall_count||0)+'×</span></div>'+
+      '<div style="color:var(--muted);font-size:12.5px;margin-top:4px">'+escapeHtml(s.summary||'')+'</div></div>').join('')||'<div class="sub">None yet.</div>');
+  D.innerHTML='<h3 style="margin:0 0 4px;font-size:14px">Foresights</h3><div class="sub" style="margin-bottom:10px">Noted intentions — injected only while fresh AND on-topic. Dismiss anything stale.</div>'+
+    ((m.foresights||[]).map(f=>'<div class="rc" style="margin-bottom:7px;display:flex;justify-content:space-between;gap:8px;align-items:flex-start" id="fs-'+f.id+'">'+
+      '<div><div style="font-size:12.5px">'+escapeHtml(f.intention)+'</div><div style="font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:3px">['+f.timeframe+']'+(f.target?' '+escapeHtml(f.target):'')+' · '+memAge(now,f.created_at)+' ago</div></div>'+
+      '<button class="btn sm" style="padding:2px 8px" title="Stop injecting this" onclick="dismissForesight(\''+who+'\','+f.id+')">✕</button></div>').join('')||'<div class="sub">None active.</div>');
+  if((m.categories||[]).length){D.innerHTML+='<h3 style="margin:16px 0 8px;font-size:14px">Engram mix</h3><div class="rc">'+
+    m.categories.map(k=>'<div class="kv"><span class="k">'+escapeHtml(k.category)+'</span><span class="v">'+k.n+'</span></div>').join('')+'</div>'}
+}
+async function dismissForesight(who,id){
+  try{await fetch('/api/memory/'+encodeURIComponent(who)+'/foresight/'+id+'/dismiss',{method:'POST'});
+    const el=document.getElementById('fs-'+id);if(el)el.remove()}catch(e){alert(e.message)}
 }
 /* sparkline */
 function spark(){const s=document.getElementById('spark');if(!s)return;s.innerHTML='';for(let i=0;i<28;i++){const h=30+Math.random()*60;s.append(Object.assign(document.createElement('i'),{style:`height:${h}%`}))}}
@@ -1236,13 +1317,19 @@ loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spar
 // reloads since this is our own served page, not a sandboxed artifact.
 function toggleNav(){
   const on=document.getElementById('app').classList.toggle('nav-collapsed');
+  // the handle lives on document.body (position:fixed), so it carries its
+  // own state class — a descendant selector under #app can never match it
+  const h=document.getElementById('nav-handle');
+  if(h){h.textContent=on?'›':'‹';h.classList.toggle('at-left',on);}
   localStorage.setItem('pls-nav-collapsed',on?'1':'0');
   document.getElementById('btn-nav-toggle').textContent=on?'nav ›':'‹ nav';}
 function toggleRail(){
   const t=document.querySelector('.talk');if(!t)return;
   const on=t.classList.toggle('rail-collapsed');
   localStorage.setItem('pls-rail-collapsed',on?'1':'0');
-  document.getElementById('btn-rail-toggle').textContent=on?'‹ panel':'panel ›';}
+  const h=document.getElementById('rail-handle');if(h)h.textContent=on?'‹':'›';}
+(function(){const h=document.createElement('div');h.id='nav-handle';h.className='phandle';h.textContent='‹';
+  h.title='Collapse / expand the navigation';h.onclick=toggleNav;document.body.append(h)})();
 if(localStorage.getItem('pls-nav-collapsed')==='1')toggleNav();
 if(localStorage.getItem('pls-rail-collapsed')==='1')toggleRail();
 </script>

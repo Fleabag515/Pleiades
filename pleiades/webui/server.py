@@ -1499,8 +1499,37 @@ def create_app() -> FastAPI:
                 engine = Engine(settings=config.Settings.load(),
                                 manager=pm, anamnesis=an,
                                 approve=_chat_approve_cb(chat_id))
-                for evt in engine.stream_events(p, body.message, system=body.system,
-                                                should_stop=stop_evt.is_set):
+                # Pump the engine on a thread and emit a {"type":"ping"}
+                # whenever it's been quiet for 10s: slow local models (MoE
+                # with CPU experts, long thinking phases) legitimately sit
+                # silent for a while, and without traffic some link in the
+                # browser←uvicorn chain gives up — the user then sees a raw
+                # Firefox "Error in input stream" instead of their reply.
+                import queue as _q
+                evq: _q.Queue = _q.Queue(maxsize=512)
+                _END = object()
+
+                def _pump():
+                    try:
+                        for _evt in engine.stream_events(p, body.message, system=body.system,
+                                                         should_stop=stop_evt.is_set):
+                            evq.put(_evt)
+                        evq.put(_END)
+                    except Exception as ex:  # re-raised on the response thread
+                        evq.put(ex)
+
+                threading.Thread(target=_pump, daemon=True).start()
+                while True:
+                    try:
+                        item = evq.get(timeout=10)
+                    except _q.Empty:
+                        yield '{"type":"ping"}\n'
+                        continue
+                    if item is _END:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    evt = item
                     if evt["type"] == "token":
                         text_acc += evt["text"]
                     elif evt["type"] in ("tool_call", "tool_result"):
@@ -1529,7 +1558,14 @@ def create_app() -> FastAPI:
                 except Exception:
                     pass  # persistence must never kill the stream
             except Exception as e:
-                yield _json.dumps({"type": "error", "error": str(e)}) + "\n"
+                msg = str(e) or e.__class__.__name__
+                low = msg.lower()
+                if any(k in low for k in ("connection", "peer closed", "disconnect",
+                                          "incomplete chunked", "remoteprotocol",
+                                          "socket hang", "reset by peer")):
+                    msg = ("lost the model server mid-generation (was it restarted "
+                           "or did it crash?) — partial reply kept · " + msg)
+                yield _json.dumps({"type": "error", "error": msg}) + "\n"
             finally:
                 chat_approvals.pop(chat_id, None)  # no stale approval cards
                 chat_stops.pop(chat_id, None)
