@@ -257,13 +257,37 @@ class Engine:
             pass
         return self.anamnesis.ensure_running(profile.name, upstream=upstream)
 
+    def _session_id_for(self, profile: Profile) -> str:
+        """Stable Anamnesis session key for this character's one continuous
+        conversational thread.
+
+        Every real conversational surface (webui, CLI, the Discord bot — all
+        of them route through Engine) sends this same id, so they deliberately
+        share Anamnesis's history/recency/scene recall: that's what makes a
+        character feel like one continuous relationship instead of amnesiac
+        per-window resets. Previously this was an ACCIDENT: every OpenAI
+        client used the literal api_key="pleiades", and Anamnesis derives its
+        session bucket from a hash of the bearer token — so everything
+        collapsed onto the same bucket only because the token never varied.
+        Fragile (any code path that ever passed a different key would silently
+        fork onto a new, empty-feeling session) and it couldn't be told apart
+        from noise.
+
+        Non-conversational writers (cron health checks / watchdogs) must send
+        their own distinct X-Session-Id so their pings don't eat slots in
+        Anamnesis's small recencyTurns window mid-conversation — see
+        ~/.openclaw/<character>/skills/context_watchdog.
+        """
+        return f"pleiades:{profile.name}"
+
     def _new_client(self, profile: Profile):
         """Re-resolve upstream (picks up any key rotation from a cooldown) and
         hand back a fresh client. Cheap when the key hasn't actually changed —
         _point_upstream's set_upstream() no-ops in that case."""
         from openai import OpenAI
         return OpenAI(base_url=self._point_upstream(profile), api_key="pleiades",
-                      timeout=_UPSTREAM_TIMEOUT)
+                      timeout=_UPSTREAM_TIMEOUT,
+                      default_headers={"X-Session-Id": self._session_id_for(profile)})
 
     def _handle_upstream_error(self, profile: Profile, exc: Exception) -> bool:
         """On a rate-limit/quota error from a multi-key cloud provider, bench
@@ -308,7 +332,8 @@ class Engine:
         from openai import OpenAI
 
         proxy_url = self._point_upstream(profile)
-        client = OpenAI(base_url=proxy_url, api_key="pleiades", timeout=_UPSTREAM_TIMEOUT)
+        client = OpenAI(base_url=proxy_url, api_key="pleiades", timeout=_UPSTREAM_TIMEOUT,
+                        default_headers={"X-Session-Id": self._session_id_for(profile)})
 
         # 3. Tools, scoped to this character — the chat IS the agent, so the
         # harness's lazy tool-search trio (find_tools/list_catalog/call_tool;
