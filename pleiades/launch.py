@@ -116,6 +116,15 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
         # Explicit PLEIADES_N_UBATCH always wins; otherwise take autofit's
         # hardware-sized pick (0 = runtime default, no flag passed).
         ub = getattr(eff, "n_ubatch", 0) or pl.n_ubatch
+        if not ub and pl.n_cpu_moe:
+            # MoE-with-CPU-experts prefill is upload-bound: every ubatch pass
+            # re-uploads the layer's touched experts, so bigger physical
+            # batches amortize the transfers. Measured on this box, same
+            # model/split: pp 112 t/s at the 512 default → 735 t/s at 2048.
+            # Autofit's near-tie headroom preference can pick a candidate
+            # with ub=0 — restore it whenever experts live on CPU (the hot
+            # set is tiny; the larger compute buffer fits comfortably).
+            ub = 2048
         if ub:
             cmd += ["-ub", str(ub)]
         if getattr(eff, "mlock", False):
@@ -125,12 +134,14 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
         if getattr(eff, "draft_model_path", "") and os.path.isfile(eff.draft_model_path):
             cmd += ["-md", eff.draft_model_path]   # speculative decoding draft
         elif st == "auto":
-            # Draft-free speculative decoding: the ngram speculator proposes
-            # continuations out of the prompt/history and the target model
-            # verifies them — output-identical, zero extra VRAM. Agent
-            # transcripts (tool schemas, quoted context, repeated names) are
-            # exactly the repetitive text it accelerates.
-            cmd += ["--spec-type", "ngram-simple"]
+            # Measured HARMFUL for persona chat on this box: ngram-simple
+            # drafted 6.7-token runs at 16.5% acceptance and decode fell
+            # 26.8 → 8.3 t/s (the target model verifies-and-discards almost
+            # every draft). Creative replies aren't repetitive enough.
+            # "auto" therefore means OFF; opt in via PLEIADES_SPEC_TYPE for
+            # workloads that ARE repetitive (code edits, quoting tool
+            # output), where ngram acceptance — and the speedup — is real.
+            pass
         elif st not in ("", "off", "none"):
             cmd += ["--spec-type", str(eff.spec_type).strip()]
         if forced is None and pl.n_cpu_moe and cps.moe_offload:
