@@ -971,6 +971,79 @@ def create_app() -> FastAPI:
         from ..connectors.discord_bot import discord_status
         return {"characters": discord_status()}
 
+    @app.get("/api/memory/{name}")
+    def memory_api(name: str) -> dict:
+        """Read-only window into a character's Anamnesis memory: scenes,
+        active foresights, engram mix, and the two health signals that cause
+        real drift — fragmented session buckets and mixed embedding vector
+        spaces. Reads history.db directly (read-only URI): the proxy needn't
+        be running and nothing here can mutate state."""
+        import sqlite3
+        db = Path.home() / ".anamnesis" / "characters" / name / "history.db"
+        if not db.is_file():
+            return {"exists": False}
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        try:
+            def q(sql: str, *a: Any) -> list[dict]:
+                return [dict(r) for r in con.execute(sql, a).fetchall()]
+
+            def one(sql: str) -> int:
+                return con.execute(sql).fetchone()[0]
+
+            scenes = q(
+                """SELECT id, title, summary, avg_importance, recall_count, updated_at,
+                          json_array_length(engram_ids) AS engrams, embedding_model
+                   FROM episodes ORDER BY updated_at DESC LIMIT 60"""
+            )
+            foresights = q(
+                """SELECT id, intention, target, timeframe, confidence, created_at
+                   FROM foresights WHERE fulfilled=0 ORDER BY created_at DESC LIMIT 60"""
+            )
+            return {
+                "exists": True,
+                "now": int(time.time()),
+                "turns": one("SELECT COUNT(*) FROM turns"),
+                "engrams": one("SELECT COUNT(*) FROM engrams"),
+                "scenes_total": one("SELECT COUNT(*) FROM episodes"),
+                "scenes": scenes,
+                "foresights": foresights,
+                "categories": q(
+                    "SELECT category, COUNT(*) AS n FROM engrams GROUP BY category ORDER BY n DESC"
+                ),
+                "vector_spaces": q(
+                    """SELECT COALESCE(embedding_model,'(none)') AS model, COUNT(*) AS n
+                       FROM turns GROUP BY 1 ORDER BY n DESC"""
+                ),
+                "sessions": q(
+                    """SELECT session_key, COUNT(*) AS turns FROM turns
+                       GROUP BY 1 ORDER BY turns DESC"""
+                ),
+            }
+        finally:
+            con.close()
+
+    @app.post("/api/memory/{name}/foresight/{fid}/dismiss")
+    def memory_foresight_dismiss(name: str, fid: str) -> dict:
+        """Manually retire a foresight (fulfilled=3 — dismissed by owner) so
+        it stops being injected. Sets one flag; nothing is deleted."""
+        import sqlite3
+        db = Path.home() / ".anamnesis" / "characters" / name / "history.db"
+        if not db.is_file():
+            raise HTTPException(404, "No memory store for this character.")
+        con = sqlite3.connect(db)
+        try:
+            cur = con.execute(
+                "UPDATE foresights SET fulfilled=3 WHERE id=? AND fulfilled=0", (int(fid),)
+            )
+            con.commit()
+            n = cur.rowcount
+        finally:
+            con.close()
+        if not n:
+            raise HTTPException(404, "No such active foresight.")
+        return {"ok": True}
+
     @app.post("/api/runtime/install")
     def runtime_install_api() -> dict:
         from .. import runtime

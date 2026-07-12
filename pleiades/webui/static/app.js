@@ -109,6 +109,7 @@ const VIEWS = {
   dashboard:  { title: "Overview",   sub: "Services, characters, and models at a glance.", render: renderDashboard },
   chat:       { title: "Chat",       sub: "Talk to a character — memory wired in, 60+ tools used when the prompt needs them.", render: renderChat, full: true },
   characters: { title: "Characters", sub: "Each character binds memory, email, vault, browser, and a model to one identity.", render: renderCharacters },
+  memory:     { title: "Memory",     sub: "What each character actually remembers — scenes, foresights, and memory health.", render: renderMemory },
   models:     { title: "Models",     sub: "Register GGUF models and run a local OpenAI-compatible server for each.", render: renderModels },
   hardware:   { title: "Hardware",   sub: "Detected GPU / RAM and the planned GPU offload for each model.", render: renderHardware },
   settings:   { title: "Settings",   sub: "Engine, services, and agent-harness configuration.", render: renderSettings },
@@ -638,6 +639,112 @@ async function renderWork() {
 }
 
 /* ═══════════════ CHARACTERS ═══════════════ */
+/* ───────────── memory view ───────────── */
+
+function fmtAge(now, ts) {
+  const d = Math.max(0, now - ts);
+  if (d < 3600) return `${Math.max(1, Math.round(d / 60))}m ago`;
+  if (d < 86400) return `${Math.round(d / 3600)}h ago`;
+  return `${Math.round(d / 86400)}d ago`;
+}
+
+async function renderMemory() {
+  loading();
+  let data;
+  try { data = await api.get("/api/profiles"); } catch (e) { return err(e); }
+  const names = data.profiles.map(p => p.name);
+  const c = $("#content"); c.innerHTML = "";
+  if (!names.length) {
+    c.append(el("div", { class: "empty" },
+      el("div", { class: "empty-ico" }, "◌"),
+      el("h3", {}, "No characters yet"),
+      el("div", {}, "Memory lives per character — create one and its story starts here.")));
+    return;
+  }
+  const who = (state.detail && names.includes(state.detail)) ? state.detail : names[0];
+
+  const sel = el("select", { class: "input", style: "max-width:220px" },
+    ...names.map(n => el("option", { value: n, ...(n === who ? { selected: "" } : {}) }, n)));
+  sel.addEventListener("change", () => { state.detail = sel.value; renderMemory(); });
+  c.append(el("div", { class: "inline-actions", style: "margin-bottom:16px" }, sel));
+
+  let m;
+  try { m = await api.get(`/api/memory/${encodeURIComponent(who)}`); }
+  catch (e) { return err(e); }
+  if (!m.exists) {
+    c.append(el("div", { class: "card" }, el("div", { class: "muted" },
+      `No Anamnesis store for '${who}' yet — it appears after the first conversation.`)));
+    return;
+  }
+
+  // ── health strip ──
+  const chips = el("div", { class: "inline-actions", style: "flex-wrap:wrap;gap:8px;margin-bottom:16px" },
+    el("span", { class: "pill" }, `${m.turns} turns`),
+    el("span", { class: "pill" }, `${m.engrams} engrams`),
+    el("span", { class: "pill" }, `${m.scenes_total} scenes`),
+    el("span", { class: "pill" }, `${m.foresights.length} active foresights`));
+  c.append(chips);
+
+  const warns = [];
+  if (m.sessions.length > 1)
+    warns.push(`Memory is split across ${m.sessions.length} session buckets — retrieval can't see across them. Fix: \`anamnesis migrate-sessions ${who}\`.`);
+  if (m.vector_spaces.filter(v => v.n > 5).length > 1)
+    warns.push(`Turns are embedded in ${m.vector_spaces.length} different vector spaces — old memories are invisible to similarity search. Fix: \`anamnesis reembed ${who}\`.`);
+  for (const w of warns)
+    c.append(el("div", { class: "card", style: "border-color:#7a5b2a;margin-bottom:12px" },
+      el("div", { style: "color:#e8b05c" }, "⚠ " + w)));
+
+  const grid = el("div", { style: "display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start" });
+  c.append(grid);
+
+  // ── scenes (left) ──
+  const scenesCol = el("div", {});
+  scenesCol.append(el("h3", { style: "margin:0 0 10px" }, "Episodes"),
+    el("div", { class: "muted", style: "margin-bottom:12px" },
+      "Clustered long-term memories. These are what gets injected when relevant — dates come from the last time the episode grew."));
+  if (!m.scenes.length) scenesCol.append(el("div", { class: "muted" }, "None yet."));
+  for (const s of m.scenes) {
+    scenesCol.append(el("div", { class: "card hoverable", style: "margin-bottom:10px;padding:14px 16px" },
+      el("div", { class: "card-head", style: "margin-bottom:6px" },
+        el("strong", {}, s.title || "(untitled)"),
+        el("span", { class: "muted", style: "font-size:12px;white-space:nowrap" },
+          `${fmtAge(m.now, s.updated_at)} · ${s.engrams ?? "?"} engrams · recalled ${s.recall_count}×`)),
+      el("div", { class: "muted", style: "font-size:13px" }, s.summary || "")));
+  }
+  grid.append(scenesCol);
+
+  // ── foresights (right) ──
+  const fsCol = el("div", {});
+  fsCol.append(el("h3", { style: "margin:0 0 10px" }, "Foresights"),
+    el("div", { class: "muted", style: "margin-bottom:12px" },
+      "Intentions the character noted. Injected only while fresh AND relevant to the current topic; dismiss anything stale."));
+  if (!m.foresights.length) fsCol.append(el("div", { class: "muted" }, "None active."));
+  for (const f of m.foresights) {
+    const row = el("div", { class: "card", style: "margin-bottom:8px;padding:10px 12px" },
+      el("div", { style: "display:flex;justify-content:space-between;gap:8px;align-items:flex-start" },
+        el("div", {},
+          el("div", { style: "font-size:13px" }, f.intention),
+          el("div", { class: "muted", style: "font-size:12px;margin-top:4px" },
+            `[${f.timeframe}]${f.target ? " " + f.target : ""} · ${fmtAge(m.now, f.created_at)}`)),
+        el("button", {
+          class: "btn", style: "padding:2px 8px;font-size:12px", title: "Stop injecting this",
+          onclick: async () => {
+            try { await api.post(`/api/memory/${encodeURIComponent(who)}/foresight/${f.id}/dismiss`); row.remove(); }
+            catch (e) { alert(e.message); }
+          },
+        }, "✕")));
+    fsCol.append(row);
+  }
+  // ── engram mix ──
+  if (m.categories.length) {
+    fsCol.append(el("h3", { style: "margin:18px 0 10px" }, "Engram mix"),
+      el("div", { class: "card", style: "padding:12px 14px" },
+        ...m.categories.map(k => el("div", { style: "display:flex;justify-content:space-between;font-size:13px;padding:2px 0" },
+          el("span", { class: "muted" }, k.category), el("span", {}, String(k.n))))));
+  }
+  grid.append(fsCol);
+}
+
 async function renderCharacters() {
   if (state.detail) return renderCharacterDetail(state.detail);
   loading();
