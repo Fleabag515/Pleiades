@@ -17,6 +17,32 @@ from typing import Any, Optional
 
 import httpx
 
+# Mirrors src/lib/char-config.js's DEFAULTS + PERSONA_SHARED in the Anamnesis
+# daemon: the control API's POST /characters never fills in a default config
+# itself (that only happens client-side, inside the Node CLI's interactive
+# wizard), so any client that wants to create a character over HTTP has to
+# hand over a complete config. Keep these in sync if upstream changes them.
+_CONFIG_DEFAULTS = {
+    "context": {
+        "tokenBudget": 50000, "systemReserveTokens": 4096, "recencyTurns": 8,
+        "rotatingSlots": 6, "charsPerToken": 3.5, "minChunkChars": 50,
+    },
+    "memory": {
+        "consolidationIntervalMs": 120000, "consolidationBatchSize": 50,
+        "sceneClusterThreshold": 0.72, "minSceneSize": 2, "decayPruneThreshold": 0.05,
+    },
+    "extraction": {"maxRetries": 2, "timeoutMs": 45000, "startupBacklogLimit": 200},
+    "foresight": {"maxRetries": 2, "timeoutMs": 45000, "startupBacklogLimit": 200},
+    "inference": {"gpuLayerBudgetMB": 512},
+    "history": {"maxAgeDays": 90},
+}
+_PERSONA_SHARED = {
+    "timeoutMs": 45000,
+    "drift": {"enabled": True, "checkEveryNTurns": 4, "driftThreshold": 0.55},
+    "evolution": {"enabled": True, "consolidateAfterNObservations": 8, "maxEvolutionChars": 600},
+    "injection": {"maxProfileChars": 700},
+}
+
 
 class AnamnesisError(RuntimeError):
     """Raised when the Anamnesis daemon is unreachable or returns an error."""
@@ -68,8 +94,67 @@ class Anamnesis:
     def get_character(self, name: str) -> dict:
         return self._request("GET", f"/characters/{name}")
 
+    def _pick_port(self, base: int = 8084, max_scan: int = 200) -> int:
+        """Best-effort free-looking port for a new character's proxy.
+
+        The daemon re-resolves a free port on start anyway (character-manager.js's
+        startCharacter() calls findFreePort and rewrites proxy.port if taken), so
+        this just needs to avoid colliding with another *registered* character.
+        """
+        try:
+            used = {c.get("port") for c in self.list_characters() if isinstance(c.get("port"), int)}
+        except AnamnesisError:
+            used = set()
+        for i in range(max_scan):
+            candidate = base + i
+            if candidate not in used:
+                return candidate
+        raise AnamnesisError(f"Could not find a free-looking port starting from {base}.")
+
+    def _build_default_config(self, name: str, port: int) -> dict:
+        """Python port of char-config.js's buildConfig(), 'auto' persona variant."""
+        db_path = str(Path.home() / ".anamnesis" / "characters" / name / "history.db")
+        persona = {
+            "enabled": True,
+            "source": {
+                "type": "auto",
+                "openclaw": {"soulPath": "~/.openclaw/SOUL.md"},
+                "file": {"path": "~/.anamnesis/character.md"},
+                "inline": {"content": ""},
+            },
+            **_PERSONA_SHARED,
+        }
+        return {
+            "proxy": {"port": port, "host": "127.0.0.1"},
+            "upstream": {"baseUrl": "", "apiKey": "", "disableThinking": True},
+            "inference": dict(_CONFIG_DEFAULTS["inference"]),
+            "extraction": dict(_CONFIG_DEFAULTS["extraction"]),
+            "context": dict(_CONFIG_DEFAULTS["context"]),
+            "memory": dict(_CONFIG_DEFAULTS["memory"]),
+            "history": {"dbPath": db_path, "maxAgeDays": _CONFIG_DEFAULTS["history"]["maxAgeDays"]},
+            "foresight": dict(_CONFIG_DEFAULTS["foresight"]),
+            "persona": persona,
+        }
+
     def create_character(self, name: str, **cfg: Any) -> dict:
-        payload = {"name": name, **cfg}
+        """Create a character with a complete config.
+
+        Anamnesis's control API (control-server.js: POST /characters) expects
+        {"name": ..., "config": {...}} and never fills in defaults server-side
+        (that only happens inside the Node CLI's interactive wizard) -- a bare
+        {"name": ..., "upstream": {...}} 400s with a cryptic
+        "Buffer.from(undefined)" error because the handler reads body.config,
+        finds nothing, and tries to JSON.stringify(undefined) to disk. So we
+        build a full default config here and merge any caller-supplied
+        overrides (dicts merge one level deep; anything else replaces).
+        """
+        config = self._build_default_config(name, self._pick_port())
+        for key, value in cfg.items():
+            if isinstance(value, dict) and isinstance(config.get(key), dict):
+                config[key].update(value)
+            else:
+                config[key] = value
+        payload = {"name": name, "config": config}
         return self._request("POST", "/characters", json=payload)
 
     def update_character(self, name: str, **cfg: Any) -> dict:
