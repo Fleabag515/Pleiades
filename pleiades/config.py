@@ -144,7 +144,7 @@ HAIKU = "claude-haiku-4-5"
 class Tier:
     """A (backend, model) pairing for a class of work."""
 
-    backend: str          # "openai" (llama.cpp) | "anthropic" (API) | "claude-code" (subscription) | "ollama"
+    backend: str          # "openai" (llama.cpp) | "anthropic" (API) | "ollama"
     model: str
     base_url: str = ""    # per-tier OpenAI-compatible endpoint; blank -> cfg.openai_host
     effort: str = "high"  # anthropic only: low|medium|high|max
@@ -165,7 +165,6 @@ DEFAULT_TIERS: dict[str, dict] = {
     "fast":       {"backend": "openai", "model": "local", "max_tokens": 2048},
     "cloud":      {"backend": "anthropic", "model": OPUS,   "effort": "high",   "max_tokens": 8192},
     "cloud-fast": {"backend": "anthropic", "model": SONNET, "effort": "medium", "max_tokens": 8192},
-    "claude":     {"backend": "claude-code", "model": "", "effort": "high", "max_tokens": 8192},
     "ollama":     {"backend": "ollama", "model": "qwen2.5:7b", "max_tokens": 4096},
 }
 
@@ -266,7 +265,7 @@ class Settings:
     # --- Agent harness: execution policy + loop ---
     exec_policy: str = "ask"          # ask | allow | deny (read-only tools always run)
     workspace_root: str = "."
-    max_steps: int = 40           # hard cap for Claude-lab/subagents
+    max_steps: int = 40           # hard cap for the agent harness/subagents
     eval_interval: int = 40       # self-evaluation check every N agent turns (0 = off); the
                                    # check can itself end the turn if the model decides it's
                                    # stuck/looping/blocked — see _REFLECTION in engine.py/agent.py

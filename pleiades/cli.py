@@ -483,55 +483,6 @@ def work(task: tuple[str, ...], character: str | None, tier: str | None,
 
 
 # --------------------------------------------------------------------------- #
-# audit — stress-test the tool belt with a subscription-billed Claude session
-# --------------------------------------------------------------------------- #
-@cli.command()
-@click.option("--fix", is_flag=True,
-              help="Let Claude patch source + add tests (default: read-only triage).")
-@click.option("--tier", default="claude",
-              help="Model tier (default: claude = subscription-billed).")
-@click.option("--policy", default=None, type=click.Choice(["ask", "allow", "deny"]),
-              help="Permission policy for side-effecting tools.")
-@click.option("--tools", "tool_csv", default=None,
-              help="Comma-separated subset of tool names to audit (default: all).")
-@click.option("--max-budget", "max_budget", type=float, default=None,
-              help="Hard USD budget cap for the run.")
-def audit(fix: bool, tier: str, policy: str | None,
-          tool_csv: str | None, max_budget: float | None) -> None:
-    """Stress-test Pleiades' own tool belt from the inside (Claude on your plan).
-
-    Claude exercises each tool with realistic and adversarial inputs, logs failures
-    to TOOL_AUDIT.md, and with --fix branches, patches source, and adds tests.
-    """
-    from .harness import Config
-    from .harness import builtins as _builtins        # noqa: F401  registers tools
-    from .harness.claude_backend import run_claude, audit_charter
-
-    cfg = Config.load()
-    cfg.exec_policy = policy or ("allow" if fix else "ask")
-    names = [t.strip() for t in tool_csv.split(",")] if tool_csv else None
-    system, task = audit_charter(fix=fix, tool_names=names)
-
-    def ev(kind, payload):
-        if kind == "tool_call":
-            console.print(f"[cyan]\u2192 {getattr(payload, 'name', payload)}[/cyan]")
-        elif kind == "text":
-            console.print(f"\n{payload}")
-        elif kind == "warn":
-            console.print(f"[yellow]! {payload}[/yellow]")
-
-    console.print(f"[dim]audit \u00b7 fix={fix} \u00b7 policy={cfg.exec_policy} \u00b7 tier={tier}[/dim]\n")
-    res = run_claude(task, cfg, tier_name=tier, system=system,
-                     add_dirs=[cfg.workspace_root], max_budget_usd=max_budget,
-                     on_event=ev)
-    if res.error:
-        console.print(f"[red]error: {res.error}[/red]")
-        sys.exit(1)
-    console.print(f"\n[dim]- audit done \u00b7 {res.turns} turns \u00b7 "
-                  f"${res.cost_usd:.4f} \u00b7 see TOOL_AUDIT.md -[/dim]")
-
-
-# --------------------------------------------------------------------------- #
 # vault
 # --------------------------------------------------------------------------- #
 @cli.group()

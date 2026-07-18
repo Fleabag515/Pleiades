@@ -87,7 +87,7 @@ button{font-family:inherit}
 .tp-run{color:var(--good);background:rgba(79,214,160,.13)}.tp-idle{color:var(--faint);background:var(--surf2)}
 .tp-best{color:#06121a;background:linear-gradient(135deg,var(--a1),var(--a2))}.tp-warn{color:var(--warn);background:rgba(243,182,90,.13)}
 .tp-bad{color:var(--bad);background:rgba(240,109,109,.13)}
-.tp-gpu{color:var(--gpu);background:rgba(180,139,255,.13)}.tp-cl{color:var(--cl);background:rgba(217,139,95,.14)}
+.tp-gpu{color:var(--gpu);background:rgba(180,139,255,.13)}
 .btn{border:1px solid var(--line);background:var(--surf2);color:var(--text);border-radius:9px;padding:8px 13px;cursor:pointer;font-size:12.5px;font-weight:500}
 .btn:hover{border-color:var(--a2)}
 .btn.pri{background:linear-gradient(135deg,var(--a1),var(--a2));color:#06121a;border:0;font-weight:600}
@@ -150,14 +150,6 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 .conn .info{min-width:150px}.conn .nm{font-weight:600;font-size:13px}.conn .ds{font-size:11px;color:var(--muted)}
 .conn .acts{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
 
-/* claude area */
-.cl-grid{display:grid;grid-template-columns:1fr 1.1fr;gap:16px;align-items:start}
-.clchat{border:1px solid var(--line);border-radius:14px;background:var(--surf);display:flex;flex-direction:column;height:440px}
-.clchat .hd{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px}
-.clchat .body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px}
-.clchat .foot{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}.clchat .foot input{flex:1}
-.clmsg{line-height:1.55;font-size:13px}.clmsg.u{align-self:flex-end;background:var(--surf2);border:1px solid var(--line);border-radius:11px;padding:8px 12px;max-width:85%}
-.clmsg.a{color:var(--text)}.clmsg.a b{color:var(--cl)}
 .avatar{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#1a1008;background:var(--cl)}
 
 /* modal */
@@ -287,7 +279,6 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
     <div class="nav" data-v="foundry"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>Model foundry<span class="ct">HF</span></div>
     <div class="nav" data-v="characters"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>Characters<span class="ct" id="nav-char-ct">—</span></div>
     <div class="nav" data-v="tools"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M22 19l-6-6 2-2-4-4-2 2-6-6-2 2 6 6-6 6 2 2 6-6 6 6z"/></svg>Tools &amp; connectors<span class="ct">75</span></div>
-    <div class="nav" data-v="claude"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 5l1.5 3.5L17 12l-3.5 1.5L12 17l-1.5-3.5L7 12l3.5-1.5z"/></svg>Claude lab<span class="ct">Pro</span></div>
     <div class="nl">Operate</div>
     <div class="nav" data-v="talk"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>Talk</div>
     <div class="nav" data-v="memory"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7zm-3 16h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-1z"/></svg>Memory</div>
@@ -317,14 +308,20 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 
     <!-- FOUNDRY -->
     <section class="view" id="v-foundry">
-      <h1 class="h1">Model foundry</h1><p class="sub">Search any GGUF on Hugging Face. Pleiades picks the optimal quant for your exact hardware and downloads it.</p>
+      <h1 class="h1">Model foundry</h1><p class="sub">Search any GGUF on Hugging Face, inspect predicted stats for each quant on your exact hardware, then download the one you want.</p>
+
+      <div class="card" style="margin-bottom:18px">
+        <h3 style="display:flex;align-items:center;gap:10px">Installed library<button class="btn sm" style="margin-left:auto" onclick="loadLib()" title="Re-scan disk for installed models">&#8635; Rescan</button></h3>
+        <div id="library"></div>
+      </div>
+
+      <h3 style="margin:0 0 10px;font-size:13px;color:var(--muted)">Find a model</h3>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
         <span class="seg2" id="src-seg"><button class="on" onclick="setSource('gguf')">GGUF (local)</button><button onclick="setSource('openrouter')">OpenRouter</button><button onclick="setSource('ollama')">Ollama Cloud</button></span>
         <span id="src-char-wrap" style="display:none;margin-left:auto;font-size:11px;color:var(--muted)">assign to <select id="src-char" style="width:auto;display:inline-block"></select></span>
       </div>
       <div class="searchbar"><input id="hfq" placeholder="Search Hugging Face…" value="qwen2.5 coder" onkeydown="if(event.key==='Enter')foundrySearch()"/><button class="btn pri" onclick="foundrySearch()">Search</button></div>
       <div class="row2" style="align-items:start;gap:18px"><div id="results"></div><div id="fitpane"></div></div>
-      <h3 style="margin:24px 0 10px;font-size:13px;color:var(--muted)">Installed library</h3><div id="library"></div>
     </section>
 
     <!-- CHARACTERS -->
@@ -366,32 +363,6 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
         </div>
         <div>
           <div class="card"><h3>Connectors</h3><div id="connectors"></div></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- CLAUDE LAB -->
-    <section class="view" id="v-claude">
-      <h1 class="h1">Claude lab</h1><p class="sub">Your Claude subscription — used only to build, debug, and stress-test your local tools. Never a chat brain; local models stay default.</p>
-      <div class="cl-grid">
-        <div style="display:flex;flex-direction:column;gap:16px">
-          <div class="card"><h3><span class="avatar">C</span> Account <span class="t">subscription</span></h3>
-            <div class="kv"><span class="k">status</span><span class="v" id="cl-status">checking…</span></div>
-            <div class="kv"><span class="k">auth</span><span class="v">claude login (OAuth)</span></div>
-            <div class="kv"><span class="k">Agent SDK</span><span class="v" id="cl-sdk">—</span></div>
-            <div class="field" style="margin-top:12px"><label>Model</label><select id="cl-model" onchange="claudeSetModel()"></select></div>
-            <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5" id="cl-note"></div>
-          </div>
-          <div class="card"><h3>Tool audit <span class="t">stress-test</span></h3>
-            <div style="font-size:12.5px;color:var(--muted);line-height:1.5">Claude exercises your local tool belt and proposes fixes. Run it from the CLI: <code>pleiades audit</code> — a UI runner is the next piece.</div>
-          </div>
-        </div>
-        <div class="clchat">
-          <div class="hd"><span class="avatar">C</span> Build with Claude<span class="t" id="cl-hdr-model" style="margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)">—</span></div>
-          <div class="body" id="clbody">
-            <div class="clmsg a"><b>Claude</b> — I can see your repo and the live tool belt. Ask me to harden a tool's schema, write a test, or trace a failing connector. Runs on your subscription.</div>
-          </div>
-          <div class="foot"><input id="cl-input" placeholder="Ask Claude to build or debug…" onkeydown="if(event.key==='Enter')claudeSend()"/><button class="btn pri" onclick="claudeSend()">Send</button></div>
         </div>
       </div>
     </section>
@@ -507,10 +478,9 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 
 <!-- palette -->
 <div class="pb" id="pb" onclick="if(event.target===this)this.classList.remove('open')">
-  <div class="pal"><input id="palin" placeholder="Pull a model · new character · run audit · build with Claude…"/>
+  <div class="pal"><input id="palin" placeholder="Pull a model · new character · open command deck…"/>
     <div class="it" onclick="go('foundry');closePal()">◆ Pull a model from Hugging Face</div>
     <div class="it" onclick="go('characters');closePal()">⇄ Configure character</div>
-    <div class="it" onclick="go('claude');closePal()">✦ Build / debug with Claude</div>
     <div class="it" onclick="go('deck');closePal()">▦ Open command deck</div>
   </div>
 </div>
@@ -519,7 +489,7 @@ label{font-size:11px;color:var(--muted);display:block;margin:0 0 5px}
 function go(v){document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('on',n.dataset.v===v));
   document.querySelectorAll('.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
   document.getElementById('main').classList.toggle('flush',v==='talk');
-  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='memory')loadMemoryView(); if(v==='claude')loadClaude(); if(v==='settings'){loadSettings();loadRules();}}
+  if(v==='deck')loadDeck(); if(v==='characters')loadChars(); if(v==='talk')loadTalk(); if(v==='memory')loadMemoryView(); if(v==='settings'){loadSettings();loadRules();}}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.v));
 function openPal(){document.getElementById('pb').classList.add('open');document.getElementById('palin').focus()}
 function closePal(){document.getElementById('pb').classList.remove('open')}
@@ -572,7 +542,7 @@ let curCharModel='';
 async function configChar(name){curChar=name;
   try{const pf=await api('/api/profiles/'+encodeURIComponent(name));curCharModel=pf.model||'';
     document.getElementById('cfg-h').innerHTML=name+' · configuration <span class="t">editing</span>';
-    const opts=['<option value="">default engine</option>'].concat(MODELS.map(m=>'<option '+(m.name===pf.model?'selected':'')+'>'+m.name+'</option>')).concat(['<option value="__claude"'+(pf.model==='__claude'?' selected':'')+'>Claude · debug only</option>']).join('');
+    const opts=['<option value="">default engine</option>'].concat(MODELS.map(m=>'<option '+(m.name===pf.model?'selected':'')+'>'+m.name+'</option>')).join('');
     setHTML('cf-model',opts);
     setVal('cf-persona',pf.persona_source||'auto');setVal('cf-email',pf.email_address||'');
     setVal('cf-imaph',pf.imap_host||'');setVal('cf-imapp',pf.imap_port||993);
@@ -601,7 +571,7 @@ async function saveChar(){if(!curChar)return;const btn=document.getElementById('
     discord_allowed_channels:val('cf-dchan')};
   if(btn)btn.textContent='Saving…';
   try{await fetch('/api/profiles/'+encodeURIComponent(curChar),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const m=val('cf-model');const target=(m==='__claude'?'':m);if(target!==(curCharModel||'')){await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:target})});curCharModel=target;}
+    const m=val('cf-model');if(m!==(curCharModel||'')){await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m})});curCharModel=m;}
     if(btn)btn.textContent='✓ Saved';setTimeout(()=>{if(btn)btn.textContent='Save character'},1500);loadChars();
   }catch(e){if(btn)btn.textContent='Save failed'}
 }
@@ -619,6 +589,10 @@ async function vaultDel(key){await fetch('/api/profiles/'+encodeURIComponent(cur
 
 /* ───── Foundry (live · wired to backend) ───── */
 let curRepo='';
+let curOptions=[];
+let curRec='';
+let curHw={};
+let selQuant='';
 const fmtGB=b=>(b/1073741824).toFixed(1)+' GB';
 async function api(path){const r=await fetch(path);if(!r.ok){let t='';try{t=(await r.json()).detail||''}catch(e){}throw new Error(t||('HTTP '+r.status))}return r.json()}
 async function hfSearch(){
@@ -638,30 +612,39 @@ async function fit(repo){
   curRepo=repo;const pane=document.getElementById('fitpane');
   pane.innerHTML='<div class="autofit"><div style="color:var(--muted);font-size:13px">Reading the model header & matching quants to your hardware…</div></div>';
   try{const d=await api('/api/models/quant-options?repo='+encodeURIComponent(repo)+'&preference=balanced');
-    const hw=d.hardware||{},rec=d.recommended;const reco=(d.options||[]).find(o=>o.quant===rec);
-    const fitLabel=o=>o.fits_fully?(o.n_gpu_layers<0?'full GPU':o.n_gpu_layers+' layers GPU'):(o.feasible?o.strategy.replace(/_/g,' '):'too big');
-    pane.innerHTML='<div class="autofit">'+
-      '<div class="hd"><span class="tagp tp-best">RECOMMENDED</span><span class="big">'+(rec||'—')+'</span><span style="margin-left:auto;font-size:11px;color:var(--faint)">click a quant to download</span></div>'+
-      '<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px">'+repo.split('/').pop()+' · '+(d.n_layers||'?')+' layers'+(d.is_moe?' · MoE':'')+' on '+(hw.gpu||'CPU')+(hw.vram_total?' ('+fmtGB(hw.vram_total)+(hw.vendor?', '+hw.vendor:'')+')':'')+'</div>'+
-      '<div class="qaxis">↑ faster · smaller</div>'+
-      '<div class="quants">'+(d.options||[]).map(o=>'<div class="quant '+(o.quant===rec?'pick':'')+' '+(o.fits_fully?'':'over')+'" title="Download '+o.quant+' ('+fmtGB(o.size)+')" onclick="dl(\''+o.quant+'\',\''+repo+'\')">'+
-        '<span class="nm">'+o.quant+'</span><span class="sz">'+fmtGB(o.size)+'</span>'+
-        '<span class="fit tagp '+(o.fits_fully?'tp-gpu':'tp-warn')+'">'+fitLabel(o)+'</span>'+
-        '<span class="tps">~'+o.est_tps+' tps</span>'+
-        (o.quant===rec?'<span class="tagp tp-best" style="margin-left:8px">best</span>':'')+
-        '<span class="dlico">⇣</span></div>').join('')+'</div>'+
-      '<div class="qaxis">↓ higher quality · larger</div>'+
-      (reco?'<div class="place">'+reco.reason+'</div>':'')+
-      '<div class="prog" id="prog"><i id="progi"></i></div><div id="dlmsg" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div></div>';
+    curOptions=d.options||[];curRec=d.recommended||'';curHw={hw:d.hardware||{},n_layers:d.n_layers,is_moe:d.is_moe};
+    selQuant=curRec||(curOptions[0]&&curOptions[0].quant)||'';
+    renderFit();
   }catch(e){pane.innerHTML='<div class="autofit"><div style="color:var(--bad);font-size:13px">Could not analyze: '+e.message+'</div></div>'}
+}
+function selectQuant(quant){selQuant=quant;renderFit()}
+function renderFit(){
+  const pane=document.getElementById('fitpane');if(!pane||!curOptions.length)return;
+  const hw=curHw.hw||{},rec=curRec;
+  const sel=curOptions.find(o=>o.quant===selQuant)||curOptions[0];
+  const fitLabel=o=>o.fits_fully?(o.n_gpu_layers<0?'full GPU':o.n_gpu_layers+' layers GPU'):(o.feasible?o.strategy.replace(/_/g,' '):'too big');
+  pane.innerHTML='<div class="autofit">'+
+    '<div class="hd"><span class="tagp tp-best">RECOMMENDED</span><span class="big">'+(rec||'—')+'</span><span style="margin-left:auto;font-size:11px;color:var(--faint)">click a quant to inspect it</span></div>'+
+    '<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px">'+curRepo.split('/').pop()+' · '+(curHw.n_layers||'?')+' layers'+(curHw.is_moe?' · MoE':'')+' on '+(hw.gpu||'CPU')+(hw.vram_total?' ('+fmtGB(hw.vram_total)+(hw.vendor?', '+hw.vendor:'')+')':'')+'</div>'+
+    '<div class="qaxis">↑ faster · smaller</div>'+
+    '<div class="quants">'+curOptions.map(o=>'<div class="quant '+(o.quant===selQuant?'pick':'')+' '+(o.fits_fully?'':'over')+'" title="Inspect '+o.quant+' ('+fmtGB(o.size)+')" onclick="selectQuant(\''+o.quant+'\')">'+
+      '<span class="nm">'+o.quant+'</span><span class="sz">'+fmtGB(o.size)+'</span>'+
+      '<span class="fit tagp '+(o.fits_fully?'tp-gpu':'tp-warn')+'">'+fitLabel(o)+'</span>'+
+      '<span class="tps">~'+o.est_tps+' tps</span>'+
+      (o.quant===rec?'<span class="tagp tp-best" style="margin-left:8px">best</span>':'')+
+      (o.quant===selQuant?'<span class="dlico">●</span>':'')+'</div>').join('')+'</div>'+
+    '<div class="qaxis">↓ higher quality · larger</div>'+
+    (sel?'<div class="place">predicted: '+fmtGB(sel.size)+' on disk · '+fitLabel(sel)+' · '+fmtGB(sel.vram_used||0)+' VRAM · ~'+sel.est_tps+' tok/s'+(sel.reason?' — '+sel.reason:'')+'</div>':'')+
+    '<button class="btn pri" style="margin-top:12px" '+(sel&&sel.feasible===false?'disabled':'')+' onclick="dl(\''+(sel?sel.quant:'')+'\',\''+curRepo+'\')">⇣ Download '+(sel?sel.quant+' ('+fmtGB(sel.size)+')':'')+'</button>'+
+    '<div class="prog" id="prog"><i id="progi"></i></div><div id="dlmsg" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div></div>';
 }
 async function dl(quant,repo){
   const p=document.getElementById('prog'),i=document.getElementById('progi'),m=document.getElementById('dlmsg');
-  p.style.display='block';m.textContent='starting download…';
+  if(p)p.style.display='block';if(m)m.textContent='starting download…';
   try{const r=await fetch('/api/models/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:repo,quant:quant})});
-    if(r.status===409){m.textContent='a download is already running — attaching to it…';}
+    if(r.status===409){if(m)m.textContent='a download is already running — attaching to it…';}
     else if(!r.ok){let t='';try{t=(await r.json()).detail}catch(e){}throw new Error(t||('HTTP '+r.status))}
-  }catch(e){m.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';return}
+  }catch(e){if(m)m.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>';return}
   pollFetch(p,i,m);
 }
 function pollFetch(p,i,m){
@@ -676,7 +659,7 @@ function pollFetch(p,i,m){
 }
 async function loadLib(){const box=document.getElementById('library');
   try{const d=await api('/api/models');
-    if(!d.models||!d.models.length){box.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">No models registered yet — pull one above.</div>';return}
+    if(!d.models||!d.models.length){box.innerHTML='<div class="card" style="color:var(--muted);font-size:13px">No models installed yet — find one below.</div>';return}
     box.innerHTML='';
     d.models.forEach(m=>{const st=m.state||(m.running?'running':'stopped');
       const live=st==='running'||st==='loading';
@@ -688,7 +671,7 @@ async function loadLib(){const box=document.getElementById('library');
         '<button class="btn sm" onclick="modelAct(\''+m.name+'\',\''+( live?'stop':'start')+'\')">'+(live?'Stop':'Start')+'</button>'+
         '<button class="btn sm" style="margin-left:4px" title="Assign to a character" onclick="assignLocal(\''+m.name+'\')">→ char</button>'+
         (st==='running'?'<button class="btn sm" title="Resize context window" onclick="openResize(\''+m.name+'\')" style="margin-left:4px">↕ ctx</button>':'')+
-        (!live?'<button class="btn sm" style="color:var(--bad);margin-left:4px" onclick="deleteModel(\''+m.name+'\')" title="Remove">&#x2715;</button>':'')+
+        (!live?'<button class="btn sm" style="color:var(--bad);margin-left:4px" onclick="deleteModel(\''+m.name+'\')" title="Delete from disk">&#x2715;</button>':'')+
         '</div>';box.append(e)});
   }catch(e){box.innerHTML='<div class="card" style="color:var(--bad);font-size:13px">'+e.message+'</div>'}
 }
@@ -1089,41 +1072,6 @@ async function setPolicy(p){document.getElementById('ep-ask').classList.toggle('
   try{await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_policy:p==='act'?'allow':'ask'})})}catch(e){}}
 async function loadPolicy(){try{const d=await api('/api/settings');const p=(d.settings&&d.settings.exec_policy)||'ask';const act=(p==='allow'||p==='act');
   document.getElementById('ep-ask').classList.toggle('on',!act);document.getElementById('ep-act').classList.toggle('on',act)}catch(e){}}
-async function loadClaude(){try{const d=await api('/api/claude/status');
-  document.getElementById('cl-status').innerHTML=d.connected?('<span style="color:var(--good)">connected · '+(d.subscription||'subscription')+'</span>'):'<span style="color:var(--bad)">not connected — run claude login</span>';
-  document.getElementById('cl-sdk').textContent=d.sdk?('v'+d.sdk):'not installed';
-  const sel=document.getElementById('cl-model');if(sel)sel.innerHTML=(d.models||[]).map(m=>'<option'+(m===d.model?' selected':'')+'>'+m+'</option>').join('');
-  const hdr=document.getElementById('cl-hdr-model');if(hdr)hdr.textContent=d.model||'';
-  const note=document.getElementById('cl-note');if(note)note.textContent=(d.note||'')+(d.api_key_set?'  ⚠ ANTHROPIC_API_KEY is set — unset it to bill your subscription, not the API.':'');
-}catch(e){}}
-async function claudeSetModel(){const m=document.getElementById('cl-model').value;const hdr=document.getElementById('cl-hdr-model');if(hdr)hdr.textContent=m;
-  try{await fetch('/api/claude/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m})})}catch(e){}}
-async function claudeSend(){const i=document.getElementById('cl-input');const t=(i.value||'').trim();if(!t)return;i.value='';
-  const body=document.getElementById('clbody');
-  const u=document.createElement('div');u.className='clmsg u';u.textContent=t;body.append(u);
-  const a=document.createElement('div');a.className='clmsg a';a.innerHTML='<b>Claude</b> ';
-  const pend=document.createElement('span');pend.style.color='var(--muted)';pend.textContent='thinking…';a.append(pend);
-  const think=document.createElement('div');think.style.cssText='color:var(--faint);font-size:11.5px;white-space:pre-wrap;display:none;border-left:2px solid var(--cl);padding-left:8px;margin:4px 0';a.append(think);
-  const txt=document.createElement('span');a.append(txt);
-  body.append(a);body.scrollTop=body.scrollHeight;
-  let acc='',thinkAcc='',started=false;
-  const clear=()=>{if(pend.parentNode)pend.remove()};
-  try{const m=document.getElementById('cl-model').value;
-    const r=await fetch('/api/claude/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,model:m})});
-    if(!r.body)throw new Error('no stream');
-    const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
-    while(true){const {value,done}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});
-      let nl;while((nl=buf.indexOf('\n'))>=0){const line=buf.slice(0,nl).trim();buf=buf.slice(nl+1);if(!line)continue;let ev;try{ev=JSON.parse(line)}catch(e){continue}
-        if(ev.type==='reasoning'){clear();think.style.display='';thinkAcc+=ev.text||'';think.textContent='💭 '+thinkAcc.slice(-800)}
-        else if(ev.type==='token'){clear();acc+=ev.text||'';txt.innerHTML=escapeHtml(acc).replace(/\n/g,'<br>')}
-        else if(ev.type==='tool_call'){clear();const st=document.createElement('div');st.style.cssText='font-family:var(--mono);font-size:11px;color:var(--a2);margin:3px 0';st.textContent='→ '+(ev.name||'tool');a.insertBefore(st,txt)}
-        else if(ev.type==='done'){clear();if(ev.turns){const d=document.createElement('div');d.style.cssText='color:var(--faint);font-size:10.5px;margin-top:6px;font-family:var(--mono)';d.textContent=ev.turns+' turns · $'+(ev.cost_usd||0).toFixed(4)+' · '+m;a.append(d)}}
-        else if(ev.type==='error'){clear();txt.innerHTML='<span style="color:var(--bad)">'+escapeHtml(ev.error||'error')+'</span>'}
-        body.scrollTop=body.scrollHeight}
-    }
-    if(!acc&&!thinkAcc&&pend.parentNode){pend.textContent='(no output)'}
-  }catch(e){clear();txt.innerHTML='<span style="color:var(--bad)">'+escapeHtml(e.message)+'</span>'}
-}
 async function loadSettings(){try{const d=await api('/api/settings');const s=d.settings||{};
   const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!=null&&v!=='***')e.value=v};
   set('se-model_path',s.model_path);set('se-n_ctx',s.n_ctx);set('se-n_gpu_layers',s.n_gpu_layers);
@@ -1260,7 +1208,7 @@ async function applyHwPlan(btn){
   if(btn){btn.disabled=false;btn.textContent='⚙ Re-run hardware plan';}
 }
 async function deleteModel(name){
-  if(!confirm('Remove "'+name+'" from library?\n(GGUF file on disk is NOT deleted.)'))return;
+  if(!confirm('Delete "'+name+'"?\nThis removes the GGUF file(s) from disk — this cannot be undone.'))return;
   try{await fetch('/api/models/'+encodeURIComponent(name),{method:'DELETE'});loadLib();}catch(e){}
 }
 async function searxctl(dir,btn){
@@ -1311,7 +1259,7 @@ async function charPfpChanged(input){
 async function deleteCharPfp(){if(!curChar)return;
   try{await fetch('/api/profiles/'+encodeURIComponent(curChar)+'/avatar',{method:'DELETE'});
     configChar(curChar);loadChars();}catch(e){}}
-loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);loadClaude();hfSearch();loadLib();setInterval(loadLib,2500);loadFoundryChars();
+loadDeck();loadCat();loadConn();loadPolicy();loadTalk();spark();setInterval(spark,1500);refreshState();setInterval(refreshState,6000);hfSearch();loadLib();setInterval(loadLib,2500);loadFoundryChars();
 
 // sidebar collapse (left nav + talk-view memory rail) — state persists across
 // reloads since this is our own served page, not a sandboxed artifact.

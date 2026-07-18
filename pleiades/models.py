@@ -122,13 +122,33 @@ class ModelManager:
 
     # -- registry ----------------------------------------------------------- #
     def _load(self) -> dict:
+        """Registry, pruned against what's actually on disk.
+
+        models.json is bookkeeping, not truth — if a GGUF was deleted (by a
+        previous remove(), or by hand) its entry must not go on appearing in
+        the library forever. Every read goes through here so list()/get()/
+        add() all see the reconciled state, not a stale in-memory picture.
+        """
         p = _models_json()
+        reg: dict = {}
         if p.is_file():
             try:
-                return json.loads(p.read_text(encoding="utf-8"))
+                reg = json.loads(p.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
-                return {}
-        return {}
+                reg = {}
+        if self._prune_missing(reg):
+            self._save(reg)
+        return reg
+
+    def _prune_missing(self, reg: dict) -> bool:
+        """Drop registry entries whose GGUF no longer exists on disk."""
+        changed = False
+        for name in list(reg.keys()):
+            path = Path(reg[name].get("path", "")).expanduser()
+            if not path.is_file():
+                del reg[name]
+                changed = True
+        return changed
 
     def _save(self, data: dict) -> None:
         _models_json().write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -147,14 +167,48 @@ class ModelManager:
         self._save(reg)
         return reg[name]
 
-    def remove(self, name: str) -> bool:
+    def remove(self, name: str, *, delete_file: bool = True) -> bool:
         reg = self._load()
         if name not in reg:
             return False
         self.stop(name)
+        path = Path(reg[name].get("path", "")).expanduser()
         del reg[name]
         self._save(reg)
+        if delete_file:
+            self._delete_model_files(path)
         return True
+
+    def _delete_model_files(self, path: Path) -> None:
+        """Best-effort delete of the actual GGUF(s) backing a removed model.
+
+        Downloads made through the foundry live under their own directory in
+        ~/.pleiades/models/<repo>/ (one dir per repo, may hold split parts) —
+        for those, remove the whole directory so no orphaned parts remain.
+        A model registered from an arbitrary path (`pleiades model add`) just
+        has that one file unlinked; we never touch sibling files outside our
+        managed models dir.
+        """
+        if not path or not str(path):
+            return
+        try:
+            rp = path.resolve()
+        except OSError:
+            return
+        managed_root = None
+        try:
+            from .fetch import models_dir
+            managed_root = models_dir().resolve()
+        except Exception:
+            pass
+        try:
+            if managed_root and (rp.parent == managed_root or managed_root in rp.parents):
+                import shutil
+                shutil.rmtree(rp.parent, ignore_errors=True)
+            elif rp.is_file():
+                rp.unlink()
+        except OSError:
+            pass
 
     def get(self, name: str) -> Optional[dict]:
         return self._load().get(name)

@@ -20,13 +20,13 @@ dependencies = [
 [project.optional-dependencies]
 browser = ["camoufox[geoip]>=0.4"]   # headed anti-fingerprint Firefox + Playwright
 discord = ["discord.py>=2.4"]
-# Workspace harness (pleiades.harness): optional cloud tiers for the Claude-Code-style
-# agent loop. Local llama.cpp inference (core) remains the primary backend; these only
-# enable calling hosted models as additional tiers. Document readers are optional too.
-workspace = ["anthropic>=0.69", "claude-agent-sdk>=0.2"]  # +claude-agent-sdk: subscription-billed "claude" tier
+# Workspace harness (pleiades.harness): optional cloud tiers for the agent loop.
+# Local llama.cpp inference (core) remains the primary backend; these only enable
+# calling hosted models (Anthropic API) as additional tiers. Document readers are optional too.
+workspace = ["anthropic>=0.69"]
 docs = ["pypdf>=4.0", "python-docx>=1.1", "openpyxl>=3.1", "Pillow>=10.0"]
 ui = ["fastapi>=0.110", "uvicorn>=0.29"]   # `pleiades ui` control panel
-all = ["camoufox[geoip]>=0.4", "discord.py>=2.4", "anthropic>=0.69", "claude-agent-sdk>=0.2", "fastapi>=0.110", "uvicorn>=0.29"]
+all = ["camoufox[geoip]>=0.4", "discord.py>=2.4", "anthropic>=0.69", "fastapi>=0.110", "uvicorn>=0.29"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
