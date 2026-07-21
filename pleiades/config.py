@@ -175,8 +175,8 @@ def mask_key(key: str) -> str:
     without ever re-exposing the full value)."""
     key = key or ""
     if len(key) <= 4:
-        return "\u2022" * len(key)
-    return "\u2022\u2022\u2022\u2022" + key[-4:]
+        return "•" * len(key)
+    return "••••" + key[-4:]
 
 
 def _key_list(env_csv, current: list, legacy: str = "") -> list:
@@ -278,6 +278,17 @@ class Settings:
     tool_mode: str = "auto"           # auto | all | search
     tool_search_threshold: int = 18
 
+    # --- Agent harness: sandboxed executor (harness/sandbox.py) ---
+    # Additive layer UNDERNEATH exec_policy above, not a replacement for it —
+    # the approval gate stays mandatory regardless of these settings. This is
+    # "if a call runs, how much damage can it do" (resource limits, a
+    # destructive-command floor, and opt-in fs/network scoping for
+    # run_shell/run_python/start_process). See sandbox.py for what's real vs.
+    # best-effort per platform.
+    sandbox_enabled: bool = True      # resource limits + destructive-command floor
+    sandbox_mem_mb: int = 4096        # RSS ceiling for the process tree (0 = unlimited)
+    sandbox_network: str = "allow"    # allow | deny (deny blocks known network commands)
+
     # --- Agent harness: in-process memory tier (augments Anamnesis) ---
     memory_dir: str = "memory"
     embed_enabled: bool = True
@@ -363,6 +374,10 @@ class Settings:
             s.exec_policy = os.environ["PLEIADES_EXEC_POLICY"]
         s.eval_interval = _int("PLEIADES_EVAL_INTERVAL", s.eval_interval)
         s.max_rounds = _int("PLEIADES_MAX_ROUNDS", s.max_rounds)
+        if os.environ.get("PLEIADES_SANDBOX_ENABLED"):
+            s.sandbox_enabled = os.environ["PLEIADES_SANDBOX_ENABLED"].strip().lower() in ("1", "true", "yes")
+        s.sandbox_mem_mb = _int("PLEIADES_SANDBOX_MEM_MB", s.sandbox_mem_mb)
+        s.sandbox_network = os.environ.get("PLEIADES_SANDBOX_NETWORK", s.sandbox_network)
 
         # The "openai" backend defaults to our local inference engine.
         if not s.openai_host:

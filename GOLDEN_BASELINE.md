@@ -18,12 +18,27 @@ definition, references, diagnostics) instead of AST + regex heuristics. Falls
 back to the current heuristic path when no server is available, so it stays
 offline-friendly.
 
-## 2. Sandboxed executor
+## 2. Sandboxed executor — landed `0f6e678` (branch `sandboxed-executor`)
 
 `run_shell` / `run_python` currently execute unsandboxed behind the permission
 gate. The native layer adds an opt-in sandbox (resource limits, a scoped
 filesystem view, and configurable network egress) so untrusted or autonomous
 runs can be contained without losing the gated-but-direct default.
+
+Implemented in `pleiades/harness/sandbox.py`, wired into `builtins/shell.py`
+(`run_shell`, `run_python`) and `builtins/process.py` (`start_process`).
+Strictly additive underneath the approval gate (`exec_policy` /
+`Agent._default_approve`), which is unchanged and stays mandatory. Ships:
+an unconditional destructive-command floor (not configurable, on even with
+the sandbox disabled), a memory ceiling (POSIX `RLIMIT_AS` + a cross-platform
+`psutil` watchdog — the watchdog is the real enforcement path on Windows),
+opt-in network egress control, and a real in-process filesystem write-guard
+for `run_python` specifically (best-effort, regex-based for `run_shell` —
+Windows has no chroot/namespace primitive without containers, tracked as a
+harder follow-up, not pretended away). New `Settings` fields:
+`sandbox_enabled`, `sandbox_mem_mb`, `sandbox_network`. Covered by
+`tests/test_sandbox.py` (30 tests); full suite at 174 passed / 2 pre-existing
+unrelated failures (confirmed via `git stash` — present without this change).
 
 ## 3. Streaming tools
 

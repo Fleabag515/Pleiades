@@ -15,6 +15,7 @@ dependencies = [
     "rich>=13.7",                     # pretty CLI / chat REPL
     "cryptography>=42.0",             # vault encryption (Fernet)
     "platformdirs>=4.2",              # cross-platform config paths
+    "psutil>=5.9",                    # harness/sandbox.py: cross-platform memory watchdog for run_shell/run_python
 ]
 
 [project.optional-dependencies]
