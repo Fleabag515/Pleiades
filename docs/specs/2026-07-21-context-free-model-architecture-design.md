@@ -123,79 +123,38 @@ already has the user-facing experience he's asking for** — "the conversation
 does not hit a wall" — for any model built this way, with zero training
 performed by Pleiades.
 
-## Phase 2 — Build a narrow, offline "linearization foundry"
+## Phase 2 — out of scope for Pleiades (correction, 2026-07-21)
 
-**Goal:** this is where Fleagle's own "skeleton + weight transplant" idea
-becomes real — grounded in the published LoLCATs/MOHAWK recipes instead of
-invented from scratch. Both consultants were explicit that this must be an
-**offline conversion pipeline that runs once and caches its output**, not
-runtime weight-dissection on every launch:
+**This phase, as originally drafted below the line, does not belong in
+Pleiades and should not be built here.** Fleagle corrected this directly:
+Pleiades is an inference engine + connector — it downloads and serves models,
+wires them into a character with a tool belt (the harness) and memory
+(Anamnesis). **It does not train or convert models.** An offline linearization
+pipeline (LoLCATs/MOHAWK-style distillation: freeze a donor, replace attention
+layers, distill, export a new checkpoint) is genuine ML research/training work
+with its own compute, data-pipeline, and evaluation needs — exactly the kind
+of thing [[new-brain-project]] already does as its own separate research
+effort for Mark specifically, not a feature of the serving/connector layer.
+If Fleagle wants a generalized linearization pipeline built, that's a new,
+separate project in the shape of New Brain — planned and scoped on its own,
+not folded into Pleiades' repo or roadmap.
 
-```
-donor dense checkpoint → choose skeleton architecture (target one llama.cpp
-already understands, e.g. the Qwen3Next/gated-DeltaNet family) → freeze donor
-weights → replace selected attention layers with linear/recurrent blocks →
-distill against the donor's own logits/hidden states → merge adapters →
-export GGUF → validate in llama.cpp → register in the Foundry catalog
-```
+**What Pleiades actually does, and what "game-changing" honestly caps out at
+for the inference-engine layer:** recognize and correctly serve whatever
+already-hybrid/recurrent model a user downloads (Phase 0.A + Phase 1 above),
+and give ordinary dense models a graceful long-conversation fallback (Phase
+0.5). That is the complete, correctly-scoped feature set — real, shippable,
+zero training, and squarely inside what an inference engine + connector
+should own.
 
-**Realistic scope, per both consultants — read this before promising anything
-to Fleagle:**
-- **Target dense checkpoints ≤~9B first.** LoLCATs/MOHAWK's "cheap" claims are
-  cheap *relative to full pretraining on large-lab GPUs*, not cheap on a single
-  11GB RTX 2080 Ti. 9B frozen-backbone + small adapters is plausible locally
-  (matches New Brain's own precedent exactly). 14B is painful. **35B dense is not
-  realistic to train locally on this card** — export to a rented cloud GPU for
-  anything that size, bring the resulting GGUF back to serve locally.
-- **Don't linearize MoE models first.** Mark's own live 35B-A3B models are MoE;
-  published linearization work targets dense attention, and replacing attention
-  layers can interact badly with an MoE router (collapse, expert underuse). Scope
-  MoE linearization as a later, harder track — not where Phase 2 starts.
-- **Don't linearize every layer blindly.** New Brain's own 24-transplanted /
-  8-retained split is a strong prior, not an arbitrary choice — attention layers
-  differ in importance (copying exact tokens, long-range reference resolution,
-  persona/instruction adherence). Start hybrid (most layers linear, a handful of
-  attention layers kept), not fully recurrent.
-- **The remaining attention layers still need bounding.** If 24 layers go
-  recurrent but 8 stay full-attention with a normal unbounded KV cache, the
-  result is "much smaller KV," not "no KV." The retained attention layers need
-  sliding-window/sink/cascading treatment too (reuse Phase 0.5's mechanism) for
-  the end-to-end claim "no context window" to actually hold.
-- **Target an architecture llama.cpp already implements.** If the output
-  doesn't match an existing arch (`QWEN3NEXT`, `JAMBA`, etc.), Pleiades would need
-  new GGUF metadata/tensor-naming/kernel work — turning "cheap linearization"
-  into "fork and maintain a custom llama.cpp backend." That defeats the entire
-  point of Phase 1 being free. Pick the skeleton to match what's already there.
-- **Quantization risk is different for recurrent state than dense weights** —
-  validate post-quantization (persona stability, long-stream coherence, no
-  numeric blowup/decay in the gates), don't assume Q4/K is as safe as it is for
-  ordinary MLP weights.
-- **Base models before instruct models.** Published linearization results mostly
-  validate on base-model benchmarks; a character/chat model's instruct behavior,
-  tool use, and persona stability can degrade even when perplexity looks fine.
-  Validate architecture on a base donor first, then test instruct donors with
-  chat-distribution calibration data, evaluated with real conversational tests
-  — not just MMLU/perplexity.
-- **Recurrent state doesn't support cache-style rewind/branching.** Editing an
-  earlier turn means restoring a prior state snapshot and replaying forward, not
-  truncating a KV cache. This changes the engine/UX contract (checkpoint the
-  recurrent state alongside the transcript at each turn) — not a blocker, but
-  needs to be designed for, not discovered after the fact.
+## Phase 3 — New Brain stays New Brain
 
-**Verification:** long-stream evaluation (100k+ tokens), not short-benchmark —
-VRAM flatness, coherence over the full stream, and a real conversational eval
-set, not just perplexity/MMLU.
-
-## Phase 3 — Keep the full New Brain approach scoped to Mark
-
-Both consultants independently said not to generalize New Brain's complete
-bespoke approach (custom byte-level front/back end + from-scratch adapter
-training) as the general Pleiades feature — it's the right call for a signature
-character model where per-model training cost is acceptable, but it's more
-expensive and more fragile than Phase 2's narrower recipe for the actual goal
-here (letting *any* downloaded model shed its context window). Phase 2 is the
-generalized, cheaper version of the same idea; Phase 3 stays New Brain's own
-track, untouched.
+[[new-brain-project]] is Fleagle's own separate research track and already
+does real linearization-adjacent work (the Qwen3.5-9B-Base transplant for
+Mark). It is not a Pleiades feature and isn't generalized by anything in this
+doc. If a future, explicitly-scoped research project wants to build a general
+linearization pipeline, it would follow New Brain's model — its own project,
+its own compute budget, its own repo — not live inside Pleiades.
 
 ## Anamnesis — does not change
 
@@ -212,16 +171,18 @@ everything now, retire the memory proxy" would be the expensive mistake here.
 
 ## What "game-changing," honestly, should mean
 
-In priority order, per the council: **Phase 0.A** (hybrid-aware planner, unlocks
-everything else) → **Phase 0.5** (StreamingLLM on today's models, near-free,
-de-risks the planner work) → **Phase 1** (Foundry serves a real hybrid GGUF,
-genuine O(1), zero training — this is the fast, real, honest "no wall" win) →
-**Phase 2** (the offline linearization foundry, scoped to ≤9B dense donors
-first — the actual differentiator: *any* small-to-mid dense model downloaded
-through Pleiades can be *made* recurrent). That's the real, defensible version
-of "absolutely game-changing" — not the from-scratch skeleton-every-launch
-idea, which both consultants independently said costs more for no extra
-capability over Phase 2's offline-bake approach.
+In priority order, scoped correctly to what an inference engine/connector
+should own: **Phase 0.A** (hybrid-aware planner, unlocks everything else,
+SHIPPED 2026-07-21 commit 8ec41ba) → **Phase 0.5** (StreamingLLM on today's
+dense models, near-free) → **Phase 1** (Foundry surfaces and correctly serves
+real hybrid/recurrent GGUFs already published on HF — genuine O(1), zero
+training, zero conversion work by Pleiades). That's the real, defensible,
+correctly-scoped version of "game-changing" for this project: *any*
+already-hybrid model a user downloads runs without hitting a context wall,
+today, with no training pipeline of any kind inside Pleiades. Building new
+recurrent architectures from existing dense checkpoints (what the original
+Phase 2 draft proposed) is real, valuable work — it just belongs in a
+dedicated research project, not this one.
 
 ---
 *Written 2026-07-21 following a qwen3.8-max + Opus council consult, per
