@@ -640,6 +640,45 @@ def _moe_ceiling_fits(meta: GGUFMeta, n_ctx: int, hw: Hardware, caps) -> bool:
     return dec.rest + _kv_bytes(meta, n_ctx) <= gpu.vram_free - _moe_overhead
 
 
+# Reserved for the OS + everything else already running on the box (docker
+# services, browser, the desktop session, etc.) before assuming the rest of
+# system RAM is free for CPU-offloaded layers/KV at the elastic ceiling.
+# Deliberately more generous than _OVERHEAD's 800 MiB VRAM margin -- RAM on
+# a real desktop is almost never fully free the way "VRAM free" usually is.
+_RAM_OVERHEAD = 4 * 1024 ** 3
+
+
+def _reachable(meta: GGUFMeta, n_ctx: int, hw: Hardware) -> bool:
+    """Could this gear be served AT ALL -- full GPU offload, partial offload,
+    or fully on CPU -- without exceeding combined VRAM+RAM?
+
+    This is deliberately a different (more permissive) question than
+    `plan(...).fits_fully`. llama.cpp can always place *some* number of
+    layers on the GPU (including zero) and the rest on CPU/RAM; the only
+    genuine failure mode for the ELASTIC CEILING is running out of both
+    pools combined, not merely failing to keep every layer on the GPU —
+    that stricter bar belongs to the LAUNCH gear (protect full-offload
+    speed at start), not to how far upshifting is allowed to reach once a
+    turn actually needs it. Anamnesis already trims what it sends every
+    turn (its own token budget + rotating-slot retrieval), so a context
+    this big is rare — but when a turn genuinely needs one (a long
+    tool-loop, a big pasted document), the ceiling should be "the model's
+    real trained limit", not "whatever still keeps every layer on the
+    GPU". Decision + rationale: Fleagle, 2026-07-21 — "there's not really
+    a reason for us to set a limit... unless you dump an entire book in
+    one turn."
+    """
+    gpu = hw.gpu
+    kv_total = _kv_bytes(meta, n_ctx)
+    need = meta.file_size + kv_total
+    vram_budget = (gpu.vram_free - _OVERHEAD) if gpu else 0
+    if need <= max(vram_budget, 0):
+        return True  # full offload alone already covers it
+    remainder = need - max(vram_budget, 0)  # the part that must live in system RAM
+    ram_budget = hw.ram_available - _RAM_OVERHEAD
+    return remainder <= max(ram_budget, 0)
+
+
 def plan_context(meta: GGUFMeta, hw: Optional[Hardware] = None, *,
                  floor: int = 4096, caps=None) -> ContextPlan:
     """Choose the launch context gear and the elastic ceiling for this machine.
@@ -676,26 +715,49 @@ def plan_context(meta: GGUFMeta, hw: Optional[Hardware] = None, *,
                            f"elastic up to {ceiling} ({_gb(per_tok * ceiling)} KV; "
                            f"{train_note})")
 
-    # Ceiling: largest gear that still fully offloads (dense), OR'd with the
-    # largest gear whose MoE hot-share + KV fits (additive — see
-    # _moe_ceiling_fits; a no-op for dense models / callers with no caps).
+    # "Protected" ceiling governs the LAUNCH gear only: the largest gear
+    # that still fully offloads (dense), OR'd with the largest gear whose
+    # MoE hot-share + KV fits (additive — see _moe_ceiling_fits; a no-op
+    # for dense models / callers with no caps). Speed-first at launch.
     full = [g for g in gears if plan(meta, g, hw).fits_fully]
     moe_full = [g for g in gears if g not in full and _moe_ceiling_fits(meta, g, hw, caps)]
-    if full or moe_full:
-        ceiling = max(full[-1] if full else 0, moe_full[-1] if moe_full else 0)
-        start = min(_START_GEAR_TARGET, ceiling)
-        start = max([g for g in gears if g <= start] or [gears[0]])
-        offload = "full offload" if ceiling in full else "MoE: experts on CPU, rest on GPU"
-        return ContextPlan(start, ceiling,
-                           f"launch {start} ctx (KV {_gb(per_tok * start)}), elastic up to "
-                           f"{ceiling} — {offload} on {gpu.name} "
-                           f"({_gb(gpu.vram_free)} free; {train_note})")
+    protected_ceiling = max(full[-1] if full else 0, moe_full[-1] if moe_full else 0)
 
-    start = gears[0]
-    p = plan(meta, start, hw)
-    return ContextPlan(start, start,
-                       f"tight VRAM: {start} ctx is the floor (KV {_gb(per_tok * start)}; "
-                       f"{p.n_gpu_layers}/{p.n_layers} layers on {gpu.name}; {train_note})")
+    # The actual ELASTIC ceiling: every gear (up to the model's trained
+    # context — _gears_for() already caps `gears` there) that's reachable
+    # at all via full, partial, or CPU-only offload. Superset of `full`, so
+    # this only ever extends the ceiling further, never shrinks it below
+    # the old protected_ceiling. See _reachable()'s docstring for why this
+    # is the right question for "how far can upshifting go" specifically.
+    reachable = [g for g in gears if _reachable(meta, g, hw)]
+    ceiling = max(reachable) if reachable else protected_ceiling
+
+    if ceiling <= 0:
+        start = gears[0]
+        p = plan(meta, start, hw)
+        return ContextPlan(start, start,
+                           f"tight VRAM+RAM: {start} ctx is the floor (KV {_gb(per_tok * start)}; "
+                           f"{p.n_gpu_layers}/{p.n_layers} layers on {gpu.name}; {train_note})")
+
+    # Launch gear protects speed first: stay inside the full-offload ceiling
+    # when one exists at all; when NOTHING fully offloads even at the
+    # smallest gear, start at the floor rather than at the (possibly much
+    # bigger, partial-offload-only) elastic ceiling — elasticity, not the
+    # launch gear, is what absorbs the rare big turn, and starting slow-by-
+    # default on genuinely tight hardware would defeat that.
+    start_ceiling = protected_ceiling or gears[0]
+    start = min(_START_GEAR_TARGET, start_ceiling)
+    start = max([g for g in gears if g <= start] or [gears[0]])
+    if ceiling in full:
+        offload = "full offload"
+    elif ceiling in moe_full:
+        offload = "MoE: experts on CPU, rest on GPU"
+    else:
+        offload = "elastic ceiling reaches beyond full-offload via partial CPU offload"
+    return ContextPlan(start, ceiling,
+                       f"launch {start} ctx (KV {_gb(per_tok * start)}), elastic up to "
+                       f"{ceiling} — {offload} on {gpu.name} "
+                       f"({_gb(gpu.vram_free)} free; {train_note})")
 
 
 def resolve_context(value: "int | str", model_path: str,

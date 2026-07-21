@@ -85,17 +85,37 @@ def test_trained_context_caps_the_ceiling():
 
 def test_tight_vram_caps_the_ceiling_low():
     # 4 GiB model + 0.8 GiB overhead in 6 GiB free: KV is 128 KiB/token, so
-    # 8192 ctx (1 GiB) still fully offloads but 16384 (2 GiB) does not.
+    # 8192 ctx (1 GiB) still fully offloads but 16384 (2 GiB) does not --
+    # that governs the LAUNCH gear (protect full-offload speed at start).
     cp = plan_context(_meta(size_gb=4), hw=_hw(vram_gb=6))
     assert cp.n_ctx == 8192
-    assert cp.n_ctx_max == 8192
+    # The ELASTIC CEILING is a separate, more generous question (2026-07-21
+    # policy change): with 32 GiB of system RAM available (the _hw() default),
+    # the model's full trained context (32768) is reachable via partial CPU
+    # offload even though it doesn't fully fit on this tight 6 GiB GPU. The
+    # ceiling should reflect that -- it's only ever PAID FOR under real
+    # pressure (resize()/self-heal), never at launch.
+    assert cp.n_ctx_max == 32768
 
 
 def test_very_tight_vram_floors_at_smallest_gear():
+    # Nothing fully offloads even at the smallest gear on this GPU -- the
+    # LAUNCH gear floors out (protect speed/predictability at start).
     cp = plan_context(_meta(size_gb=5), hw=_hw(vram_gb=6))
     assert cp.n_ctx == 4096
-    assert cp.n_ctx_max == 4096
-    assert "tight VRAM" in cp.reason
+    # But the ELASTIC CEILING still reaches the model's trained context via
+    # partial CPU offload, since 32 GiB of system RAM easily absorbs the
+    # remainder -- a tight GPU no longer means a permanently tiny ceiling.
+    assert cp.n_ctx_max == 32768
+    assert "elastic" in cp.reason
+
+
+def test_ceiling_stays_honest_when_ram_also_cant_cover_the_remainder():
+    # Tiny GPU AND tiny system RAM: even partial-CPU-offload can't reach the
+    # model's full trained context, so the ceiling must NOT overclaim it.
+    cp = plan_context(_meta(size_gb=5, n_ctx_train=131072), hw=_hw(vram_gb=1, ram_gb=2))
+    assert cp.n_ctx_max < 131072
+    assert cp.n_ctx <= cp.n_ctx_max
 
 
 def test_cpu_plans_from_ram():
