@@ -271,6 +271,14 @@ class GGUFMeta:
     expert_used: int = 0             # experts active per token
     expert_ffn_len: int = 0          # per-expert FFN width
     shared_ffn_len: int = 0          # shared-expert FFN width
+    # Recurrent/hybrid (Mamba-family) state-sizing hparams — 0 for ordinary
+    # dense-attention models. GGUF keys: {arch}.ssm.{conv_kernel,inner_size,
+    # state_size,group_count} — confirmed against llama.cpp's own parser
+    # (src/llama-arch.cpp LLM_KV_SSM_*, src/llama-hparams.cpp n_embd_r/n_embd_s).
+    ssm_d_conv: int = 0
+    ssm_d_inner: int = 0
+    ssm_d_state: int = 0
+    ssm_n_group: int = 0
 
     @property
     def is_moe(self) -> bool:
@@ -279,6 +287,46 @@ class GGUFMeta:
     @property
     def estimated(self) -> bool:
         return self.n_layers == 0
+
+    # -- memory architecture (2026-07-21 context-free-model-architecture plan) - #
+    # Pure-recurrent: every layer is Mamba/Mamba2/RWKV-family — real O(1) state,
+    # NO growing KV cache at all. Hybrid: a mix of recurrent + full-attention
+    # layers (llama.cpp calls this llm_arch_is_hybrid) — the retained attention
+    # layers still have a normal, unbounded-by-default KV cache unless bounded
+    # separately, so a hybrid model is NOT automatically context-free (see the
+    # design doc); treated conservatively (dense KV math) until per-layer
+    # attention-layer accounting is added. Architecture-name strings match
+    # llama.cpp's LLM_ARCH_NAMES exactly (src/llama-arch.cpp).
+    _RECURRENT_ARCHS = frozenset({"mamba", "mamba2", "rwkv6", "rwkv7"})
+    _HYBRID_ARCHS = frozenset({"jamba", "qwen3next", "rwkv6qwen2"})
+
+    @property
+    def memory_arch(self) -> str:
+        """"recurrent" | "hybrid" | "dense" — see _RECURRENT_ARCHS/_HYBRID_ARCHS."""
+        if self.architecture in self._RECURRENT_ARCHS:
+            return "recurrent"
+        if self.architecture in self._HYBRID_ARCHS:
+            return "hybrid"
+        return "dense"
+
+    @property
+    def recurrent_state_bytes(self) -> int:
+        """Fixed (sequence-length-independent) recurrent state, all layers, f32.
+
+        Mamba-family formula only (matches llama.cpp's n_embd_r()+n_embd_s()
+        for the ssm_d_conv/d_inner/d_state/n_group case — see
+        src/llama-hparams.cpp:155-190). RWKV's state formula uses different
+        GGUF keys (wkv_head_size/token_shift_count) not parsed here yet, so
+        RWKV archs conservatively report 0 extra here (their real state is
+        small — tens of KB/layer — the omission is not a VRAM-planning risk,
+        just an under-count to fix if RWKV models are actually added).
+        """
+        if not (self.ssm_d_inner and self.ssm_d_state and self.n_layers):
+            return 0
+        conv_state = (max(self.ssm_d_conv - 1, 0)
+                      * (self.ssm_d_inner + 2 * self.ssm_n_group * self.ssm_d_state))
+        ssm_state = self.ssm_d_state * self.ssm_d_inner
+        return self.n_layers * (conv_state + ssm_state) * 4  # f32
 
 
 def _read_scalar(f: BinaryIO, vtype: int):
@@ -345,6 +393,10 @@ def read_gguf_meta(path: "str | Path") -> GGUFMeta:
         meta.expert_used = _i("expert_used_count")
         meta.expert_ffn_len = _i("expert_feed_forward_length")
         meta.shared_ffn_len = _i("expert_shared_feed_forward_length")
+        meta.ssm_d_conv = _i("ssm.conv_kernel")
+        meta.ssm_d_inner = _i("ssm.inner_size")
+        meta.ssm_d_state = _i("ssm.state_size")
+        meta.ssm_n_group = _i("ssm.group_count")
         ftype = kvs.get("general.file_type")
         if isinstance(ftype, int):
             meta.quant = _FILE_TYPES.get(ftype, f"ftype-{ftype}")
@@ -404,7 +456,10 @@ def plan(meta: GGUFMeta, n_ctx: int, hw: Optional[Hardware] = None) -> Plan:
     kv_total = _kv_bytes(meta, n_ctx)
     # +1 layer's worth approximates the output/embedding tensors.
     per_layer = meta.file_size / (n_layers + 1) if meta.file_size else 0
-    need = meta.file_size + kv_total
+    # Fixed cost regardless of n_ctx (0 for ordinary dense models) — the
+    # recurrent state a Mamba/Mamba2/RWKV/hybrid model carries instead of a
+    # growing KV cache. See GGUFMeta.recurrent_state_bytes.
+    need = meta.file_size + kv_total + meta.recurrent_state_bytes
 
     if per_layer <= 0:
         return Plan(0, n_layers, "could not size the model — running on CPU", False)
@@ -583,7 +638,20 @@ _START_GEAR_TARGET = 16384
 
 
 def kv_bytes_per_token(meta: GGUFMeta, bytes_per_elem: int = 2) -> int:
-    """KV cache cost of ONE context token (K+V, all layers), f16 by default."""
+    """KV cache cost of ONE context token (K+V, all layers), f16 by default.
+
+    Pure-recurrent architectures (Mamba/Mamba2/RWKV) genuinely have ZERO
+    per-token KV growth — their memory is a fixed recurrent state, already
+    accounted for separately via `meta.recurrent_state_bytes` in plan()'s
+    VRAM math. Returning 0 here is what makes plan_context()'s existing
+    ceiling logic (which is entirely driven by kv_bytes_per_token × n_ctx)
+    correctly recognize these models as context-free with NO other changes
+    needed — see docs/specs/2026-07-21-context-free-model-architecture-design.md
+    Phase 0.A. Hybrid architectures keep the dense formula below (conservative
+    — see memory_arch's docstring for why hybrid != automatically context-free).
+    """
+    if meta.memory_arch == "recurrent":
+        return 0
     if not (meta.n_layers and meta.n_embd and meta.n_head):
         # order-of-magnitude fallback: ~1 KiB per layer per token
         return (meta.n_layers or _DEFAULT_LAYERS) * 1024
