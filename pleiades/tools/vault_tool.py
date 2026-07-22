@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from . import Tool, ToolContext
+from . import Tool, ToolContext, format_invalid_choice
 from ..vault import RESERVED_KEYS, Vault
 
 # Generic tokens that appear in almost every site key ('site:', '.com', 'www.') --
@@ -118,4 +118,4 @@ class VaultTool(Tool):
                 return f"No secret stored under '{key}'." + self._did_you_mean(name, vault)
             return f"{key} = {value}"
 
-        return f"[vault error] unknown action '{action}'. Use store, get, or list."
+        return format_invalid_choice("vault", "action", action, ["store", "get", "list"])

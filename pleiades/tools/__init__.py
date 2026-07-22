@@ -7,9 +7,11 @@ character's email, vault, and browser are always its own — never shared.
 
 from __future__ import annotations
 
+import difflib
 import json
+import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:  # avoid heavy imports at module load
     from ..config import Settings
@@ -38,6 +40,24 @@ class ToolContext:
         if self._http is not None:
             self._http.close()
             self._http = None
+
+
+def format_invalid_choice(scope: str, kind: str, value: str, valid: list[str]) -> str:
+    """Build a consistent 'unknown action'/'unknown field' style error.
+
+    Shared by every tool that has an enum-of-options parameter (browser,
+    vault, email, models, profile, characters, ...) so a bad guess always
+    comes back with the same self-correction signal instead of ad hoc
+    wording per tool: the full list of valid `kind`s, plus a fuzzy
+    "did you mean" suggestion (difflib) when one option is a close match to
+    what the model actually sent. `scope` is the short tool/error tag already
+    used in each tool's messages, e.g. "browser", "vault", "models".
+    """
+    msg = f"[{scope} error] unknown {kind} '{value}'. Valid {kind}s: {', '.join(valid)}."
+    close = difflib.get_close_matches(value, valid, n=1, cutoff=0.5)
+    if close and close[0] != value:
+        msg += f" Did you mean '{close[0]}'?"
+    return msg
 
 
 class Tool:
@@ -88,12 +108,26 @@ class ToolBelt:
     def openai_schema(self) -> list[dict]:
         return [t.schema() for t in self._tools.values()]
 
-    def dispatch(self, name: str, args: Any, ctx: ToolContext) -> str:
+    def dispatch(self, name: str, args: Any, ctx: ToolContext,
+                 approve: Optional[Callable[[Tool, dict], bool]] = None) -> str:
         """Run a tool; errors come back as TEACHING results, not dead ends.
 
         A malformed call is a learning opportunity: include the tool's
         parameter schema in the error so the model can correct itself on the
         very next iteration instead of flailing or giving up.
+
+        `approve(tool, args) -> bool` is the single source of truth for
+        exec_policy="ask" gating. Callers that already have a real approval
+        mechanism (webui/desktop's polling ApprovalCard via Engine.approve,
+        the harness's own approve callback, ...) must pass it here. Only when
+        no callback is supplied AND stdin is a real interactive terminal do
+        we fall back to a blocking console y/N prompt (bare `pleiades chat`
+        REPL, `pleiades work`, tests run by hand). Without a callback in a
+        non-interactive process (Electron-spawned backend, a service, a
+        script), `input()` raises EOFError instantly — that used to be
+        swallowed into a silent, instant "[cancelled]" for every gated call.
+        We now surface that as an explicit error instead of pretending the
+        user said no.
         """
         tool = self._tools.get(name)
         if tool is None:
@@ -114,18 +148,39 @@ class ToolBelt:
         # exec_policy gate for side-effecting tools. No ctx/settings (e.g. a
         # trusted internal caller or a unit test) means no policy to enforce —
         # fall through and run the tool rather than crash.
+        #
+        # Per-character override: ctx.profile.exec_policy (set via
+        # POST /api/profiles/{name}, or the composer's Approve/Ask dropdown)
+        # takes priority over the process-wide ctx.settings.exec_policy when
+        # present, so one character can be "ask" while another is "allow"
+        # under the same running backend. None on the profile means "not
+        # configured for this character" -> fall back to the global setting.
         if not tool.safe:
-            policy = getattr(getattr(ctx, "settings", None), "exec_policy", None)
+            policy = (getattr(getattr(ctx, "profile", None), "exec_policy", None)
+                      or getattr(getattr(ctx, "settings", None), "exec_policy", None))
             if policy == "deny":
                 return f"[error] tool '{name}' blocked by exec_policy=deny"
             if policy == "ask":
-                short = json.dumps(args)[:120]
-                try:
-                    ans = input(f"  [approve] {name}({short}) [y/N] ").strip().lower()
-                except EOFError:
-                    ans = ""
-                if ans not in ("y", "yes"):
-                    return f"[cancelled] {name}"
+                if approve is not None:
+                    try:
+                        ok = approve(tool, args)
+                    except Exception as e:
+                        return f"[error] approval callback for '{name}' failed: {e}"
+                    if not ok:
+                        return f"[cancelled] {name}"
+                elif sys.stdin.isatty():
+                    short = json.dumps(args)[:120]
+                    try:
+                        ans = input(f"  [approve] {name}({short}) [y/N] ").strip().lower()
+                    except EOFError:
+                        ans = ""
+                    if ans not in ("y", "yes"):
+                        return f"[cancelled] {name}"
+                else:
+                    return (f"[error] tool '{name}' needs approval (exec_policy=ask) but "
+                            f"no approval mechanism is available in this non-interactive "
+                            f"context. Pass an approve callback into ToolBelt.dispatch(), "
+                            f"or set exec_policy to 'allow'/'deny'.")
         try:
             return tool.run(ctx, **args)
         except TypeError as e:

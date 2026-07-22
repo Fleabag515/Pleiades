@@ -1,0 +1,64 @@
+appId: com.pleiades.desktop
+productName: Pleiades
+directories:
+  buildResources: build-resources
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+# The self-contained backend bundle (PyInstaller onedir build of
+# pleiades.webui -- see desktop/backend-build/backend.spec / build.sh).
+# Copied to <resources>/backend/ so process.resourcesPath/backend/pleiades-backend
+# resolves in src/main/index.ts's bundledBackendPath(). Not `files:` because it
+# lives outside the app's asar (native .so's + a launcher binary, not source).
+extraResources:
+  - from: backend-build/dist/pleiades-backend
+    to: backend
+win:
+  executableName: pleiades-desktop
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+mac:
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+dmg:
+  artifactName: ${name}-${version}.${ext}
+linux:
+  # Backend is bundled via extraResources above (desktop/backend-build/) so
+  # the AppImage/deb need nothing pre-installed on the target machine -- see
+  # src/main/index.ts's bundledBackendPath()/spawnBackend() for the runtime
+  # lookup, and desktop/backend-build/build.sh to (re)produce the bundle.
+  #
+  # Tray icon: resources/tray-icon.png (32px, @2x at 64px) is loaded directly
+  # via nativeImage in src/main/index.ts -- no electron-builder config needed
+  # for it specifically, it ships as part of the app bundle like any other
+  # ?asset import. Verified working on Linux Mint Cinnamon (Muffin/xapp-status
+  # SNI). TODO(windows): Windows' tray convention is a smaller 16x16 icon
+  # (traditionally .ico); resources/tray-icon-16.png exists and is wired up
+  # conditionally in main/index.ts (see the TODO there) but is UNTESTED --
+  # no Windows machine available here. Verify sizing/format looks right on
+  # an actual Windows build before shipping.
+  target:
+    - AppImage
+    - deb
+  maintainer: Pleiades
+  category: Utility
+appImage:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+publish:
+  provider: generic
+  url: https://example.com/auto-updates

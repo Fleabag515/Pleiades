@@ -33,6 +33,16 @@ class Profile:
     # Deprecated: persona handling lives in Anamnesis. Kept so old profiles load.
     persona_source: str = "auto"
     model: str = ""  # name of the assigned model (see pleiades.models); blank = default engine
+    # Per-character tool-call approval override. None = inherit the process-wide
+    # config.Settings.exec_policy (~/.pleiades or .env PLEIADES_EXEC_POLICY);
+    # "allow"/"ask"/"deny" here takes priority for THIS character only (see
+    # ToolBelt.dispatch in pleiades/tools/__init__.py, which consults
+    # ctx.profile.exec_policy before falling back to ctx.settings.exec_policy).
+    # ProfileManager._load() migrates any profile.json saved before this field
+    # existed to "allow" (see _load docstring) -- that's a one-time, additive
+    # fill-in for the missing key, never a silent overwrite of a value someone
+    # already set explicitly.
+    exec_policy: Optional[str] = None
 
     @property
     def browser_dir(self) -> str:
@@ -70,7 +80,20 @@ class ProfileManager:
         path = config.profile_json_path(name)
         if not path.is_file():
             raise FileNotFoundError(f"No Pleiades profile '{name}' (expected {path}).")
-        return Profile.from_json(json.loads(path.read_text(encoding="utf-8")))
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        profile = Profile.from_json(raw)
+        # One-time migration: profile.json files written before exec_policy
+        # existed have no such key at all. The owner's expectation is that
+        # tool-call approval should just work ("approve everything") per
+        # character by default, so a MISSING key is filled in as "allow" and
+        # persisted -- this never touches a profile that already has an
+        # explicit exec_policy on disk (including an explicit "ask"/"deny"
+        # someone deliberately set), since that branch only runs when the
+        # key is absent from `raw`, not when it's falsy/None.
+        if "exec_policy" not in raw:
+            profile.exec_policy = "allow"
+            self._save(profile)
+        return profile
 
     # -- CRUD --------------------------------------------------------------- #
     def create(
@@ -112,6 +135,7 @@ class ProfileManager:
             smtp_port=smtp_port,
             discord_enabled=bool(discord_token),
             persona_source=persona_source,
+            exec_policy="allow",  # new characters start "approve everything" (owner's expectation)
         )
         self._save(profile)
         config.browser_dir(name).mkdir(parents=True, exist_ok=True)
@@ -162,7 +186,7 @@ class ProfileManager:
                 f"No Anamnesis character '{name}' to adopt. "
                 f"Create one with `pleiades new {name}`."
             )
-        profile = Profile(name=name)
+        profile = Profile(name=name, exec_policy="allow")
         self._save(profile)
         config.browser_dir(name).mkdir(parents=True, exist_ok=True)
         with self.open_vault(name):  # create the empty encrypted vault

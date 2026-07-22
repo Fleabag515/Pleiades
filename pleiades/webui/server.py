@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import socket
+import asyncio
 import subprocess
 import sys
 import threading
@@ -37,7 +38,8 @@ try:
 except Exception:  # pragma: no cover
     httpx = None  # type: ignore
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -77,6 +79,10 @@ class ProfileUpdate(BaseModel):
     discord_require_mention: Optional[bool] = None
     discord_respond_to_bots: Optional[bool] = None
     discord_allowed_channels: Optional[str] = None
+    # Per-character tool-call approval override (composer's Approve/Ask
+    # dropdown). None/omitted leaves it untouched; "allow"/"ask"/"deny" sets
+    # it. See profiles.Profile.exec_policy and ToolBelt.dispatch's gate.
+    exec_policy: Optional[str] = None
 
 
 class EmailConfig(BaseModel):
@@ -121,6 +127,8 @@ class ModelUpdate(BaseModel):
     n_ctx: "Optional[int | str]" = None
     n_gpu_layers: "Optional[int | str]" = None
     chat_format: Optional[str] = None
+    # UI-only display name override; "" clears it back to showing `name`.
+    display_name: Optional[str] = None
 
 
 class AvatarBody(BaseModel):
@@ -166,6 +174,18 @@ class WorkStart(BaseModel):
 
 class WorkApprove(BaseModel):
     approve: bool = False
+
+class BrowserViewStart(BaseModel):
+    url: str = ""
+
+
+class BrowserViewNavigate(BaseModel):
+    url: str
+
+
+class BrowserViewResize(BaseModel):
+    width: int
+    height: int
 
 
 class CloudModelBody(BaseModel):
@@ -268,6 +288,8 @@ def _model_mgr_update(mm: ModelManager, name: str, body: ModelUpdate) -> dict:
         entry["n_gpu_layers"] = body.n_gpu_layers
     if body.chat_format is not None:
         entry["chat_format"] = body.chat_format
+    if body.display_name is not None:
+        entry["display_name"] = body.display_name
     mm._save(reg)  # noqa: SLF001
     entry = dict(entry)
     entry["running"] = mm.is_running(name)
@@ -338,6 +360,16 @@ def _memory_stats(name: str) -> dict:
 # --------------------------------------------------------------------------- #
 def create_app() -> FastAPI:
     app = FastAPI(title="Pleiades Control Panel", version="2.0.0")
+    # Desktop app (Electron renderer, served from a Vite dev-server origin or
+    # file://) talks to this loopback-only server cross-origin. Scope CORS to
+    # localhost/127.0.0.1 only — this server never leaves the machine anyway.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|file://|null)$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     settings = config.Settings.load()
     pm = ProfileManager(settings)
@@ -529,10 +561,12 @@ def create_app() -> FastAPI:
             p = pm.get(name)
         except FileNotFoundError:
             raise HTTPException(404, f"No profile '{name}'")
+        if body.exec_policy is not None and body.exec_policy not in ("allow", "ask", "deny"):
+            raise HTTPException(400, "exec_policy must be one of: allow, ask, deny")
         for f in ("email_address", "imap_host", "imap_port", "smtp_host",
                   "smtp_port", "persona_source", "discord_enabled",
                   "discord_require_mention", "discord_respond_to_bots",
-                  "discord_allowed_channels"):
+                  "discord_allowed_channels", "exec_policy"):
             val = getattr(body, f)
             if val is not None:
                 setattr(p, f, val)
@@ -1282,18 +1316,29 @@ def create_app() -> FastAPI:
     # streaming run short between rounds/chunks (see Engine.stream_events).
     chat_stops: dict[str, threading.Event] = {}
 
-    def _chat_approve_cb(chat_id: str):
+    def _chat_approve_cb(chat_id: str, profile: Optional[Profile] = None):
         import threading
 
         ctl = {"pending": None, "event": threading.Event(), "answer": {"ok": False}}
         chat_approvals[chat_id] = ctl
 
         def approve(tool, args) -> bool:
-            try:
-                from ..harness import Config as HarnessConfig
-                policy = HarnessConfig.load().exec_policy
-            except Exception:
-                policy = "ask"
+            # Per-character override wins over the global default: a fresh
+            # ProfileManager read here (not the `profile` snapshot taken at
+            # stream-start) so a dropdown change lands on the very next tool
+            # call of an in-flight turn, not just the next message.
+            policy = None
+            if profile is not None:
+                try:
+                    policy = getattr(pm.get(profile.name), "exec_policy", None)
+                except Exception:
+                    policy = getattr(profile, "exec_policy", None)
+            if not policy:
+                try:
+                    from ..harness import Config as HarnessConfig
+                    policy = HarnessConfig.load().exec_policy
+                except Exception:
+                    policy = "ask"
             if policy == "allow":
                 return True
             if policy == "deny":
@@ -1356,6 +1401,7 @@ def create_app() -> FastAPI:
             import json as _json
             items: list[dict] = []
             text_acc = ""
+            reasoning_acc = ""
             meta: dict = {}
             stop_evt = threading.Event()
             chat_stops[chat_id] = stop_evt
@@ -1363,7 +1409,7 @@ def create_app() -> FastAPI:
                 from ..engine import Engine
                 engine = Engine(settings=config.Settings.load(),
                                 manager=pm, anamnesis=an,
-                                approve=_chat_approve_cb(chat_id))
+                                approve=_chat_approve_cb(chat_id, p))
                 # Pump the engine on a thread and emit a {"type":"ping"}
                 # whenever it's been quiet for 10s: slow local models (MoE
                 # with CPU experts, long thinking phases) legitimately sit
@@ -1395,9 +1441,32 @@ def create_app() -> FastAPI:
                     if isinstance(item, Exception):
                         raise item
                     evt = item
-                    if evt["type"] == "token":
+                    if evt["type"] == "reasoning":
+                        # Bug: reasoning used to be forwarded live and then
+                        # dropped -- never folded into the saved turn's
+                        # `items`, so the block vanished the moment the chat
+                        # was reloaded/refetched. Persist it like text/tool
+                        # output: flush whatever text was building (so a
+                        # reasoning burst always starts its own item, never
+                        # gets glued onto a preceding text run), then
+                        # accumulate this burst's chunks together. The next
+                        # non-reasoning event flushes THIS accumulator before
+                        # doing its own thing, so a second, later burst of
+                        # reasoning becomes its own distinct item afterward
+                        # instead of merging into the first one.
+                        if text_acc:
+                            items.append({"t": "text", "text": text_acc})
+                            text_acc = ""
+                        reasoning_acc += evt["text"]
+                    elif evt["type"] == "token":
+                        if reasoning_acc:
+                            items.append({"t": "reasoning", "text": reasoning_acc})
+                            reasoning_acc = ""
                         text_acc += evt["text"]
                     elif evt["type"] in ("tool_call", "tool_result"):
+                        if reasoning_acc:
+                            items.append({"t": "reasoning", "text": reasoning_acc})
+                            reasoning_acc = ""
                         if text_acc:
                             items.append({"t": "text", "text": text_acc})
                             text_acc = ""
@@ -1416,6 +1485,8 @@ def create_app() -> FastAPI:
                     elif evt["type"] == "stopped":
                         meta["stopped"] = True
                     yield _json.dumps(evt, ensure_ascii=False) + "\n"
+                if reasoning_acc:
+                    items.append({"t": "reasoning", "text": reasoning_acc})
                 if text_acc:
                     items.append({"t": "text", "text": text_acc})
                 try:
@@ -1460,11 +1531,17 @@ def create_app() -> FastAPI:
 
                 def _policy_only(tool, args) -> bool:
                     # No approval UI on this legacy endpoint: 'ask' fails safe.
-                    try:
-                        from ..harness import Config as HarnessConfig
-                        return HarnessConfig.load().exec_policy == "allow"
-                    except Exception:
-                        return False
+                    # Per-character override (see profiles.Profile.exec_policy)
+                    # still wins over the global default here, same as the
+                    # live chat endpoint above.
+                    policy = getattr(p, "exec_policy", None)
+                    if not policy:
+                        try:
+                            from ..harness import Config as HarnessConfig
+                            policy = HarnessConfig.load().exec_policy
+                        except Exception:
+                            policy = "ask"
+                    return policy == "allow"
 
                 engine = Engine(settings=config.Settings.load(),
                                 manager=pm, anamnesis=an, approve=_policy_only)
@@ -1541,6 +1618,16 @@ def create_app() -> FastAPI:
                 cfg = HarnessConfig.load()
                 if body.policy:
                     cfg.exec_policy = body.policy
+                elif body.character:
+                    # No explicit job-level policy: fall back to the
+                    # character's own exec_policy override (composer's
+                    # Approve/Ask dropdown) before the process-wide default.
+                    try:
+                        char_policy = getattr(pm.get(body.character), "exec_policy", None)
+                        if char_policy:
+                            cfg.exec_policy = char_policy
+                    except Exception:
+                        pass
                 if body.character:
                     _identity.bind_character(body.character, cfg=cfg)
                 bind_memory(WorkingMemory.from_config(cfg))
@@ -1605,6 +1692,135 @@ def create_app() -> FastAPI:
             ctl["answer"]["ok"] = False
             ctl["event"].set()
         return {"ok": True}
+
+    # ----------------------------- browser view (Playwright/Chromium) ------- #
+    # Live, embeddable browser-use view for the desktop app's right panel.
+    # Separate capability from harness/builtins/browser.py's Camoufox tool —
+    # see browser_view.py's module docstring for why this is Chromium-only.
+    @app.post("/api/profiles/{name}/browser-view/start")
+    async def browser_view_start(name: str, body: BrowserViewStart) -> dict:
+        try:
+            pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            await session.start(body.url)
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return session.snapshot()
+
+    @app.post("/api/profiles/{name}/browser-view/stop")
+    async def browser_view_stop(name: str) -> dict:
+        from .browser_view import get_session
+        session = get_session(name)
+        await session.stop()
+        return session.snapshot()
+
+    @app.get("/api/profiles/{name}/browser-view/status")
+    def browser_view_status(name: str) -> dict:
+        from .browser_view import get_session
+        return get_session(name).snapshot()
+
+    @app.post("/api/profiles/{name}/browser-view/navigate")
+    async def browser_view_navigate(name: str, body: BrowserViewNavigate) -> dict:
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            url = await session.navigate(body.url)
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return {"ok": True, "url": url}
+
+    @app.post("/api/profiles/{name}/browser-view/open-separate")
+    async def browser_view_open_separate(name: str) -> dict:
+        """Explicit, human-triggered escape hatch: switch this character's
+        headless panel session to a real headed OS window (owner brief item
+        5 -- never a real window by default, only on this explicit action).
+        See BrowserViewSession.open_separate()'s docstring for why this
+        re-homes the SAME profile/session headed rather than opening a
+        separate plain browser."""
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            await session.open_separate()
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return session.snapshot()
+
+    @app.post("/api/profiles/{name}/browser-view/resize")
+    async def browser_view_resize(name: str, body: BrowserViewResize) -> dict:
+        """Used by the panel's expand/fullscreen view to request a bigger
+        rendered viewport (rather than just upscaling a blurry small one)."""
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            await session.resize(body.width, body.height)
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return session.snapshot()
+
+    @app.websocket("/api/profiles/{name}/browser-view/ws")
+    async def browser_view_ws(websocket: WebSocket, name: str) -> None:
+        """Frames out (binary JPEG messages), input events in (JSON: see
+        BrowserViewSession.dispatch_input for the event shape). One
+        WebSocket per connected panel; multiple panels may watch the same
+        character's session concurrently (each gets its own drop-old
+        frame queue)."""
+        from .browser_view import get_session
+        await websocket.accept()
+        session = get_session(name)
+        await websocket.send_json({"type": "status", **session.snapshot()})
+        queue = session.subscribe()
+
+        async def sender() -> None:
+            try:
+                while True:
+                    frame = await queue.get()
+                    if frame is None:  # session torn down
+                        await websocket.send_json({"type": "status", **session.snapshot()})
+                        break
+                    await websocket.send_bytes(frame)
+            except Exception:
+                pass
+
+        sender_task = asyncio.create_task(sender())
+        try:
+            while True:
+                msg = await websocket.receive_json()
+                if msg.get("kind") == "ping":
+                    continue
+                await session.dispatch_input(msg)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            sender_task.cancel()
+            session.unsubscribe(queue)
+
+    @app.on_event("startup")
+    async def _bind_browser_view_loop() -> None:
+        """Capture this process's running asyncio loop so tools/browser.py
+        (the chat-path model tool, which runs synchronously on a per-turn
+        worker thread -- see engine.py) can bridge synchronous Tool.run()
+        calls into browser_view.py's async Playwright sessions. Only ever
+        set inside this webui/desktop backend process -- the Discord bot and
+        `pleiades work` jobs never call create_app()/run this, so
+        browser_view.main_loop_available() stays False there and
+        tools/browser.py falls back to the harness's Camoufox browser
+        unchanged."""
+        from .browser_view import set_main_loop
+        set_main_loop(asyncio.get_running_loop())
+
+    @app.on_event("shutdown")
+    async def _shutdown_browser_views() -> None:
+        """Never leave an orphaned headed or headless Chromium behind a
+        normal app quit (Electron sends SIGTERM -> uvicorn's default signal
+        handling runs this before the process exits)."""
+        from .browser_view import shutdown_all
+        await shutdown_all()
 
     # ----------------------------- search service --------------------------- #
     search_state: dict[str, Any] = {}

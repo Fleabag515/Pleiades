@@ -15,7 +15,7 @@ from email.message import EmailMessage
 from email.utils import parseaddr
 from typing import Optional
 
-from . import Tool, ToolContext
+from . import Tool, ToolContext, format_invalid_choice
 
 
 def _decode(value: Optional[str]) -> str:
@@ -193,7 +193,9 @@ class EmailTool(Tool):
             return self._read(ctx, kw["id"])
         if action == "send":
             return self._send(ctx, kw.get("to", ""), kw.get("subject", ""), kw.get("body", ""))
-        return f"[email error] unknown action '{action}'."
+        return format_invalid_choice(
+            "email", "action", action, ["list_unread", "read", "send", "search"]
+        )
 
     # -- IMAP --------------------------------------------------------------- #
     def _imap(self, ctx: ToolContext):

@@ -49,6 +49,11 @@ class Model:
     # (0 = CPU, -1 = all layers on GPU — CUDA, ROCm, or Metal build).
     n_gpu_layers: "int | str" = "auto"
     chat_format: str = ""     # blank = llama.cpp auto-detect
+    # Optional UI-only override for how this model's name renders in the
+    # desktop app (composer picker, character model-assign dropdown, Models
+    # list) — never touched by launch/registry-key logic, which always keys
+    # off `name`. Blank means "show `name` as-is" (existing behavior).
+    display_name: str = ""
     host: str = "127.0.0.1"
     port: int = 0             # assigned on add()
 

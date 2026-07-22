@@ -13,6 +13,7 @@ from typing import Optional
 
 from . import config, hardware
 from .profiles import Profile, ProfileManager
+from .tools import format_invalid_choice
 
 
 # --------------------------------------------------------------------------- #
@@ -140,8 +141,10 @@ def models_op(action: str, *, name: str = "", repo: str = "", query: str = "",
         if not (name and character):
             return "[models error] 'assign' needs 'name' (model) and 'character'."
         return models_assign(name, character)
-    return f"[models error] unknown action '{action}'. " \
-           "Use list, search, fetch, start, stop, or assign."
+    return format_invalid_choice(
+        "models", "action", action,
+        ["list", "search", "fetch", "start", "stop", "assign"],
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -170,8 +173,7 @@ def profile_op(profile: Optional[Profile], action: str, *, field: str = "",
         return profile_show(profile)
     if action == "set":
         if field not in _PROFILE_FIELDS:
-            return (f"[profile error] unknown field '{field}'. "
-                    f"Editable: {', '.join(_PROFILE_FIELDS)}")
+            return format_invalid_choice("profile", "field", field, list(_PROFILE_FIELDS))
         val: "str | int" = value
         if field.endswith("_port"):
             try:
@@ -185,7 +187,7 @@ def profile_op(profile: Optional[Profile], action: str, *, field: str = "",
         setattr(profile, field, val)
         ProfileManager()._save(profile)  # noqa: SLF001 — same package
         return f"Set {field} = {val!r} on '{profile.name}'."
-    return f"[profile error] unknown action '{action}'. Use get or set."
+    return format_invalid_choice("profile", "action", action, ["get", "set"])
 
 
 # --------------------------------------------------------------------------- #
@@ -222,5 +224,6 @@ def characters_op(action: str, *, name: str = "", confirm: str = "") -> str:
             return f"Deleted character '{name}'."
     except Exception as e:
         return f"[characters error] {e}"
-    return f"[characters error] unknown action '{action}'. " \
-           "Use list, create, adopt, or delete."
+    return format_invalid_choice(
+        "characters", "action", action, ["list", "create", "adopt", "delete"]
+    )
