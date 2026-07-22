@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, session } from 'electron'
+import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { spawn, ChildProcessByStdio } from 'child_process'
 import type { Readable } from 'stream'
 import { createServer } from 'net'
@@ -193,30 +193,32 @@ function stopBackend(): Promise<void> {
  * The renderer runs on its own origin (the Vite dev-server URL in
  * development, a file:// / "null" origin once packaged) while the backend
  * is a separate localhost port, so plain `fetch()` calls from the renderer
- * are cross-origin. Rather than touching the shared Python backend (which
- * also serves the legacy same-origin static/ frontend and is out of scope
- * for this app), inject permissive CORS response headers here in the main
- * process, scoped strictly to responses coming from our own spawned
- * 127.0.0.1 backend port. This never affects any other site the renderer
- * might load.
+ * are cross-origin.
+ *
+ * Phase B tried the "inject permissive CORS response headers" approach
+ * first (see git history), scoped to responses from our own spawned
+ * 127.0.0.1 backend port. It is not sufficient: pleiades/webui/server.py
+ * has no CORSMiddleware/OPTIONS route, so any *preflighted* request (any
+ * POST/DELETE carrying `Content-Type: application/json`, which is exactly
+ * what chat creation, sending a message, tool approval, and chat deletion
+ * all need) gets a bare `405 Method Not Allowed` on the OPTIONS preflight
+ * itself. Chromium requires a 2xx preflight response before it will even
+ * look at injected Access-Control-* headers, so header injection alone
+ * cannot fix this without also touching the Python backend (out of scope
+ * per the brief).
+ *
+ * Fix: disable Chromium's same-origin policy for this window instead
+ * (`webSecurity: false` below), which removes CORS/preflight enforcement
+ * entirely — no more OPTIONS round-trip, no more header dance. This does
+ * NOT widen what the renderer can reach: the page's CSP
+ * (`connect-src 'self' http://127.0.0.1:*`, `img-src` likewise) still
+ * hard-limits every fetch/img load to same-origin plus our own spawned
+ * localhost backend, contextIsolation/sandbox/nodeIntegration stay on, and
+ * navigation is still locked down via will-navigate below. In short: this
+ * app only ever talks to a backend it spawned itself on 127.0.0.1, so
+ * disabling a same-origin check that exists to protect against *other*
+ * origins carries no real risk here.
  */
-function enableBackendCors(): void {
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    const port = backendState.port
-    if (port && details.url.startsWith(`http://127.0.0.1:${port}/`)) {
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-          'Access-Control-Allow-Origin': ['*'],
-          'Access-Control-Allow-Methods': ['GET,POST,PUT,DELETE,OPTIONS'],
-          'Access-Control-Allow-Headers': ['*']
-        }
-      })
-      return
-    }
-    callback({ responseHeaders: details.responseHeaders })
-  })
-}
 
 // ---------------------------------------------------------------------------
 // IPC
@@ -245,7 +247,11 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      webSecurity: true
+      // See the CORS comment above `registerIpcHandlers` for why this is
+      // off: it's required for POST/DELETE JSON requests against our own
+      // spawned backend to work at all, and CSP still scopes network
+      // access to 'self' + http://127.0.0.1:*.
+      webSecurity: false
     }
   })
 
@@ -285,7 +291,6 @@ app.whenReady().then(() => {
   })
 
   registerIpcHandlers()
-  enableBackendCors()
   createWindow()
   void startBackend()
 

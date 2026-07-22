@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Shell from './components/Shell'
 
 interface BackendStatus {
   phase: 'starting' | 'ready' | 'error'
@@ -7,18 +8,9 @@ interface BackendStatus {
   error: string | null
 }
 
-interface ApiStatus {
-  services?: {
-    anamnesis?: { up: boolean; characters?: number }
-    inference?: { up: boolean; state?: string }
-    searxng?: { up: boolean }
-  }
-  counts?: { profiles?: number; models?: number; models_running?: number }
-}
-
 type ViewState =
   | { kind: 'connecting'; detail: string }
-  | { kind: 'connected'; api: ApiStatus }
+  | { kind: 'connected'; url: string }
   | { kind: 'error'; message: string }
 
 function App(): React.JSX.Element {
@@ -60,8 +52,7 @@ function App(): React.JSX.Element {
     try {
       const res = await fetch(`${backendUrl}/api/status`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const api = (await res.json()) as ApiStatus
-      if (!cancelled.current) setView({ kind: 'connected', api })
+      if (!cancelled.current) setView({ kind: 'connected', url: backendUrl })
     } catch (err) {
       if (!cancelled.current) {
         setView({
@@ -79,35 +70,20 @@ function App(): React.JSX.Element {
     }
   }, [connect])
 
+  if (view.kind === 'connected') {
+    return <Shell base={view.url} />
+  }
+
   return (
-    <div className="flex min-h-screen w-full items-center justify-center p-8 text-slate-100">
-      <div className="w-full max-w-lg rounded-2xl border border-slate-700/60 bg-slate-900/60 p-8 shadow-xl">
+    <div className="flex min-h-screen w-full items-center justify-center bg-bg-app p-8 text-ink">
+      <div className="w-full max-w-lg rounded-2xl border border-border bg-bg-surface p-8 shadow-xl">
         <h1 className="mb-1 text-xl font-semibold tracking-tight">Pleiades</h1>
-        <p className="mb-6 text-sm text-slate-400">Desktop shell — Phase A wiring check</p>
+        <p className="mb-6 text-sm text-ink-dim">Connecting to the local backend…</p>
 
         {view.kind === 'connecting' && (
-          <div className="flex items-center gap-3 text-slate-300">
-            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-amber-400" />
+          <div className="flex items-center gap-3 text-ink">
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" />
             <span>{view.detail}</span>
-          </div>
-        )}
-
-        {view.kind === 'connected' && (
-          <div className="space-y-2 text-slate-200">
-            <div className="flex items-center gap-3">
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-              <span className="font-medium">Connected</span>
-            </div>
-            <p className="text-sm text-slate-300">
-              {view.api.counts?.profiles ?? 0} characters, engine:{' '}
-              {view.api.services?.inference?.state ??
-                (view.api.services?.inference?.up ? 'up' : 'down')}
-            </p>
-            <p className="text-xs text-slate-500">
-              Anamnesis {view.api.services?.anamnesis?.up ? 'up' : 'down'} · SearXNG{' '}
-              {view.api.services?.searxng?.up ? 'up' : 'down'} · Models{' '}
-              {view.api.counts?.models ?? 0} ({view.api.counts?.models_running ?? 0} running)
-            </p>
           </div>
         )}
 
@@ -119,7 +95,7 @@ function App(): React.JSX.Element {
             </div>
             <button
               onClick={connect}
-              className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-slate-100 transition hover:bg-slate-600"
+              className="rounded-lg bg-bg-surface-hover px-4 py-2 text-sm font-medium text-ink transition hover:bg-accent hover:text-white"
             >
               Retry
             </button>
