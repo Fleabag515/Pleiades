@@ -250,6 +250,45 @@ export interface CloudSearchResult {
   is_free?: boolean
 }
 
+// ---- Right panel (Phase 14): work/progress jobs, browser-use embed -------
+
+export interface WorkJobSummary {
+  id: string
+  task: string
+  character: string
+  status: 'running' | 'done' | 'error' | 'cancelled'
+  started: number
+  pending_approval: { tool: string; args: string } | null
+}
+
+export interface WorkEvent {
+  kind: 'tool_call' | 'tool_result' | 'text'
+  ts: number
+  name?: string
+  ok?: boolean
+  output?: string
+  text?: string
+}
+
+export interface WorkJobDetail extends WorkJobSummary {
+  finished: number | null
+  result: string
+  error: string
+  steps: number
+  events: WorkEvent[]
+  event_count: number
+}
+
+export interface BrowserViewStatus {
+  character: string
+  status: 'stopped' | 'starting' | 'running' | 'error'
+  error: string | null
+  url: string | null
+  viewport: { width: number; height: number }
+  interactive: boolean
+  backend: string
+}
+
 export interface CloudSearchResponse {
   source: string
   results: CloudSearchResult[]

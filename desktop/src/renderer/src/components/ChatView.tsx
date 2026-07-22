@@ -5,7 +5,7 @@ import Composer from './Composer'
 import HistoryOverlay from './HistoryOverlay'
 import MessageBubble from './MessageBubble'
 import ReasoningBlock from './ReasoningBlock'
-import RightPanelStub from './RightPanelStub'
+import RightPanel from './RightPanel'
 
 interface ChatViewProps {
   base: string
@@ -30,6 +30,13 @@ interface ChatViewProps {
  * highlighted — so it's gone; the History trigger it also held moved down
  * to a small icon docked under `Composer` instead (see the `onOpenHistory`
  * prop passed below), separate from the right-panel toggle.
+ *
+ * Phase 14: the outer return is now a real flex ROW — `[chat column]
+ * [RightPanel]` — instead of a single column with an absolutely-positioned
+ * overlay. RightPanel is always mounted (so its own width transition can
+ * animate open/close); only its wrapper's width changes, which is why
+ * opening it visibly narrows this chat column instead of floating on top
+ * of it. See RightPanel.tsx for why History isn't duplicated in there.
  */
 function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
   const session = useChatSession(character)
@@ -57,79 +64,93 @@ function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
   const showEmpty = !session.loading && session.history.length === 0 && !session.draft
 
   return (
-    <div className="relative flex h-full flex-1 flex-col overflow-hidden bg-bg-app">
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-3">
-        {session.loading && session.history.length === 0 && (
-          <div className="px-5 py-4 text-sm text-ink-dim">Loading…</div>
-        )}
+    <div className="flex h-full flex-1 overflow-hidden">
+      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-app">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-3">
+          {session.loading && session.history.length === 0 && (
+            <div className="px-5 py-4 text-sm text-ink-dim">Loading…</div>
+          )}
 
-        {showEmpty && (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/15 text-2xl text-accent">
-              ✳
+          {showEmpty && (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/15 text-2xl text-accent">
+                ✳
+              </div>
+              <h1 className="text-xl font-semibold text-ink-bright">Say hello to {character}</h1>
+              <p className="max-w-sm text-sm text-ink-dim">
+                Persistent memory via Anamnesis. Tools stay on standby until the task calls for
+                them.
+              </p>
             </div>
-            <h1 className="text-xl font-semibold text-ink-bright">Say hello to {character}</h1>
-            <p className="max-w-sm text-sm text-ink-dim">
-              Persistent memory via Anamnesis. Tools stay on standby until the task calls for them.
-            </p>
-          </div>
-        )}
+          )}
 
-        {session.history.map((m, i) => (
-          <MessageBubble key={i} message={m} base={base} character={character} />
-        ))}
+          {session.history.map((m, i) => (
+            <MessageBubble key={i} message={m} base={base} character={character} />
+          ))}
 
-        {session.reasoning && session.streaming && <ReasoningBlock text={session.reasoning} streaming={session.streaming} />}
+          {session.reasoning && session.streaming && (
+            <ReasoningBlock text={session.reasoning} streaming={session.streaming} />
+          )}
 
-        {session.draft && (
-          <MessageBubble
-            message={{ role: 'assistant', items: session.draft.items, meta: session.draft.meta }}
-            base={base}
-            character={character}
-            streaming
-          />
-        )}
-
-        {session.approval && (
-          <div className="px-5 py-2">
-            <ApprovalCard
-              approval={session.approval}
-              busy={session.approvalBusy}
-              onApprove={() => respondApproval(base, character, true)}
-              onDeny={() => respondApproval(base, character, false)}
+          {session.draft && (
+            <MessageBubble
+              message={{ role: 'assistant', items: session.draft.items, meta: session.draft.meta }}
+              base={base}
+              character={character}
+              streaming
             />
-          </div>
-        )}
+          )}
 
-        {session.error && (
-          <div className="mx-5 my-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
-            {session.error}
-          </div>
+          {session.approval && (
+            <div className="px-5 py-2">
+              <ApprovalCard
+                approval={session.approval}
+                busy={session.approvalBusy}
+                onApprove={() => respondApproval(base, character, true)}
+                onDeny={() => respondApproval(base, character, false)}
+              />
+            </div>
+          )}
+
+          {session.error && (
+            <div className="mx-5 my-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+              {session.error}
+            </div>
+          )}
+        </div>
+
+        <Composer
+          base={base}
+          character={character}
+          disabled={!character}
+          streaming={session.streaming}
+          onSend={(text) => send(base, character, text)}
+          onStop={() => stop(base, character)}
+          onOpenHistory={() => setHistoryOpen(true)}
+        />
+
+        {/* Toggle for the right-side panel (progress/scheduled-tasks/browser) —
+          see RightPanel.tsx. Opening it squishes this column via the flex
+          row in the outer return, it never overlays on top. */}
+        <button
+          onClick={() => setRightPanelOpen((v) => !v)}
+          title={rightPanelOpen ? 'Close panel' : 'Progress, scheduled tasks &amp; browser panel'}
+          className="absolute bottom-24 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-100/90 text-ink-dim shadow-lg backdrop-blur transition hover:bg-bg-surface-hover hover:text-ink"
+        >
+          <span aria-hidden>&#9776;</span>
+        </button>
+
+        {historyOpen && (
+          <HistoryOverlay base={base} character={character} onClose={() => setHistoryOpen(false)} />
         )}
       </div>
 
-      <Composer
+      <RightPanel
         base={base}
         character={character}
-        disabled={!character}
-        streaming={session.streaming}
-        onSend={(text) => send(base, character, text)}
-        onStop={() => stop(base, character)}
-        onOpenHistory={() => setHistoryOpen(true)}
+        open={rightPanelOpen}
+        onClose={() => setRightPanelOpen(false)}
       />
-
-      {/* Reserved toggle for the future right-side panel (history/progress/
-          browser/scheduled-tasks) — see RightPanelStub. */}
-      <button
-        onClick={() => setRightPanelOpen((v) => !v)}
-        title="History, tasks &amp; browser panel (coming soon)"
-        className="absolute bottom-24 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-100/90 text-ink-dim shadow-lg backdrop-blur transition hover:bg-bg-surface-hover hover:text-ink"
-      >
-        <span aria-hidden>&#9776;</span>
-      </button>
-      {rightPanelOpen && <RightPanelStub onClose={() => setRightPanelOpen(false)} />}
-
-      {historyOpen && <HistoryOverlay base={base} character={character} onClose={() => setHistoryOpen(false)} />}
     </div>
   )
 }

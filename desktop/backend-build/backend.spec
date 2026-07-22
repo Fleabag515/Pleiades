@@ -30,7 +30,11 @@ hiddenimports = []
 # import machinery, so PyInstaller's static analysis can't discover them on
 # its own -- collect_all() walks the package directory and grabs everything.
 for pkg in ("llama_cpp", "uvicorn", "fastapi", "pydantic", "pydantic_core", "starlette", "anyio", "httpx", "httpcore",
-            "camoufox", "browserforge", "apify_fingerprint_datapoints", "playwright", "language_tags"):
+            "camoufox", "browserforge", "apify_fingerprint_datapoints", "playwright", "language_tags",
+            # websockets: required at runtime by uvicorn for the browser-view
+            # WebSocket endpoint (pleiades/webui/browser_view.py) -- without
+            # it uvicorn silently has no websocket protocol implementation.
+            "websockets"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -66,6 +70,7 @@ hiddenimports += [
     "pleiades.anamnesis",
     "pleiades.webui",
     "pleiades.webui.server",
+    "pleiades.webui.browser_view",
     "pleiades.webui._guard",
 ]
 

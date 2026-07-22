@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import socket
+import asyncio
 import subprocess
 import sys
 import threading
@@ -37,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     httpx = None  # type: ignore
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -167,6 +168,13 @@ class WorkStart(BaseModel):
 
 class WorkApprove(BaseModel):
     approve: bool = False
+
+class BrowserViewStart(BaseModel):
+    url: str = ""
+
+
+class BrowserViewNavigate(BaseModel):
+    url: str
 
 
 class CloudModelBody(BaseModel):
@@ -1616,6 +1624,93 @@ def create_app() -> FastAPI:
             ctl["answer"]["ok"] = False
             ctl["event"].set()
         return {"ok": True}
+
+    # ----------------------------- browser view (Playwright/Chromium) ------- #
+    # Live, embeddable browser-use view for the desktop app's right panel.
+    # Separate capability from harness/builtins/browser.py's Camoufox tool —
+    # see browser_view.py's module docstring for why this is Chromium-only.
+    @app.post("/api/profiles/{name}/browser-view/start")
+    async def browser_view_start(name: str, body: BrowserViewStart) -> dict:
+        try:
+            pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            await session.start(body.url)
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return session.snapshot()
+
+    @app.post("/api/profiles/{name}/browser-view/stop")
+    async def browser_view_stop(name: str) -> dict:
+        from .browser_view import get_session
+        session = get_session(name)
+        await session.stop()
+        return session.snapshot()
+
+    @app.get("/api/profiles/{name}/browser-view/status")
+    def browser_view_status(name: str) -> dict:
+        from .browser_view import get_session
+        return get_session(name).snapshot()
+
+    @app.post("/api/profiles/{name}/browser-view/navigate")
+    async def browser_view_navigate(name: str, body: BrowserViewNavigate) -> dict:
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            url = await session.navigate(body.url)
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return {"ok": True, "url": url}
+
+    @app.websocket("/api/profiles/{name}/browser-view/ws")
+    async def browser_view_ws(websocket: WebSocket, name: str) -> None:
+        """Frames out (binary JPEG messages), input events in (JSON: see
+        BrowserViewSession.dispatch_input for the event shape). One
+        WebSocket per connected panel; multiple panels may watch the same
+        character's session concurrently (each gets its own drop-old
+        frame queue)."""
+        from .browser_view import get_session
+        await websocket.accept()
+        session = get_session(name)
+        await websocket.send_json({"type": "status", **session.snapshot()})
+        queue = session.subscribe()
+
+        async def sender() -> None:
+            try:
+                while True:
+                    frame = await queue.get()
+                    if frame is None:  # session torn down
+                        await websocket.send_json({"type": "status", **session.snapshot()})
+                        break
+                    await websocket.send_bytes(frame)
+            except Exception:
+                pass
+
+        sender_task = asyncio.create_task(sender())
+        try:
+            while True:
+                msg = await websocket.receive_json()
+                if msg.get("kind") == "ping":
+                    continue
+                await session.dispatch_input(msg)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            sender_task.cancel()
+            session.unsubscribe(queue)
+
+    @app.on_event("shutdown")
+    async def _shutdown_browser_views() -> None:
+        """Never leave an orphaned headed Chromium behind a normal app quit
+        (Electron sends SIGTERM -> uvicorn's default signal handling runs
+        this before the process exits)."""
+        from .browser_view import shutdown_all
+        await shutdown_all()
 
     # ----------------------------- search service --------------------------- #
     search_state: dict[str, Any] = {}

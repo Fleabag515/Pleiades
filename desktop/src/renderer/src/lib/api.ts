@@ -1,5 +1,6 @@
 import type {
   ApiStatus,
+  BrowserViewStatus,
   ChatDetail,
   ChatSummary,
   CloudSearchResponse,
@@ -14,7 +15,9 @@ import type {
   ProfileDetail,
   QuantOptionsResponse,
   StreamEvent,
-  VaultEntryMeta
+  VaultEntryMeta,
+  WorkJobDetail,
+  WorkJobSummary
 } from './types'
 
 async function asJson<T>(res: Response): Promise<T> {
@@ -39,7 +42,9 @@ export async function getStatus(base: string): Promise<ApiStatus> {
   return asJson(await fetch(`${base}/api/status`))
 }
 
-export async function listProfiles(base: string): Promise<{ profiles: Profile[]; orphans: string[] }> {
+export async function listProfiles(
+  base: string
+): Promise<{ profiles: Profile[]; orphans: string[] }> {
   return asJson(await fetch(`${base}/api/profiles`))
 }
 
@@ -183,7 +188,14 @@ export async function getEmailPresets(base: string): Promise<EmailPresets> {
 export async function setEmailConfig(
   base: string,
   name: string,
-  body: { email_address: string; imap_host: string; imap_port: number; smtp_host: string; smtp_port: number; password?: string | null }
+  body: {
+    email_address: string
+    imap_host: string
+    imap_port: number
+    smtp_host: string
+    smtp_port: number
+    password?: string | null
+  }
 ): Promise<ProfileDetail> {
   return asJson(
     await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/email`, {
@@ -218,7 +230,11 @@ export async function getDiscordInfo(base: string, name: string): Promise<Discor
   return asJson(await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/discord/info`))
 }
 
-export async function assignModel(base: string, name: string, model: string): Promise<ProfileDetail> {
+export async function assignModel(
+  base: string,
+  name: string,
+  model: string
+): Promise<ProfileDetail> {
   return asJson(
     await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/model`, {
       method: 'POST',
@@ -259,9 +275,12 @@ export async function setVaultEntry(
 
 export async function deleteVaultEntry(base: string, name: string, key: string): Promise<void> {
   await asJson(
-    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/vault/${encodeURIComponent(key)}`, {
-      method: 'DELETE'
-    })
+    await fetch(
+      `${base}/api/profiles/${encodeURIComponent(name)}/vault/${encodeURIComponent(key)}`,
+      {
+        method: 'DELETE'
+      }
+    )
   )
 }
 
@@ -332,4 +351,68 @@ export async function assignCloudModel(
       body: JSON.stringify({ source, model })
     })
   )
+}
+
+// ---- Right panel: work/progress jobs -------------------------------------
+
+export async function listWorkJobs(base: string): Promise<WorkJobSummary[]> {
+  const data = await asJson<{ jobs: WorkJobSummary[] }>(await fetch(`${base}/api/work`))
+  return data.jobs
+}
+
+export async function getWorkJob(base: string, id: string, since = 0): Promise<WorkJobDetail> {
+  return asJson(await fetch(`${base}/api/work/${id}?since=${since}`))
+}
+
+// ---- Right panel: browser-use embed (Playwright/Chromium, see browser_view.py) ----
+
+export async function browserViewStatus(
+  base: string,
+  character: string
+): Promise<BrowserViewStatus> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(character)}/browser-view/status`)
+  )
+}
+
+export async function browserViewStart(
+  base: string,
+  character: string,
+  url = ''
+): Promise<BrowserViewStatus> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(character)}/browser-view/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    })
+  )
+}
+
+export async function browserViewStop(base: string, character: string): Promise<BrowserViewStatus> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(character)}/browser-view/stop`, {
+      method: 'POST'
+    })
+  )
+}
+
+export async function browserViewNavigate(
+  base: string,
+  character: string,
+  url: string
+): Promise<{ ok: boolean; url: string }> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(character)}/browser-view/navigate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    })
+  )
+}
+
+/** http(s):// base -> ws(s):// URL for the browser-view WebSocket. */
+export function browserViewWsUrl(base: string, character: string): string {
+  const wsBase = base.replace(/^http/, 'ws')
+  return `${wsBase}/api/profiles/${encodeURIComponent(character)}/browser-view/ws`
 }
