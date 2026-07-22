@@ -2,16 +2,21 @@ import { useCallback, useEffect, useState } from 'react'
 import { createChat, deleteChat, getChat, listChats, listProfiles } from '../lib/api'
 import type { ChatDetail, ChatSummary, Profile } from '../lib/types'
 import ChatView from './ChatView'
-import Sidebar from './Sidebar'
+import ModelFoundryView from './ModelFoundryView'
+import Sidebar, { type Section } from './Sidebar'
 import SettingsPanel from './SettingsPanel'
 
 interface ShellProps {
   base: string
 }
 
-/** Top-level authenticated app shell: sidebar + main chat pane + settings
- * modal, all backed by the live pleiades.webui REST API at `base`. */
+/** Top-level authenticated app shell: sidebar + main pane + settings
+ * modal, all backed by the live pleiades.webui REST API at `base`.
+ * Mirrors Claude Desktop's shape: a top-level section switch in the
+ * sidebar (their Home/Code -> our Chats/Model Foundry) alongside the
+ * chat UI, rather than the previous single chat-only view. */
 function Shell({ base }: ShellProps): React.JSX.Element {
+  const [section, setSection] = useState<Section>('chats')
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [activeCharacter, setActiveCharacter] = useState('')
@@ -75,6 +80,8 @@ function Shell({ base }: ShellProps): React.JSX.Element {
     <div className="flex h-screen w-screen overflow-hidden bg-bg-app text-ink">
       <Sidebar
         base={base}
+        section={section}
+        onSectionChange={setSection}
         profiles={profiles}
         activeCharacter={activeCharacter}
         onSelectCharacter={setActiveCharacter}
@@ -91,13 +98,17 @@ function Shell({ base }: ShellProps): React.JSX.Element {
             {error}
           </div>
         )}
-        <ChatView
-          base={base}
-          chat={activeChat}
-          activeCharacter={activeCharacter}
-          onNewChat={newChat}
-          onChatChanged={refreshChats}
-        />
+        {section === 'chats' ? (
+          <ChatView
+            base={base}
+            chat={activeChat}
+            activeCharacter={activeCharacter}
+            onNewChat={newChat}
+            onChatChanged={refreshChats}
+          />
+        ) : (
+          <ModelFoundryView />
+        )}
       </div>
       {settingsOpen && <SettingsPanel base={base} onClose={() => setSettingsOpen(false)} />}
     </div>

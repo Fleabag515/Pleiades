@@ -4,16 +4,60 @@
   --font-sans:
     Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 
-  /* Warm, charcoal dark theme (Claude-Desktop-adjacent, not a clone). */
-  --color-bg-app: #232323;
-  --color-bg-sidebar: #1a1a1a;
-  --color-bg-surface: #2a2a2a;
-  --color-bg-surface-hover: #333131;
-  --color-ink: #e8e6e3;
-  --color-ink-dim: #a8a29e;
-  --color-accent: #cc785c;
-  --color-accent-hover: #b8664c;
+  /*
+   * Design tokens reverse-derived from the real Claude Desktop app: a
+   * neutral dark grayscale ramp (bg-000 darkest -> bg-500 lightest,
+   * text-000 brightest -> text-500 dimmest) plus one warm accent. Values
+   * for bg-000..bg-300 and the accent are taken directly from Claude
+   * Desktop's own compiled CSS; bg-400/500 and the text ramp extend that
+   * same HSL progression. Radius scale matches Claude Desktop's scale
+   * exactly (sm/md/lg/xl/2xl/3xl/full).
+   *
+   * Live AT-SPI-accessibility-tree inspection of the real app additionally confirmed: the main content canvas
+   * is the *darkest* surface and the sidebar sits one step lighter on top
+   * of it (previously this app had that inverted) -- bg-app now maps to
+   * bg-000 and bg-sidebar to bg-200.
+   */
+  --color-bg-000: hsl(0 0% 6%);
+  --color-bg-100: hsl(0 0% 10%);
+  --color-bg-200: hsl(0 0% 14%);
+  --color-bg-300: hsl(0 0% 17%);
+  --color-bg-400: hsl(0 0% 22%);
+  --color-bg-500: hsl(0 0% 28%);
+
+  --color-text-000: hsl(0 0% 96%);
+  --color-text-100: hsl(0 0% 86%);
+  --color-text-200: hsl(0 0% 72%);
+  --color-text-300: hsl(0 0% 58%);
+  --color-text-400: hsl(0 0% 45%);
+  --color-text-500: hsl(0 0% 35%);
+
+  --color-accent: #d97757;
+  --color-accent-hover: #c66646;
+  --color-accent-text: #2a1710;
+
+  /* Semantic aliases used throughout the app -- keep every component on
+     these instead of the raw ramp so a future palette swap is one edit. */
+  --color-bg-app: var(--color-bg-000);
+  --color-bg-sidebar: var(--color-bg-200);
+  --color-bg-surface: var(--color-bg-100);
+  --color-bg-surface-hover: var(--color-bg-300);
+  --color-bg-surface-active: var(--color-bg-400);
+  --color-bubble-user: #3a2c24;
+  --color-ink: var(--color-text-100);
+  --color-ink-bright: var(--color-text-000);
+  --color-ink-dim: var(--color-text-300);
+  --color-ink-faint: var(--color-text-400);
   --color-border: rgba(255, 255, 255, 0.08);
+
+  /* Radius scale, matches Claude Desktop's own exactly. Tailwind v4 turns
+     these into rounded-sm/md/lg/xl/2xl/3xl utilities automatically. */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.5rem;
 }
 
 :root {

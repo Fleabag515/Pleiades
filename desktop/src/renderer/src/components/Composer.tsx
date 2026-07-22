@@ -7,7 +7,12 @@ interface ComposerProps {
   onStop: () => void
 }
 
-/** Bottom message composer: auto-growing textarea + send/stop button. */
+/** Bottom message composer: auto-growing textarea + send/stop button.
+ *
+ * Sized against the real Claude Desktop composer (measured live): its
+ * input/toolbar panel spans almost the full chat column (~800px+), not
+ * a narrow ~672px box, and uses a large pill-like corner radius. Widened
+ * and rounded to match instead of the previous max-w-2xl/rounded-2xl. */
 function Composer({ disabled, streaming, onSend, onStop }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -27,8 +32,8 @@ function Composer({ disabled, streaming, onSend, onStop }: ComposerProps): React
   }
 
   return (
-    <div className="border-t border-border bg-bg-app px-4 py-3">
-      <div className="mx-auto flex max-w-2xl items-end gap-2 rounded-2xl border border-border bg-bg-surface px-3 py-2 shadow-sm">
+    <div className="flex-none bg-bg-app px-5 py-4">
+      <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-3xl bg-bg-100 px-4 py-3 shadow-sm">
         <textarea
           ref={taRef}
           value={text}
@@ -42,12 +47,12 @@ function Composer({ disabled, streaming, onSend, onStop }: ComposerProps): React
           disabled={disabled}
           rows={1}
           placeholder={disabled ? 'Select or start a chat first…' : 'Message…'}
-          className="max-h-60 min-h-[24px] flex-1 resize-none bg-transparent px-1 py-1 text-[15px] text-ink placeholder:text-ink-dim focus:outline-none"
+          className="max-h-60 min-h-[24px] flex-1 resize-none bg-transparent px-1 py-1 text-[15px] text-ink placeholder:text-ink-faint focus:outline-none"
         />
         {streaming ? (
           <button
             onClick={onStop}
-            className="flex-none rounded-xl bg-bg-surface-hover px-3 py-2 text-sm font-medium text-ink transition hover:bg-rose-500/20 hover:text-rose-300"
+            className="flex-none rounded-2xl bg-bg-300 px-3.5 py-2 text-sm font-medium text-ink transition hover:bg-rose-500/20 hover:text-rose-300"
             title="Stop generating"
           >
             ◼ Stop
@@ -56,7 +61,7 @@ function Composer({ disabled, streaming, onSend, onStop }: ComposerProps): React
           <button
             onClick={submit}
             disabled={disabled || !text.trim()}
-            className="flex-none rounded-xl bg-accent px-3.5 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex-none rounded-2xl bg-accent px-3.5 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             title="Send"
           >
             Send

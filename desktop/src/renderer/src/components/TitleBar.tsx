@@ -8,6 +8,10 @@ import { useEffect, useState } from 'react'
  * The close button goes through the exact same IPC-triggered
  * `mainWindow.close()` as a native close button would, so the existing
  * minimize-to-tray 'close' handler in main/index.ts applies unchanged.
+ *
+ * Height (36px/h-9) and button width (32px/w-8) match the real Claude
+ * Desktop title bar's measured proportions (its own custom window
+ * controls come out to ~32x34px, tightly packed with no gaps).
  */
 function TitleBar(): React.JSX.Element {
   const [maximized, setMaximized] = useState(false)
@@ -29,7 +33,7 @@ function TitleBar(): React.JSX.Element {
 
   return (
     <div
-      className="flex h-9 flex-none select-none items-center justify-between bg-bg-sidebar text-ink-dim"
+      className="flex h-9 flex-none select-none items-center justify-between bg-bg-000 text-ink-dim"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <div className="flex items-center gap-2 pl-3 text-xs font-medium tracking-wide">
@@ -39,7 +43,7 @@ function TitleBar(): React.JSX.Element {
         <button
           aria-label="Minimize"
           onClick={() => window.pleiades.windowMinimize()}
-          className="flex h-full w-11 items-center justify-center transition hover:bg-bg-surface-hover"
+          className="flex h-full w-8 items-center justify-center transition hover:bg-bg-surface-hover"
         >
           <svg width="10" height="10" viewBox="0 0 10 10">
             <rect x="0" y="4.5" width="10" height="1" fill="currentColor" />
@@ -48,7 +52,7 @@ function TitleBar(): React.JSX.Element {
         <button
           aria-label={maximized ? 'Restore' : 'Maximize'}
           onClick={() => window.pleiades.windowMaximizeToggle()}
-          className="flex h-full w-11 items-center justify-center transition hover:bg-bg-surface-hover"
+          className="flex h-full w-8 items-center justify-center transition hover:bg-bg-surface-hover"
         >
           {maximized ? (
             <svg width="10" height="10" viewBox="0 0 10 10">
@@ -61,7 +65,7 @@ function TitleBar(): React.JSX.Element {
                 stroke="currentColor"
                 strokeWidth="1"
               />
-              <rect x="0.5" y="2.5" width="7" height="7" fill="var(--color-bg-sidebar)" />
+              <rect x="0.5" y="2.5" width="7" height="7" fill="var(--color-bg-000)" />
               <rect
                 x="0.5"
                 y="2.5"
@@ -89,7 +93,7 @@ function TitleBar(): React.JSX.Element {
         <button
           aria-label="Close"
           onClick={() => window.pleiades.windowClose()}
-          className="flex h-full w-11 items-center justify-center transition hover:bg-rose-600 hover:text-white"
+          className="flex h-full w-8 items-center justify-center transition hover:bg-rose-600 hover:text-white"
         >
           <svg width="10" height="10" viewBox="0 0 10 10">
             <line x1="0.5" y1="0.5" x2="9.5" y2="9.5" stroke="currentColor" strokeWidth="1" />

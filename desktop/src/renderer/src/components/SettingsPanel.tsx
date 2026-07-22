@@ -31,11 +31,11 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-6" onClick={onClose}>
       <div
-        className="flex h-[680px] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface shadow-2xl"
+        className="flex h-[680px] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-border bg-bg-100 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
-          <h2 className="text-base font-semibold text-ink">Settings</h2>
+          <h2 className="text-base font-semibold text-ink-bright">Settings</h2>
           <button
             onClick={onClose}
             className="rounded-lg px-2 py-1 text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
@@ -50,7 +50,7 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
               key={t}
               onClick={() => setTab(t)}
               className={`rounded-t-lg px-3 py-2 text-sm capitalize transition ${
-                tab === t ? 'border-b-2 border-accent text-ink' : 'text-ink-dim hover:text-ink'
+                tab === t ? 'border-b-2 border-accent text-ink-bright' : 'text-ink-dim hover:text-ink'
               }`}
             >
               {t}

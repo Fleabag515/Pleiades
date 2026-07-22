@@ -170,9 +170,9 @@ function ChatView({ base, chat, activeCharacter, onNewChat, onChatChanged }: Cha
 
   return (
     <div className="flex h-full flex-1 flex-col bg-bg-app">
-      <div className="flex flex-none items-center gap-2 border-b border-border px-5 py-3">
+      <div className="flex h-14 flex-none items-center gap-2.5 border-b border-border px-5">
         <Avatar base={base} character={chat.character} size={24} />
-        <span className="font-medium text-ink">{chat.character}</span>
+        <span className="font-medium text-ink-bright">{chat.character}</span>
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-3">
@@ -180,7 +180,7 @@ function ChatView({ base, chat, activeCharacter, onNewChat, onChatChanged }: Cha
           <MessageBubble key={i} message={m} base={base} character={chat.character} />
         ))}
         {reasoning && streaming && (
-          <div className="mx-4 my-1 max-h-32 overflow-y-auto rounded-xl border border-border/60 bg-bg-surface/40 px-3 py-2 text-xs italic text-ink-dim">
+          <div className="mx-5 my-1 max-h-32 overflow-y-auto rounded-xl bg-bg-100/70 px-3 py-2 text-xs italic text-ink-dim">
             {reasoning}
           </div>
         )}
@@ -193,7 +193,7 @@ function ChatView({ base, chat, activeCharacter, onNewChat, onChatChanged }: Cha
           />
         )}
         {approval && (
-          <div className="px-4 py-2">
+          <div className="px-5 py-2">
             <ApprovalCard
               approval={approval}
               busy={approvalBusy}
@@ -203,7 +203,7 @@ function ChatView({ base, chat, activeCharacter, onNewChat, onChatChanged }: Cha
           </div>
         )}
         {error && (
-          <div className="mx-4 my-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+          <div className="mx-5 my-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
             {error}
           </div>
         )}
