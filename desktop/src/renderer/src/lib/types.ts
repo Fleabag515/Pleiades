@@ -297,6 +297,21 @@ export interface WorkJobDetail extends WorkJobSummary {
   event_count: number
 }
 
+export interface ScheduledTask {
+  id: string
+  task: string
+  character: string
+  cron: string
+  fire_at: number
+  tier: string
+  policy: string
+  enabled: boolean
+  created: number
+  last_run: number
+  next_run: number
+  last_job_id: string
+}
+
 export interface BrowserViewStatus {
   character: string
   status: 'stopped' | 'starting' | 'running' | 'error'

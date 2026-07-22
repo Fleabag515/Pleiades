@@ -14,6 +14,7 @@ import type {
   Profile,
   ProfileDetail,
   QuantOptionsResponse,
+  ScheduledTask,
   StreamEvent,
   VaultEntryMeta,
   WorkJobDetail,
@@ -135,7 +136,13 @@ export async function stopModel(base: string, name: string): Promise<void> {
 export async function updateModel(
   base: string,
   name: string,
-  body: { display_name?: string; path?: string; n_ctx?: number | 'auto'; n_gpu_layers?: number | 'auto'; chat_format?: string }
+  body: {
+    display_name?: string
+    path?: string
+    n_ctx?: number | 'auto'
+    n_gpu_layers?: number | 'auto'
+    chat_format?: string
+  }
 ): Promise<ModelEntry> {
   const result = await asJson<ModelEntry>(
     await fetch(`${base}/api/models/${encodeURIComponent(name)}`, {
@@ -164,7 +171,11 @@ export async function deleteModel(base: string, name: string): Promise<{ ok: boo
   return result
 }
 
-export async function modelLogs(base: string, name: string, lines = 250): Promise<{ name: string; state: string; log: string }> {
+export async function modelLogs(
+  base: string,
+  name: string,
+  lines = 250
+): Promise<{ name: string; state: string; log: string }> {
   return asJson(await fetch(`${base}/api/models/${encodeURIComponent(name)}/logs?lines=${lines}`))
 }
 
@@ -426,6 +437,54 @@ export async function getWorkJob(base: string, id: string, since = 0): Promise<W
   return asJson(await fetch(`${base}/api/work/${id}?since=${since}`))
 }
 
+// ---- Right panel: scheduled tasks ------------------------------------------
+
+export async function listScheduledTasks(base: string): Promise<ScheduledTask[]> {
+  const data = await asJson<{ tasks: ScheduledTask[] }>(await fetch(`${base}/api/scheduled-tasks`))
+  return data.tasks
+}
+
+export interface CreateScheduledTaskInput {
+  task: string
+  character?: string
+  cron?: string
+  fire_at?: number
+  tier?: string
+  policy?: string
+}
+
+export async function createScheduledTask(
+  base: string,
+  input: CreateScheduledTaskInput
+): Promise<ScheduledTask> {
+  return asJson(
+    await fetch(`${base}/api/scheduled-tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input)
+    })
+  )
+}
+
+export async function updateScheduledTask(
+  base: string,
+  id: string,
+  patch: Partial<Pick<ScheduledTask, 'task' | 'character' | 'cron' | 'fire_at' | 'enabled'>>
+): Promise<ScheduledTask> {
+  return asJson(
+    await fetch(`${base}/api/scheduled-tasks/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    })
+  )
+}
+
+export async function deleteScheduledTask(base: string, id: string): Promise<void> {
+  const res = await fetch(`${base}/api/scheduled-tasks/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`DELETE /api/scheduled-tasks/${id} -> ${res.status}`)
+}
+
 // ---- Right panel: browser-use embed (Playwright/Chromium, see browser_view.py) ----
 
 export async function browserViewStatus(
@@ -487,9 +546,12 @@ export async function browserViewOpenSeparate(
   character: string
 ): Promise<BrowserViewStatus> {
   return asJson(
-    await fetch(`${base}/api/profiles/${encodeURIComponent(character)}/browser-view/open-separate`, {
-      method: 'POST'
-    })
+    await fetch(
+      `${base}/api/profiles/${encodeURIComponent(character)}/browser-view/open-separate`,
+      {
+        method: 'POST'
+      }
+    )
   )
 }
 

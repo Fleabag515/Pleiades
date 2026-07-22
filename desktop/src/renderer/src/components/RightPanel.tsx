@@ -7,15 +7,20 @@ import {
   browserViewStatus,
   browserViewStop,
   browserViewWsUrl,
+  createScheduledTask,
+  deleteScheduledTask,
   getChat,
   getWorkJob,
   listChats,
-  listWorkJobs
+  listScheduledTasks,
+  listWorkJobs,
+  updateScheduledTask
 } from '../lib/api'
 import type {
   BrowserViewStatus,
   ChatDetail,
   ChatSummary,
+  ScheduledTask,
   WorkEvent,
   WorkJobDetail,
   WorkJobSummary
@@ -94,7 +99,11 @@ function RightPanel({ base, character, open }: RightPanelProps): React.JSX.Eleme
             open={scheduledOpen}
             onToggle={() => setScheduledOpen((v) => !v)}
           >
-            <ScheduledTasksSection />
+            <ScheduledTasksSection
+              base={base}
+              character={character}
+              active={open && scheduledOpen}
+            />
           </CollapsibleBlock>
         </div>
       </div>
@@ -351,18 +360,195 @@ function HistorySection({
 }
 
 // --------------------------------------------------------------------------
-// Scheduled tasks — honest placeholder. No fake data: the backend has no
-// real scheduler yet (that's a separate future phase).
+// Scheduled tasks — real data via /api/scheduled-tasks. A character can
+// create these itself (create_scheduled_task/etc. harness tools, see
+// pleiades/harness/builtins/schedule.py) or you can create/edit/delete them
+// right here — both go through the same store
+// (~/.pleiades/scheduled_tasks.json), never two sources of truth.
 // --------------------------------------------------------------------------
 
-function ScheduledTasksSection(): React.JSX.Element {
+function formatSchedule(t: ScheduledTask): string {
+  if (t.cron) return `cron ${t.cron}`
+  if (t.next_run) return new Date(t.next_run * 1000).toLocaleString()
+  return 'fired (one-time)'
+}
+
+function ScheduledTasksSection({
+  base,
+  character,
+  active
+}: {
+  base: string
+  character: string
+  active: boolean
+}): React.JSX.Element {
+  const [tasks, setTasks] = useState<ScheduledTask[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [taskText, setTaskText] = useState('')
+  const [mode, setMode] = useState<'cron' | 'once'>('once')
+  const [cronInput, setCronInput] = useState('0 7 * * *')
+  const [whenInput, setWhenInput] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      setTasks(await listScheduledTasks(base))
+      setError(null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }, [base])
+
+  useEffect(() => {
+    if (!active) return
+    refresh()
+    const id = setInterval(refresh, 5000)
+    return () => clearInterval(id)
+  }, [active, refresh])
+
+  const submit = async (): Promise<void> => {
+    if (!taskText.trim()) return
+    setBusy(true)
+    try {
+      const input =
+        mode === 'cron'
+          ? { task: taskText.trim(), character, cron: cronInput.trim() }
+          : {
+              task: taskText.trim(),
+              character,
+              fire_at: whenInput ? new Date(whenInput).getTime() / 1000 : 0
+            }
+      await createScheduledTask(base, input)
+      setTaskText('')
+      setWhenInput('')
+      setAdding(false)
+      await refresh()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggle = async (t: ScheduledTask): Promise<void> => {
+    try {
+      await updateScheduledTask(base, t.id, { enabled: !t.enabled })
+      await refresh()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const remove = async (t: ScheduledTask): Promise<void> => {
+    try {
+      await deleteScheduledTask(base, t.id)
+      await refresh()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
   return (
-    <div className="rounded-lg border border-dashed border-border px-2.5 py-3 text-center">
-      <p className="text-xs text-ink-faint">Coming soon.</p>
-      <p className="mt-1 text-[10px] text-ink-faint">
-        Pleiades doesn&rsquo;t have a real task scheduler yet — this section is reserved for that
-        future phase.
-      </p>
+    <div>
+      {error && <div className="mb-2 text-xs text-rose-300">{error}</div>}
+      {tasks.length === 0 && !adding && (
+        <p className="mb-2 text-xs text-ink-faint">No scheduled tasks yet.</p>
+      )}
+      {tasks.length > 0 && (
+        <ul className="mb-2 flex flex-col gap-2">
+          {tasks.map((t) => (
+            <li key={t.id} className="rounded-lg bg-bg-300/50 px-2.5 py-2">
+              <div className="flex items-start justify-between gap-2">
+                <span className="truncate text-xs text-ink">{t.task}</span>
+                <div className="flex flex-none items-center gap-1.5">
+                  <button
+                    onClick={() => toggle(t)}
+                    className={`text-[10px] font-medium uppercase transition ${
+                      t.enabled ? 'text-accent' : 'text-ink-faint'
+                    }`}
+                  >
+                    {t.enabled ? 'on' : 'off'}
+                  </button>
+                  <button
+                    onClick={() => remove(t)}
+                    className="text-ink-faint transition hover:text-rose-300"
+                    aria-label="Delete scheduled task"
+                  >
+                    &#10005;
+                  </button>
+                </div>
+              </div>
+              <div className="mt-0.5 text-[10px] text-ink-faint">
+                {formatSchedule(t)}
+                {t.character ? ` · ${t.character}` : ''}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {adding ? (
+        <div className="flex flex-col gap-1.5 rounded-lg bg-bg-300/40 p-2">
+          <input
+            value={taskText}
+            onChange={(e) => setTaskText(e.target.value)}
+            placeholder="What should run?"
+            className="rounded bg-bg-200 px-2 py-1 text-xs text-ink outline-none"
+          />
+          <div className="flex gap-1.5 text-[10px]">
+            <button
+              onClick={() => setMode('once')}
+              className={`rounded px-1.5 py-0.5 ${mode === 'once' ? 'bg-accent/20 text-accent' : 'text-ink-faint'}`}
+            >
+              One-time
+            </button>
+            <button
+              onClick={() => setMode('cron')}
+              className={`rounded px-1.5 py-0.5 ${mode === 'cron' ? 'bg-accent/20 text-accent' : 'text-ink-faint'}`}
+            >
+              Recurring
+            </button>
+          </div>
+          {mode === 'once' ? (
+            <input
+              type="datetime-local"
+              value={whenInput}
+              onChange={(e) => setWhenInput(e.target.value)}
+              className="rounded bg-bg-200 px-2 py-1 text-xs text-ink outline-none"
+            />
+          ) : (
+            <input
+              value={cronInput}
+              onChange={(e) => setCronInput(e.target.value)}
+              placeholder="minute hour day month weekday"
+              className="rounded bg-bg-200 px-2 py-1 text-xs text-ink outline-none"
+            />
+          )}
+          <div className="flex justify-end gap-2 pt-0.5">
+            <button
+              onClick={() => setAdding(false)}
+              className="text-[10px] text-ink-faint hover:text-ink"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={busy || !taskText.trim() || (mode === 'once' && !whenInput)}
+              className="rounded bg-accent px-2 py-1 text-[10px] font-medium text-bg-app disabled:opacity-40"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setAdding(true)}
+          className="w-full rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-ink-faint transition hover:border-ink-faint hover:text-ink"
+        >
+          + Schedule a task
+        </button>
+      )}
     </div>
   )
 }
@@ -603,7 +789,10 @@ function BrowserViewSection({
   const running = status?.status === 'running'
   const starting = status?.status === 'starting'
 
-  const frameView = (imgRefToUse: React.RefObject<HTMLImageElement | null>, big: boolean): React.JSX.Element => (
+  const frameView = (
+    imgRefToUse: React.RefObject<HTMLImageElement | null>,
+    big: boolean
+  ): React.JSX.Element => (
     <div
       tabIndex={interactive ? 0 : -1}
       onKeyDown={(e) => onKey('keyDown', e)}
