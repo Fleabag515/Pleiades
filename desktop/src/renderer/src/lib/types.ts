@@ -191,3 +191,68 @@ export interface HardwareInfo {
   plans: ModelPlan[]
   runtime: RuntimeStatus
 }
+
+// ---- Model Foundry (Phase G): HF search, quant planning, downloads, cloud ----
+
+export interface HfSearchResult {
+  id: string
+  downloads: number
+  likes: number
+}
+
+export interface QuantOption {
+  quant: string
+  file: string
+  size: number
+  quality: number
+  strategy: string
+  n_gpu_layers: number | string
+  est_tps: number
+  vram_used: number
+  fits_fully: boolean
+  feasible: boolean
+  reason: string
+}
+
+export interface QuantOptionsResponse {
+  repo: string
+  preference: string
+  n_layers: number
+  is_moe: boolean
+  hardware: {
+    summary: string
+    gpu: string
+    vendor: string
+    vram_total: number
+    vram_free: number
+    ram_available: number
+  }
+  recommended: string | null
+  options: QuantOption[]
+}
+
+export interface FetchStatus {
+  status: 'idle' | 'downloading' | 'done' | 'error'
+  repo?: string
+  error?: string
+  file?: string
+  done?: number
+  total?: number
+  result?: ModelEntry
+}
+
+export interface CloudSearchResult {
+  id: string
+  name: string
+  context?: number | null
+  prompt_price?: string | number | null
+  completion_price?: string | number | null
+  is_free?: boolean
+}
+
+export interface CloudSearchResponse {
+  source: string
+  results: CloudSearchResult[]
+  error?: string
+  detail?: string
+}

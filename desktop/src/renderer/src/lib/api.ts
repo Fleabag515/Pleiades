@@ -2,13 +2,17 @@ import type {
   ApiStatus,
   ChatDetail,
   ChatSummary,
+  CloudSearchResponse,
   DiscordInfo,
   EmailPresets,
+  FetchStatus,
   HardwareInfo,
+  HfSearchResult,
   ModelEntry,
   PendingApproval,
   Profile,
   ProfileDetail,
+  QuantOptionsResponse,
   StreamEvent,
   VaultEntryMeta
 } from './types'
@@ -240,4 +244,69 @@ export async function deleteVaultEntry(base: string, name: string, key: string):
 
 export async function getHardware(base: string): Promise<HardwareInfo> {
   return asJson(await fetch(`${base}/api/hardware`))
+}
+
+export async function hfSearch(base: string, q: string, limit = 8): Promise<HfSearchResult[]> {
+  const data = await asJson<{ results: HfSearchResult[] }>(
+    await fetch(`${base}/api/models/hf-search?q=${encodeURIComponent(q)}&limit=${limit}`)
+  )
+  return data.results
+}
+
+export async function quantOptions(
+  base: string,
+  repo: string,
+  n_ctx = 8192,
+  preference = 'balanced'
+): Promise<QuantOptionsResponse> {
+  return asJson(
+    await fetch(
+      `${base}/api/models/quant-options?repo=${encodeURIComponent(repo)}&n_ctx=${n_ctx}&preference=${encodeURIComponent(preference)}`
+    )
+  )
+}
+
+export async function fetchModel(
+  base: string,
+  body: { repo: string; name?: string; quant?: string }
+): Promise<{ ok: boolean }> {
+  return asJson(
+    await fetch(`${base}/api/models/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: body.repo, name: body.name ?? '', quant: body.quant ?? '' })
+    })
+  )
+}
+
+export async function fetchStatus(base: string): Promise<FetchStatus> {
+  return asJson(await fetch(`${base}/api/models/fetch/status`))
+}
+
+export async function cloudSearch(
+  base: string,
+  source: 'openrouter' | 'ollama',
+  q = '',
+  limit = 25
+): Promise<CloudSearchResponse> {
+  return asJson(
+    await fetch(
+      `${base}/api/models/cloud-search?source=${source}&q=${encodeURIComponent(q)}&limit=${limit}`
+    )
+  )
+}
+
+export async function assignCloudModel(
+  base: string,
+  name: string,
+  source: 'openrouter' | 'ollama',
+  model: string
+): Promise<ProfileDetail> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/cloud-model`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, model })
+    })
+  )
 }

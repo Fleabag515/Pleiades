@@ -3,6 +3,7 @@ import { getApproval, getChat, postApproval, stopChat, streamMessage } from '../
 import type { AssistantItem, ChatDetail, ChatMessageEntry, PendingApproval } from '../lib/types'
 import Avatar from './Avatar'
 import ApprovalCard from './ApprovalCard'
+import ModelBadge from './ModelBadge'
 import Composer from './Composer'
 import EmptyState from './EmptyState'
 import MessageBubble from './MessageBubble'
@@ -173,6 +174,7 @@ function ChatView({ base, chat, activeCharacter, onNewChat, onChatChanged }: Cha
       <div className="flex h-14 flex-none items-center gap-2.5 border-b border-border px-5">
         <Avatar base={base} character={chat.character} size={24} />
         <span className="font-medium text-ink-bright">{chat.character}</span>
+        <ModelBadge base={base} character={chat.character} />
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-3">

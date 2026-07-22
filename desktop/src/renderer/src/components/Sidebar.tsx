@@ -134,10 +134,10 @@ function Sidebar({
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2 pt-1">
           <div className="mb-1 px-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
-            Local models
+            Model Foundry
           </div>
           <div className="px-2 py-2 text-xs text-ink-faint">
-            Search and downloads land here in a later phase.
+            Search Hugging Face, plan quantization, download, and manage models in the main panel.
           </div>
         </div>
       )}

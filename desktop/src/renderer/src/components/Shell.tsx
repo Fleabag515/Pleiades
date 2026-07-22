@@ -107,7 +107,7 @@ function Shell({ base }: ShellProps): React.JSX.Element {
             onChatChanged={refreshChats}
           />
         ) : (
-          <ModelFoundryView />
+          <ModelFoundryView base={base} />
         )}
       </div>
       {settingsOpen && <SettingsPanel base={base} onClose={() => setSettingsOpen(false)} />}
