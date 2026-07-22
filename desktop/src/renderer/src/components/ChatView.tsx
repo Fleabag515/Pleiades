@@ -46,7 +46,7 @@ interface ChatViewProps {
  */
 function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX.Element {
   const session = useChatSession(character)
-  const { ensureLiveChat, send, stop, respondApproval } = useChatStoreActions()
+  const { ensureLiveChat, send, stop, respondApproval, startNewChat } = useChatStoreActions()
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -133,6 +133,15 @@ function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX
           streaming={session.streaming}
           onSend={(text) => send(base, character, text)}
           onStop={() => stop(base, character)}
+          onNewChat={() => {
+            if (
+              window.confirm(
+                `Start a new chat with ${character}? This conversation moves to History — nothing is deleted.`
+              )
+            ) {
+              startNewChat(base, character)
+            }
+          }}
         />
       </div>
 

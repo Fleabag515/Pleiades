@@ -19,6 +19,7 @@ import type {
   WorkJobDetail,
   WorkJobSummary
 } from './types'
+import { notifyModelsChanged } from './modelEvents'
 
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -120,10 +121,12 @@ export async function listModels(base: string): Promise<ModelEntry[]> {
 
 export async function startModel(base: string, name: string): Promise<void> {
   await fetch(`${base}/api/models/${encodeURIComponent(name)}/start`, { method: 'POST' })
+  notifyModelsChanged()
 }
 
 export async function stopModel(base: string, name: string): Promise<void> {
   await fetch(`${base}/api/models/${encodeURIComponent(name)}/stop`, { method: 'POST' })
+  notifyModelsChanged()
 }
 
 /** PUT /api/models/{name} — currently only used from the UI to set/clear
@@ -134,13 +137,19 @@ export async function updateModel(
   name: string,
   body: { display_name?: string; path?: string; n_ctx?: number | 'auto'; n_gpu_layers?: number | 'auto'; chat_format?: string }
 ): Promise<ModelEntry> {
-  return asJson(
+  const result = await asJson<ModelEntry>(
     await fetch(`${base}/api/models/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
   )
+  // Rename-doesn't-refresh-live fix (see lib/modelEvents.ts): tell every other
+  // mounted view showing model names -- right now, Composer's picker -- to
+  // refetch immediately instead of keeping whatever it fetched on its own
+  // last mount.
+  notifyModelsChanged()
+  return result
 }
 
 /** DELETE /api/models/{name} — the backend also deletes the underlying GGUF
@@ -148,7 +157,11 @@ export async function updateModel(
  * callers must confirm with the user before calling this; it's not
  * reversible. */
 export async function deleteModel(base: string, name: string): Promise<{ ok: boolean }> {
-  return asJson(await fetch(`${base}/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' }))
+  const result = await asJson<{ ok: boolean }>(
+    await fetch(`${base}/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  )
+  notifyModelsChanged()
+  return result
 }
 
 export async function modelLogs(base: string, name: string, lines = 250): Promise<{ name: string; state: string; log: string }> {

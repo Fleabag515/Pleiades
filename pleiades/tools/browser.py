@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 
-from . import Tool, ToolContext
+from . import Tool, ToolContext, format_invalid_choice
 
 # ---------------------------------------------------------------------- #
 # Fallback backend: harness/builtins/browser.py's Camoufox singleton.
@@ -76,7 +76,9 @@ def _run_camoufox(ctx: ToolContext, action: str, **kw) -> str:
         return hb.browser_read()
     if action == "screenshot":
         return hb.browser_screenshot(os.path.join(ctx.profile.browser_dir, "screenshot.png"))
-    return f"[browser error] unknown action '{action}'."
+    return format_invalid_choice(
+        "browser", "action", action, ["goto", "click", "type", "read", "screenshot"]
+    )
 
 
 # ---------------------------------------------------------------------- #
@@ -234,9 +236,8 @@ def _run_panel(ctx: ToolContext, action: str, **kw) -> str:
     except Exception as e:
         return f"[browser error] {action} failed: {e}"
 
-    return (
-        f"[browser error] unknown action {action!r}. Valid actions: "
-        "goto, click, type, read, screenshot."
+    return format_invalid_choice(
+        "browser", "action", action, ["goto", "click", "type", "read", "screenshot"]
     )
 
 

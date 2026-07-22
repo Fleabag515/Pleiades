@@ -45,6 +45,7 @@ interface ChatStoreContextValue {
   send: (base: string, character: string, text: string) => Promise<void>
   stop: (base: string, character: string) => Promise<void>
   respondApproval: (base: string, character: string, ok: boolean) => Promise<void>
+  startNewChat: (base: string, character: string) => Promise<void>
 }
 
 const ChatStoreContext = createContext<ChatStoreContextValue | null>(null)
@@ -248,9 +249,47 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
     [patchSession]
   )
 
+  // "Clear chat" (owner brief item 6): the owner has no way today to
+  // intentionally end the current live conversation and start fresh -- every
+  // character has exactly one ongoing "live chat" (ensureLiveChat above
+  // always resolves to whichever chat has the most recent `updated`
+  // timestamp), and older chats just become read-only History
+  // (RightPanel's HistorySection), never deleted. This does the same thing
+  // ensureLiveChat would naturally converge on if you just started
+  // chatting again: create() a brand new chat (chats.py stamps it with
+  // `updated = now`, so it's automatically what ensureLiveChat picks next
+  // time), then swap the whole in-memory session over to it. The old chat
+  // is untouched on disk -- "archiving" it is just "no longer being
+  // pointed at as the live one", exactly like the read-only-reference
+  // design HistorySection already documents.
+  const startNewChat = useCallback(
+    async (base: string, character: string): Promise<void> => {
+      if (!character) return
+      clearApprovalTimer(character)
+      patchSession(character, { loading: true, error: null })
+      try {
+        const fresh = await createChat(base, character)
+        patchSession(character, {
+          chatId: fresh.id,
+          history: [],
+          draft: null,
+          reasoning: '',
+          streaming: false,
+          approval: null,
+          approvalBusy: false,
+          error: null,
+          loading: false
+        })
+      } catch (e) {
+        patchSession(character, { loading: false, error: (e as Error).message })
+      }
+    },
+    [patchSession, clearApprovalTimer]
+  )
+
   const value = useMemo(
-    () => ({ sessions, ensureLiveChat, send, stop, respondApproval }),
-    [sessions, ensureLiveChat, send, stop, respondApproval]
+    () => ({ sessions, ensureLiveChat, send, stop, respondApproval, startNewChat }),
+    [sessions, ensureLiveChat, send, stop, respondApproval, startNewChat]
   )
 
   return <ChatStoreContext.Provider value={value}>{children}</ChatStoreContext.Provider>
@@ -265,6 +304,6 @@ export function useChatSession(character: string): ChatSessionState {
 export function useChatStoreActions(): Omit<ChatStoreContextValue, 'sessions'> {
   const ctx = useContext(ChatStoreContext)
   if (!ctx) throw new Error('useChatStoreActions must be used within ChatSessionsProvider')
-  const { ensureLiveChat, send, stop, respondApproval } = ctx
-  return { ensureLiveChat, send, stop, respondApproval }
+  const { ensureLiveChat, send, stop, respondApproval, startNewChat } = ctx
+  return { ensureLiveChat, send, stop, respondApproval, startNewChat }
 }

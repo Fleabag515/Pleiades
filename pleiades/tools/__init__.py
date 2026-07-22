@@ -7,6 +7,7 @@ character's email, vault, and browser are always its own — never shared.
 
 from __future__ import annotations
 
+import difflib
 import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
@@ -38,6 +39,24 @@ class ToolContext:
         if self._http is not None:
             self._http.close()
             self._http = None
+
+
+def format_invalid_choice(scope: str, kind: str, value: str, valid: list[str]) -> str:
+    """Build a consistent 'unknown action'/'unknown field' style error.
+
+    Shared by every tool that has an enum-of-options parameter (browser,
+    vault, email, models, profile, characters, ...) so a bad guess always
+    comes back with the same self-correction signal instead of ad hoc
+    wording per tool: the full list of valid `kind`s, plus a fuzzy
+    "did you mean" suggestion (difflib) when one option is a close match to
+    what the model actually sent. `scope` is the short tool/error tag already
+    used in each tool's messages, e.g. "browser", "vault", "models".
+    """
+    msg = f"[{scope} error] unknown {kind} '{value}'. Valid {kind}s: {', '.join(valid)}."
+    close = difflib.get_close_matches(value, valid, n=1, cutoff=0.5)
+    if close and close[0] != value:
+        msg += f" Did you mean '{close[0]}'?"
+    return msg
 
 
 class Tool:

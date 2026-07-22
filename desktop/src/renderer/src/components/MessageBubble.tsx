@@ -1,6 +1,5 @@
 import { memo, useState } from 'react'
 import type { AssistantItem, ChatMessageEntry, ToolItem } from '../lib/types'
-import Avatar from './Avatar'
 
 interface MessageBubbleProps {
   message: ChatMessageEntry
@@ -55,8 +54,16 @@ function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
   const active = selected !== null ? tools[selected] : null
 
   return (
-    <div className="my-1.5">
-      <div className="flex flex-wrap items-center gap-1.5">
+    <>
+      {/* `inline-flex` (not `div`/block) so a tool call sitting between two
+       * chunks of assistant text stays on the same line as the text around
+       * it whenever there's room, and wraps together with it as one
+       * paragraph flow instead of always forcing its own line -- that
+       * "doesn't flow together nicely" was literally block-level layout
+       * fighting the surrounding `whitespace-pre-wrap` text. `align-middle`
+       * plus a small negative-y nudge keeps the chip's baseline visually
+       * centered against the text line instead of sitting low/high. */}
+      <span className="my-0.5 inline-flex flex-wrap items-center gap-1.5 align-middle">
         {tools.map((t, i) => {
           const pending = t.output === null
           const err = t.ok === false
@@ -67,23 +74,23 @@ function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
               ? 'border-rose-400'
               : 'border-emerald-400'
           return (
-            <div key={i} className="flex items-center gap-1.5">
+            <span key={i} className="inline-flex items-center gap-1.5">
               {i > 0 && <span className="select-none text-[13px] text-ink-faint">&rarr;</span>}
               <button
                 onClick={() => setSelected(isSel ? null : i)}
-                className={`whitespace-nowrap rounded-lg border bg-bg-100 px-3 py-1.5 font-mono text-[11.5px] text-ink transition-colors hover:border-cyan-400 hover:bg-bg-200 ${
+                className={`whitespace-nowrap rounded-lg border bg-bg-100 px-3 py-1 font-mono text-[11.5px] text-ink transition-colors hover:border-cyan-400 hover:bg-bg-200 ${
                   isSel ? 'border-cyan-400 bg-bg-200' : stateClass
                 }`}
               >
                 {t.name}
               </button>
-            </div>
+            </span>
           )
         })}
-      </div>
+      </span>
 
       {active && (
-        <div className="mt-1.5 rounded-lg border border-cyan-400/70 bg-bg-surface px-3 py-2.5 text-xs">
+        <div className="my-1 rounded-lg border border-cyan-400/70 bg-bg-surface px-3 py-2.5 text-xs">
           <DetailRow label="tool" value={active.name} valueClassName="text-cyan-300" />
           {active.args && <DetailRow label="args" value={truncate(active.args, 400)} />}
           {active.output != null && <DetailRow label="output" value={truncate(active.output, 400)} />}
@@ -94,7 +101,7 @@ function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
           />
         </div>
       )}
-    </div>
+    </>
   )
 }
 
@@ -127,7 +134,7 @@ function groupItems(
  * spans almost the full column as plain text with no card/border,
  * which is the detail that made the previous version (bubbles on both
  * sides) read as generic/ChatGPT-like rather than Claude-like. */
-function MessageBubble({ message, base, character, streaming }: MessageBubbleProps): React.JSX.Element {
+function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.Element {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end px-5 py-2">
@@ -141,9 +148,8 @@ function MessageBubble({ message, base, character, streaming }: MessageBubblePro
   const hasContent = message.items.length > 0
   const groups = groupItems(message.items)
   return (
-    <div className="flex gap-3 px-5 py-2.5">
-      <Avatar base={base} character={character} size={24} />
-      <div className="min-w-0 max-w-3xl flex-1 pt-0.5 text-[15px] leading-relaxed text-ink">
+    <div className="px-5 py-2.5">
+      <div className="max-w-3xl whitespace-pre-wrap break-words text-[15px] leading-relaxed text-ink">
         {!hasContent && streaming && (
           <span className="inline-flex gap-1">
             <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-dim [animation-delay:0ms]" />
@@ -152,13 +158,7 @@ function MessageBubble({ message, base, character, streaming }: MessageBubblePro
           </span>
         )}
         {groups.map((g, i) =>
-          g.kind === 'text' ? (
-            <div key={i} className="whitespace-pre-wrap break-words">
-              {g.text}
-            </div>
-          ) : (
-            <ToolChain key={i} tools={g.tools} />
-          )
+          g.kind === 'text' ? <span key={i}>{g.text}</span> : <ToolChain key={i} tools={g.tools} />
         )}
         {!streaming && (message.meta?.tps || message.meta?.stopped) && (
           <div className="mt-1.5 text-xs text-ink-faint">
