@@ -145,7 +145,7 @@ checkout; smoke-test binary produces coherent output on a small test GGUF
 Do not invent new libllama functions — every call above is cited to a
 specific line/section already confirmed present in `include/llama.h`.
 
-## Phase 2 — Context governor parity + resize benchmark
+## Phase 2 — Context governor parity + resize benchmark (done, results below)
 
 **Goal:** exercise `ContextGovernor::resize()` against the real Ornith-35B MoE
 GGUF on this box (RTX 2080 Ti) and compare wall-clock resize latency against
@@ -165,6 +165,44 @@ today (full process restart) to quantify the win the whole project is for.
 per the Phase 0 finding, it isn't required for parity and adds a whole class
 of bugs (state blob versioning, sequence-id bookkeeping) before the core
 resize path is even proven.
+
+**Results (2026-07-22, `engine/src/bench_resize.cpp`, real Ornith-1.0-35B
+Q6_K GGUF, 4096→32768 gear jump):**
+
+| leg                              | CPU-only (-ngl 0) | GPU offload (-ngl 12) |
+|-----------------------------------|-------------------|------------------------|
+| native `ContextGovernor::resize()`| 773 ms            | 461 ms                 |
+| Python `EngineState.resize()`     | 6700 ms           | 5783 ms                |
+| native `llama-server` restart     | ~15.2s / ~8.0s\*   | 8.4s / 8.4s            |
+
+\*first/second run differ due to page-cache warmth, not `n_ctx`; both loads
+read the full 27GB file from a mostly-cold cache the first time.
+
+Native governor resize is **~9-14x faster** than the Python engine's
+resize (which does a full `close()`+reopen of the `Llama` object even
+though weights stay mmap'd) and **~18-20x faster** than `llama-server`'s
+only option today (kill + full process restart + client reconnect).
+Pre- and post-resize completions were byte-identical and coherent in both
+runs — the free+recreate resize is correctness-neutral, no
+`llama_state_*` needed, confirming the Phase 0 finding. All three legs
+were also run CPU-only first (GPU was occupied by Mark's live production
+character on the box's single RTX 2080 Ti at the time); Fleagle then
+stopped that character to free VRAM for the GPU-offload numbers above,
+and it was restarted (`pleiades model start
+qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive`) immediately after
+benchmarking finished.
+
+**Side finding, not in scope to fix here:** the hardware planner
+(`pleiades/hardware.py`) classifies Ornith-1.0-35B's architecture
+(`qwen35moe`) as `memory_arch="dense"` even though llama.cpp's own load
+log shows `llama_memory_recurrent` buffers for most layers (it's actually
+hybrid, same Gated DeltaNet family as [[new-brain-project]]'s Mark
+backbone) — `qwen35`/`qwen35moe` aren't in Phase 0.A's `_HYBRID_ARCHS`
+allowlist yet. This means `resolve_layers()` currently plans GPU/CPU
+split assuming full dense KV growth for this model, over-costing its KV
+budget and leaving fewer layers offloadable than necessary as `n_ctx`
+grows. Worth a small Phase 0.A follow-up (add `qwen35`/`qwen35moe` to
+`_HYBRID_ARCHS`), tracked here rather than fixed mid-Phase-2.
 
 ## Phase 3 — HTTP transport shim (OpenAI-compatible)
 

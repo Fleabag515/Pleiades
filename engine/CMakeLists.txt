@@ -43,3 +43,8 @@ target_link_libraries(pleiades_engine PUBLIC llama)
 
 add_executable(pleiades-engine-cli src/cli_main.cpp)
 target_link_libraries(pleiades-engine-cli PRIVATE pleiades_engine)
+
+# Phase 2 benchmark: ContextGovernor::resize() wall-clock latency vs. the
+# Python elastic engine and native llama-server's restart-only option.
+add_executable(pleiades-engine-bench-resize src/bench_resize.cpp)
+target_link_libraries(pleiades-engine-bench-resize PRIVATE pleiades_engine)
