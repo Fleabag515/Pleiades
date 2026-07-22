@@ -1384,6 +1384,7 @@ def create_app() -> FastAPI:
             import json as _json
             items: list[dict] = []
             text_acc = ""
+            reasoning_acc = ""
             meta: dict = {}
             stop_evt = threading.Event()
             chat_stops[chat_id] = stop_evt
@@ -1423,9 +1424,32 @@ def create_app() -> FastAPI:
                     if isinstance(item, Exception):
                         raise item
                     evt = item
-                    if evt["type"] == "token":
+                    if evt["type"] == "reasoning":
+                        # Bug: reasoning used to be forwarded live and then
+                        # dropped -- never folded into the saved turn's
+                        # `items`, so the block vanished the moment the chat
+                        # was reloaded/refetched. Persist it like text/tool
+                        # output: flush whatever text was building (so a
+                        # reasoning burst always starts its own item, never
+                        # gets glued onto a preceding text run), then
+                        # accumulate this burst's chunks together. The next
+                        # non-reasoning event flushes THIS accumulator before
+                        # doing its own thing, so a second, later burst of
+                        # reasoning becomes its own distinct item afterward
+                        # instead of merging into the first one.
+                        if text_acc:
+                            items.append({"t": "text", "text": text_acc})
+                            text_acc = ""
+                        reasoning_acc += evt["text"]
+                    elif evt["type"] == "token":
+                        if reasoning_acc:
+                            items.append({"t": "reasoning", "text": reasoning_acc})
+                            reasoning_acc = ""
                         text_acc += evt["text"]
                     elif evt["type"] in ("tool_call", "tool_result"):
+                        if reasoning_acc:
+                            items.append({"t": "reasoning", "text": reasoning_acc})
+                            reasoning_acc = ""
                         if text_acc:
                             items.append({"t": "text", "text": text_acc})
                             text_acc = ""
@@ -1444,6 +1468,8 @@ def create_app() -> FastAPI:
                     elif evt["type"] == "stopped":
                         meta["stopped"] = True
                     yield _json.dumps(evt, ensure_ascii=False) + "\n"
+                if reasoning_acc:
+                    items.append({"t": "reasoning", "text": reasoning_acc})
                 if text_acc:
                     items.append({"t": "text", "text": text_acc})
                 try:

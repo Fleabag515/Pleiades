@@ -552,7 +552,8 @@ class Engine:
                 }
             )
             for tc in tool_calls:
-                result = belt.dispatch(tc.function.name, tc.function.arguments, ctx)
+                result = belt.dispatch(tc.function.name, tc.function.arguments, ctx,
+                                       approve=self.approve)
                 messages.append(
                     {"role": "tool", "tool_call_id": tc.id, "content": result}
                 )
@@ -695,7 +696,7 @@ class Engine:
                 })
                 for i, c in enumerate(ordered):
                     yield {"type": "tool_call", "name": c["name"], "args": c["args"]}
-                    result = belt.dispatch(c["name"], c["args"], ctx)
+                    result = belt.dispatch(c["name"], c["args"], ctx, approve=self.approve)
                     ok = not result.startswith("[error]")
                     yield {"type": "tool_result", "name": c["name"],
                            "output": result, "ok": ok}

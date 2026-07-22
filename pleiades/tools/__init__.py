@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import difflib
 import json
+import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:  # avoid heavy imports at module load
     from ..config import Settings
@@ -107,12 +108,26 @@ class ToolBelt:
     def openai_schema(self) -> list[dict]:
         return [t.schema() for t in self._tools.values()]
 
-    def dispatch(self, name: str, args: Any, ctx: ToolContext) -> str:
+    def dispatch(self, name: str, args: Any, ctx: ToolContext,
+                 approve: Optional[Callable[[Tool, dict], bool]] = None) -> str:
         """Run a tool; errors come back as TEACHING results, not dead ends.
 
         A malformed call is a learning opportunity: include the tool's
         parameter schema in the error so the model can correct itself on the
         very next iteration instead of flailing or giving up.
+
+        `approve(tool, args) -> bool` is the single source of truth for
+        exec_policy="ask" gating. Callers that already have a real approval
+        mechanism (webui/desktop's polling ApprovalCard via Engine.approve,
+        the harness's own approve callback, ...) must pass it here. Only when
+        no callback is supplied AND stdin is a real interactive terminal do
+        we fall back to a blocking console y/N prompt (bare `pleiades chat`
+        REPL, `pleiades work`, tests run by hand). Without a callback in a
+        non-interactive process (Electron-spawned backend, a service, a
+        script), `input()` raises EOFError instantly — that used to be
+        swallowed into a silent, instant "[cancelled]" for every gated call.
+        We now surface that as an explicit error instead of pretending the
+        user said no.
         """
         tool = self._tools.get(name)
         if tool is None:
@@ -138,13 +153,26 @@ class ToolBelt:
             if policy == "deny":
                 return f"[error] tool '{name}' blocked by exec_policy=deny"
             if policy == "ask":
-                short = json.dumps(args)[:120]
-                try:
-                    ans = input(f"  [approve] {name}({short}) [y/N] ").strip().lower()
-                except EOFError:
-                    ans = ""
-                if ans not in ("y", "yes"):
-                    return f"[cancelled] {name}"
+                if approve is not None:
+                    try:
+                        ok = approve(tool, args)
+                    except Exception as e:
+                        return f"[error] approval callback for '{name}' failed: {e}"
+                    if not ok:
+                        return f"[cancelled] {name}"
+                elif sys.stdin.isatty():
+                    short = json.dumps(args)[:120]
+                    try:
+                        ans = input(f"  [approve] {name}({short}) [y/N] ").strip().lower()
+                    except EOFError:
+                        ans = ""
+                    if ans not in ("y", "yes"):
+                        return f"[cancelled] {name}"
+                else:
+                    return (f"[error] tool '{name}' needs approval (exec_policy=ask) but "
+                            f"no approval mechanism is available in this non-interactive "
+                            f"context. Pass an approve callback into ToolBelt.dispatch(), "
+                            f"or set exec_policy to 'allow'/'deny'.")
         try:
             return tool.run(ctx, **args)
         except TypeError as e:

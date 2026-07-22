@@ -169,7 +169,13 @@ function Composer({
   return (
     <div className="flex-none bg-bg-app px-5 py-4">
       <div className="mx-auto max-w-3xl">
-        <div className="flex items-end gap-2 rounded-3xl bg-bg-100 px-4 py-3 shadow-sm">
+        {/* Stacked composer, Claude-Desktop style: the text area gets its own
+         * full-width row on top, and a small low-visual-weight control row
+         * (new chat, model picker, send/stop) sits underneath it -- rather
+         * than beside it competing for width. See owner feedback: the prior
+         * single-row layout pushed the typing area narrower every time a
+         * control was added next to it. */}
+        <div className="flex flex-col gap-2 rounded-3xl bg-bg-100 px-4 py-3 shadow-sm">
           <textarea
             ref={taRef}
             value={text}
@@ -183,86 +189,90 @@ function Composer({
             disabled={disabled}
             rows={1}
             placeholder={disabled ? 'Select a character first…' : `Message ${character}…`}
-            className="max-h-60 min-h-[24px] flex-1 resize-none bg-transparent px-1 py-1 text-[15px] text-ink placeholder:text-ink-faint focus:outline-none"
+            className="max-h-60 min-h-[24px] w-full resize-none bg-transparent px-1 py-1 text-[15px] text-ink placeholder:text-ink-faint focus:outline-none"
           />
 
-          <button
-            onClick={onNewChat}
-            disabled={disabled || streaming}
-            title="Start a new chat — this conversation moves to History"
-            aria-label="Start a new chat"
-            className="flex-none rounded-md px-1.5 py-1.5 text-xs text-ink-faint transition hover:text-ink-dim disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <span aria-hidden>&#10133;</span>
-          </button>
-
-          {!disabled && profile && (
-            <div ref={pickerRef} className="relative flex-none">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
               <button
-                onClick={() => setPickerOpen((v) => !v)}
-                title="Change the model assigned to this character"
-                className="flex items-center gap-1 rounded-md px-1.5 py-1.5 text-xs text-ink-faint transition hover:text-ink-dim"
+                onClick={onNewChat}
+                disabled={disabled || streaming}
+                title="Start a new chat — this conversation moves to History"
+                aria-label="Start a new chat"
+                className="flex-none rounded-md px-1.5 py-1.5 text-xs text-ink-faint transition hover:text-ink-dim disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <span className="max-w-[140px] truncate">{modelLabel(profile.model, models)}</span>
-                <span aria-hidden className="text-[10px]">
-                  ▾
-                </span>
+                <span aria-hidden>&#10133;</span>
               </button>
 
-              {pickerOpen && (
-                <div className="absolute bottom-full right-0 z-30 mb-1.5 w-72 rounded-xl border border-border bg-bg-100 p-3 shadow-2xl">
-                  <p className="mb-2 text-[11px] text-ink-faint">
-                    Sets the model for <span className="text-ink-dim">{character}</span> as a whole — it applies to
-                    every chat with this character (Pleiades has no per-chat model override).
-                  </p>
-                  <div className="flex max-h-52 flex-col gap-0.5 overflow-y-auto">
-                    {models.map((m) => (
-                      <button
-                        key={m.name}
-                        onClick={() => chooseModel(m.name)}
-                        disabled={assigning}
-                        className={`flex items-center gap-2 truncate rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
-                          profile.model === m.name
-                            ? 'bg-bg-300 text-ink-bright'
-                            : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
-                        }`}
-                      >
-                        <span
-                          aria-hidden
-                          className={`h-1.5 w-1.5 flex-none rounded-full ${statusDotClass(m)}`}
-                        />
-                        <span className="truncate">{modelDisplayName(m)}</span>
-                      </button>
-                    ))}
-                    {models.length === 0 && (
-                      <p className="px-2.5 py-1.5 text-xs text-ink-faint">No models registered yet.</p>
-                    )}
-                  </div>
-                  {pickerError && <div className="mt-2 text-[11px] text-rose-300">{pickerError}</div>}
-                  {assigning && <div className="mt-2 text-[11px] text-ink-faint">Saving…</div>}
+              {!disabled && profile && (
+                <div ref={pickerRef} className="relative flex-none">
+                  <button
+                    onClick={() => setPickerOpen((v) => !v)}
+                    title="Change the model assigned to this character"
+                    className="flex items-center gap-1 rounded-md px-1.5 py-1.5 text-xs text-ink-faint transition hover:text-ink-dim"
+                  >
+                    <span className="max-w-[140px] truncate">{modelLabel(profile.model, models)}</span>
+                    <span aria-hidden className="text-[10px]">
+                      ▾
+                    </span>
+                  </button>
+
+                  {pickerOpen && (
+                    <div className="absolute bottom-full left-0 z-30 mb-1.5 w-72 rounded-xl border border-border bg-bg-100 p-3 shadow-2xl">
+                      <p className="mb-2 text-[11px] text-ink-faint">
+                        Sets the model for <span className="text-ink-dim">{character}</span> as a whole — it applies
+                        to every chat with this character (Pleiades has no per-chat model override).
+                      </p>
+                      <div className="flex max-h-52 flex-col gap-0.5 overflow-y-auto">
+                        {models.map((m) => (
+                          <button
+                            key={m.name}
+                            onClick={() => chooseModel(m.name)}
+                            disabled={assigning}
+                            className={`flex items-center gap-2 truncate rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
+                              profile.model === m.name
+                                ? 'bg-bg-300 text-ink-bright'
+                                : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
+                            }`}
+                          >
+                            <span
+                              aria-hidden
+                              className={`h-1.5 w-1.5 flex-none rounded-full ${statusDotClass(m)}`}
+                            />
+                            <span className="truncate">{modelDisplayName(m)}</span>
+                          </button>
+                        ))}
+                        {models.length === 0 && (
+                          <p className="px-2.5 py-1.5 text-xs text-ink-faint">No models registered yet.</p>
+                        )}
+                      </div>
+                      {pickerError && <div className="mt-2 text-[11px] text-rose-300">{pickerError}</div>}
+                      {assigning && <div className="mt-2 text-[11px] text-ink-faint">Saving…</div>}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
 
-          {streaming ? (
-            <button
-              onClick={onStop}
-              className="flex-none rounded-2xl bg-bg-300 px-3.5 py-2 text-sm font-medium text-ink transition hover:bg-rose-500/20 hover:text-rose-300"
-              title="Stop generating"
-            >
-              ◼ Stop
-            </button>
-          ) : (
-            <button
-              onClick={submit}
-              disabled={disabled || !text.trim()}
-              className="flex-none rounded-2xl bg-accent px-3.5 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-              title="Send"
-            >
-              Send
-            </button>
-          )}
+            {streaming ? (
+              <button
+                onClick={onStop}
+                className="flex-none rounded-2xl bg-bg-300 px-3.5 py-2 text-sm font-medium text-ink transition hover:bg-rose-500/20 hover:text-rose-300"
+                title="Stop generating"
+              >
+                ◼ Stop
+              </button>
+            ) : (
+              <button
+                onClick={submit}
+                disabled={disabled || !text.trim()}
+                className="flex-none rounded-2xl bg-accent px-3.5 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+                title="Send"
+              >
+                Send
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

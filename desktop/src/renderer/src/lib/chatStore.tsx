@@ -20,7 +20,6 @@ export interface ChatSessionState {
   loading: boolean
   history: ChatMessageEntry[]
   draft: AssistantDraft | null
-  reasoning: string
   streaming: boolean
   approval: PendingApproval | null
   approvalBusy: boolean
@@ -32,7 +31,6 @@ const EMPTY_SESSION: ChatSessionState = {
   loading: false,
   history: [],
   draft: null,
-  reasoning: '',
   streaming: false,
   approval: null,
   approvalBusy: false,
@@ -148,7 +146,6 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
       patchSession(character, (s) => ({
         history: [...s.history, userMsg],
         draft: { items: [], meta: {} },
-        reasoning: '',
         streaming: true,
         error: null
       }))
@@ -164,25 +161,50 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
       }, 900)
       approvalTimers.current.set(character, timer)
 
+      // `items` accumulates committed pieces of this turn in order; `textAcc`/
+      // `reasoningAcc` are the still-growing tail piece (at most one of the
+      // two is ever non-empty -- each flushes the other before it starts).
+      // A reasoning burst becomes its own persisted `{t:'reasoning'}` item
+      // the moment anything else (more text, a tool call, the turn ending)
+      // follows it, so (1) it's part of the message content, not a
+      // transient field that vanishes when `streaming` flips false, and
+      // (2) a second later burst of reasoning becomes a second, distinct
+      // item instead of merging into the first -- mirrors the backend's
+      // chats_message() persistence loop in pleiades/webui/server.py exactly,
+      // so the live draft and the persisted turn agree on structure.
       let items: AssistantItem[] = []
       let textAcc = ''
+      let reasoningAcc = ''
       const flushText = (): void => {
         if (textAcc) {
           items = [...items, { t: 'text', text: textAcc }]
           textAcc = ''
         }
       }
+      const flushReasoning = (): void => {
+        if (reasoningAcc) {
+          items = [...items, { t: 'reasoning', text: reasoningAcc }]
+          reasoningAcc = ''
+        }
+      }
+      const draftItems = (): AssistantItem[] => [
+        ...items,
+        ...(reasoningAcc ? [{ t: 'reasoning', text: reasoningAcc } as AssistantItem] : []),
+        ...(textAcc ? [{ t: 'text', text: textAcc } as AssistantItem] : [])
+      ]
 
       try {
         await streamMessage(base, chatId, text, (evt) => {
           if (evt.type === 'reasoning') {
-            patchSession(character, (s) => ({ reasoning: s.reasoning + evt.text }))
+            flushText()
+            reasoningAcc += evt.text
+            patchSession(character, { draft: { items: draftItems(), meta: {} } })
           } else if (evt.type === 'token') {
+            flushReasoning()
             textAcc += evt.text
-            patchSession(character, {
-              draft: { items: [...items, ...(textAcc ? [{ t: 'text', text: textAcc } as AssistantItem] : [])], meta: {} }
-            })
+            patchSession(character, { draft: { items: draftItems(), meta: {} } })
           } else if (evt.type === 'tool_call') {
+            flushReasoning()
             flushText()
             items = [...items, { t: 'tool', name: evt.name, args: evt.args, output: null, ok: null }]
             patchSession(character, { draft: { items, meta: {} } })
@@ -196,12 +218,15 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
             }
             patchSession(character, { draft: { items, meta: {} } })
           } else if (evt.type === 'done') {
+            flushReasoning()
             flushText()
             patchSession(character, { draft: { items, meta: { tokens: evt.tokens, seconds: evt.seconds, tps: evt.tps } } })
           } else if (evt.type === 'stopped') {
+            flushReasoning()
             flushText()
             patchSession(character, { draft: { items, meta: { stopped: true } } })
           } else if (evt.type === 'error') {
+            flushReasoning()
             flushText()
             patchSession(character, { error: evt.error })
           }
@@ -213,7 +238,7 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
         patchSession(character, { streaming: false, approval: null })
         try {
           const fresh = await getChat(base, chatId)
-          patchSession(character, { history: fresh.messages, draft: null, reasoning: '' })
+          patchSession(character, { history: fresh.messages, draft: null })
         } catch {
           // keep the local optimistic render if the refetch fails
         }
@@ -273,7 +298,6 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
           chatId: fresh.id,
           history: [],
           draft: null,
-          reasoning: '',
           streaming: false,
           approval: null,
           approvalBusy: false,

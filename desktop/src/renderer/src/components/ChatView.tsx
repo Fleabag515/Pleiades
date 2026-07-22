@@ -3,7 +3,6 @@ import { useChatSession, useChatStoreActions } from '../lib/chatStore'
 import ApprovalCard from './ApprovalCard'
 import Composer from './Composer'
 import MessageBubble from './MessageBubble'
-import ReasoningBlock from './ReasoningBlock'
 import RightPanel from './RightPanel'
 
 interface ChatViewProps {
@@ -55,7 +54,7 @@ function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [session.history, session.draft, session.reasoning, session.approval])
+  }, [session.history, session.draft, session.approval])
 
   if (!character) {
     return (
@@ -94,10 +93,6 @@ function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX
           {session.history.map((m, i) => (
             <MessageBubble key={i} message={m} base={base} character={character} />
           ))}
-
-          {session.reasoning && session.streaming && (
-            <ReasoningBlock text={session.reasoning} streaming={session.streaming} />
-          )}
 
           {session.draft && (
             <MessageBubble

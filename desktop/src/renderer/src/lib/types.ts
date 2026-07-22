@@ -39,7 +39,12 @@ export interface TextItem {
   text: string
 }
 
-export type AssistantItem = TextItem | ToolItem
+export interface ReasoningItem {
+  t: 'reasoning'
+  text: string
+}
+
+export type AssistantItem = TextItem | ToolItem | ReasoningItem
 
 export interface TurnMeta {
   tokens?: number
@@ -103,10 +108,12 @@ export interface ApiStatus {
 // NDJSON stream event union from POST /api/chats/{id}/message. Verified
 // against the live engine, not just the server.py docstring: thinking
 // models also emit `reasoning` events (engine.py yields these from
-// `delta.reasoning_content`/`reasoning`) that the docstring omits. Unlike
-// `token`, the server-side persistence loop in chats_message() never folds
-// `reasoning` into the saved turn's `items` — it's forwarded to the client
-// live and then dropped, so it only matters for in-flight rendering.
+// `delta.reasoning_content`/`reasoning`) that the docstring omits.
+// `chats_message()`'s persistence loop now folds `reasoning` bursts into the
+// saved turn's `items` as their own `ReasoningItem`s (same flush-on-transition
+// pattern as `text`/`tool`), so a reasoning block survives reload and each
+// distinct burst within a turn becomes its own sequential item — it used to
+// be forwarded to the client live and then silently dropped.
 export type StreamEvent =
   | { type: 'token'; text: string }
   | { type: 'reasoning'; text: string }

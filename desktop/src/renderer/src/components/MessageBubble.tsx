@@ -1,5 +1,6 @@
 import { memo, useState } from 'react'
 import type { AssistantItem, ChatMessageEntry, ToolItem } from '../lib/types'
+import ReasoningBlock from './ReasoningBlock'
 
 interface MessageBubbleProps {
   message: ChatMessageEntry
@@ -54,16 +55,8 @@ function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
   const active = selected !== null ? tools[selected] : null
 
   return (
-    <>
-      {/* `inline-flex` (not `div`/block) so a tool call sitting between two
-       * chunks of assistant text stays on the same line as the text around
-       * it whenever there's room, and wraps together with it as one
-       * paragraph flow instead of always forcing its own line -- that
-       * "doesn't flow together nicely" was literally block-level layout
-       * fighting the surrounding `whitespace-pre-wrap` text. `align-middle`
-       * plus a small negative-y nudge keeps the chip's baseline visually
-       * centered against the text line instead of sitting low/high. */}
-      <span className="my-0.5 inline-flex flex-wrap items-center gap-1.5 align-middle">
+    <div className="my-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         {tools.map((t, i) => {
           const pending = t.output === null
           const err = t.ok === false
@@ -74,23 +67,23 @@ function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
               ? 'border-rose-400'
               : 'border-emerald-400'
           return (
-            <span key={i} className="inline-flex items-center gap-1.5">
+            <div key={i} className="flex items-center gap-1.5">
               {i > 0 && <span className="select-none text-[13px] text-ink-faint">&rarr;</span>}
               <button
                 onClick={() => setSelected(isSel ? null : i)}
-                className={`whitespace-nowrap rounded-lg border bg-bg-100 px-3 py-1 font-mono text-[11.5px] text-ink transition-colors hover:border-cyan-400 hover:bg-bg-200 ${
+                className={`whitespace-nowrap rounded-lg border bg-bg-100 px-3 py-1.5 font-mono text-[11.5px] text-ink transition-colors hover:border-cyan-400 hover:bg-bg-200 ${
                   isSel ? 'border-cyan-400 bg-bg-200' : stateClass
                 }`}
               >
                 {t.name}
               </button>
-            </span>
+            </div>
           )
         })}
-      </span>
+      </div>
 
       {active && (
-        <div className="my-1 rounded-lg border border-cyan-400/70 bg-bg-surface px-3 py-2.5 text-xs">
+        <div className="mt-1.5 rounded-lg border border-cyan-400/70 bg-bg-surface px-3 py-2.5 text-xs">
           <DetailRow label="tool" value={active.name} valueClassName="text-cyan-300" />
           {active.args && <DetailRow label="args" value={truncate(active.args, 400)} />}
           {active.output != null && <DetailRow label="output" value={truncate(active.output, 400)} />}
@@ -101,23 +94,34 @@ function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
           />
         </div>
       )}
-    </>
+    </div>
   )
 }
 
 /** Groups an assistant turn's items so consecutive tool calls render as one
  * `ToolChain` (matching the legacy webui, where every tool call from a turn
  * lands in a single `.pipe-nodes` row) instead of one box per call. Text
- * segments in between still break the chain, same as the source data. */
+ * segments in between still break the chain, same as the source data.
+ * Reasoning items are never merged into a text or tool group -- each
+ * `{t:'reasoning'}` item is already one distinct burst (chatStore.tsx and
+ * server.py's chats_message() both only ever flush a new one once
+ * something else has happened in between), so it always gets its own
+ * `ReasoningBlock`, in sequence with everything else in the turn. */
 function groupItems(
   items: AssistantItem[]
-): Array<{ kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] }> {
-  const groups: Array<{ kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] }> = []
+): Array<
+  { kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] } | { kind: 'reasoning'; text: string }
+> {
+  const groups: Array<
+    { kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] } | { kind: 'reasoning'; text: string }
+  > = []
   for (const item of items) {
     if (item.t === 'tool') {
       const last = groups[groups.length - 1]
       if (last && last.kind === 'tools') last.tools.push(item)
       else groups.push({ kind: 'tools', tools: [item] })
+    } else if (item.t === 'reasoning') {
+      groups.push({ kind: 'reasoning', text: item.text })
     } else {
       groups.push({ kind: 'text', text: item.text })
     }
@@ -149,7 +153,7 @@ function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.El
   const groups = groupItems(message.items)
   return (
     <div className="px-5 py-2.5">
-      <div className="max-w-3xl whitespace-pre-wrap break-words text-[15px] leading-relaxed text-ink">
+      <div className="max-w-3xl text-[15px] leading-relaxed text-ink">
         {!hasContent && streaming && (
           <span className="inline-flex gap-1">
             <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-dim [animation-delay:0ms]" />
@@ -157,9 +161,18 @@ function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.El
             <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-dim [animation-delay:300ms]" />
           </span>
         )}
-        {groups.map((g, i) =>
-          g.kind === 'text' ? <span key={i}>{g.text}</span> : <ToolChain key={i} tools={g.tools} />
-        )}
+        {groups.map((g, i) => {
+          if (g.kind === 'tools') return <ToolChain key={i} tools={g.tools} />
+          if (g.kind === 'reasoning') {
+            const isLive = Boolean(streaming) && i === groups.length - 1
+            return <ReasoningBlock key={i} text={g.text} streaming={isLive} />
+          }
+          return (
+            <div key={i} className="whitespace-pre-wrap break-words">
+              {g.text}
+            </div>
+          )
+        })}
         {!streaming && (message.meta?.tps || message.meta?.stopped) && (
           <div className="mt-1.5 text-xs text-ink-faint">
             {message.meta.stopped ? 'Stopped · ' : ''}
@@ -171,8 +184,8 @@ function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.El
   )
 }
 
-// Memoized: ChatView re-renders on every streamed token (draft/reasoning
-// state changes), which would otherwise re-run every historical
+// Memoized: ChatView re-renders on every streamed token/reasoning-chunk
+// (draft state changes), which would otherwise re-run every historical
 // MessageBubble's render function on every token for long conversations.
 // Historical `message`/`base`/`character` props are referentially stable
 // between those re-renders, so memo turns that into a no-op for anything
