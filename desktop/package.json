@@ -1,7 +1,7 @@
 {
   "name": "pleiades-desktop",
   "version": "0.1.0",
-  "description": "Pleiades desktop shell (Electron) - Phase A: process lifecycle + packaging skeleton",
+  "description": "Local-first AI workstation: models, characters, memory, and tools.",
   "main": "./out/main/index.js",
   "author": "Pleiades",
   "scripts": {

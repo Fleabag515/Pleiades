@@ -49,6 +49,7 @@ while [ $# -gt 0 ]; do
     --no-searxng) WITH_SEARXNG=0; shift;;
     --no-discord) WITH_DISCORD=0; shift;;
     --no-native-runtime) WITH_NATIVE_RUNTIME=0; shift;;
+    --no-desktop-app) WITH_DESKTOP_APP=0; shift;;
     -h|--help) sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0;;
     *) warn "ignoring unknown option: $1"; shift;;
   esac
@@ -121,7 +122,7 @@ ensure_python() {
 
 ensure_node() {
   have npm && return 0
-  say "Installing Node.js + npm (for Anamnesis)"
+  say "Installing Node.js + npm (for Anamnesis + the desktop app build)"
   case "$PM" in
     apt-get|dnf|zypper) pm_install nodejs npm;;
     pacman)             pm_install nodejs npm;;
@@ -276,6 +277,47 @@ link_cli() {
   esac
 }
 
+install_desktop_app() {
+  # Builds the Electron desktop app + its self-contained PyInstaller backend
+  # bundle, then installs the resulting .deb so Pleiades shows up as a real,
+  # searchable application in the system menu (Cinnamon/GNOME/KDE all pick up
+  # /usr/share/applications/*.desktop the moment a .deb registers one) --
+  # not a manually-created desktop file that a fresh install/machine would
+  # lack, since this whole step lives in the installer + electron-builder.yml,
+  # not something done by hand outside the build.
+  [ "$WITH_DESKTOP_APP" = "1" ] || return 0
+  [ "$PLATFORM" = "linux" ] || { info "Desktop app auto-install is Linux-only for now; see desktop/README for macOS/Windows."; return 0; }
+  have npm || { warn "Skipping desktop app (no npm) — build it later: cd desktop && npm install && npm run dist:linux"; return 0; }
+
+  say "Building the desktop app (Electron + bundled backend)"
+  (
+    set -e
+    VENV_PY="$INSTALL_DIR/.venv/bin/python3.12"
+    [ -x "$VENV_PY" ] || VENV_PY="$INSTALL_DIR/.venv/bin/python3"
+    "$VENV_PY" -m pip show pyinstaller >/dev/null 2>&1 || "$VENV_PY" -m pip install pyinstaller
+    "$INSTALL_DIR/desktop/backend-build/build.sh"
+    cd "$INSTALL_DIR/desktop"
+    npm install
+    npm run dist:linux
+  ) || { warn "Desktop app build failed — CLI/webui install is unaffected. Build it later: cd desktop && npm install && npm run dist:linux"; return 0; }
+
+  DEB="$(find "$INSTALL_DIR/desktop/dist" -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)"
+  if [ -z "$DEB" ]; then
+    warn "Desktop app built but no .deb found under desktop/dist — install the AppImage manually instead."
+    return 0
+  fi
+
+  say "Installing the desktop app ($DEB) — this needs sudo to register it system-wide"
+  if have apt-get; then
+    sudo apt-get install -y "$DEB" || { sudo dpkg -i "$DEB" && sudo apt-get install -f -y; } \
+      || { warn "Could not install the .deb automatically. Install it yourself: sudo apt install $DEB"; return 0; }
+  else
+    sudo dpkg -i "$DEB" \
+      || { warn "Could not install the .deb automatically. Install it yourself: sudo dpkg -i $DEB"; return 0; }
+  fi
+  info "Pleiades is now in your application menu/search."
+}
+
 finish() {
   echo
   say "Pleiades installed at $INSTALL_DIR  ($GPU_DESC)"
@@ -313,6 +355,7 @@ main() {
   make_env
   start_searxng
   link_cli
+  install_desktop_app
   finish
 }
 main "$@"
