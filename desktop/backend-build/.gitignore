@@ -1,0 +1,6 @@
+# PyInstaller build artifacts -- reproducible via build.sh, not checked in
+# (the onedir bundle is 1GB+, mostly native .so's; see README/build.sh).
+build/
+dist/
+__pycache__/
+*.spec.bak

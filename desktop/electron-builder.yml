@@ -11,6 +11,14 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+# The self-contained backend bundle (PyInstaller onedir build of
+# pleiades.webui -- see desktop/backend-build/backend.spec / build.sh).
+# Copied to <resources>/backend/ so process.resourcesPath/backend/pleiades-backend
+# resolves in src/main/index.ts's bundledBackendPath(). Not `files:` because it
+# lives outside the app's asar (native .so's + a launcher binary, not source).
+extraResources:
+  - from: backend-build/dist/pleiades-backend
+    to: backend
 win:
   executableName: pleiades-desktop
 nsis:
@@ -29,10 +37,10 @@ mac:
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:
-  # TODO(phase3): this only shells out to the developer's ~/Pleiades/.venv
-  # checkout at runtime (see src/main/index.ts). A real installer needs a
-  # bundled, self-contained backend (PyInstaller/Nuitka build) so the app
-  # works on machines without that exact venv present.
+  # Backend is bundled via extraResources above (desktop/backend-build/) so
+  # the AppImage/deb need nothing pre-installed on the target machine -- see
+  # src/main/index.ts's bundledBackendPath()/spawnBackend() for the runtime
+  # lookup, and desktop/backend-build/build.sh to (re)produce the bundle.
   target:
     - AppImage
     - deb

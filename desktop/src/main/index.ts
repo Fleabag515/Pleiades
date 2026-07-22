@@ -12,12 +12,38 @@ import icon from '../../resources/icon.png?asset'
 // Backend lifecycle
 // ---------------------------------------------------------------------------
 
-// TODO(phase3): this shells out to the developer's existing ~/Pleiades/.venv
-// checkout. A packaged installer needs a self-contained backend (PyInstaller
-// or Nuitka build of pleiades.webui) bundled as an extraResource so the app
-// works on machines that don't have this exact venv/repo checkout.
+// Backend can run two ways:
+//   1. Bundled (production / packaged): a self-contained PyInstaller onedir
+//      build of pleiades.webui, built from desktop/backend-build/backend.spec.
+//      Needs nothing pre-installed on the target machine -- no system Python,
+//      no venv, no pip install.
+//   2. Dev-mode fallback: shells out to the developer's own ~/Pleiades/.venv
+//      checkout with `python3.12 -m pleiades.webui`, same as before. Used
+//      automatically whenever the bundled binary isn't present, so local
+//      development against a live venv (fast iteration on the Python side)
+//      keeps working unmodified.
 const PLEIADES_ROOT = process.env.PLEIADES_ROOT ?? join(homedir(), 'Pleiades')
 const PYTHON_BIN = join(PLEIADES_ROOT, '.venv', 'bin', 'python3.12')
+
+const BACKEND_BIN_NAME = 'pleiades-backend'
+
+/**
+ * Where the bundled backend lives, in dev vs. packaged builds.
+ *  - Packaged: electron-builder's `extraResources` (see electron-builder.yml)
+ *    copies desktop/backend-build/dist/pleiades-backend/ to
+ *    <resources>/backend/, so process.resourcesPath/backend/pleiades-backend
+ *    is the launcher.
+ *  - Dev: point straight at the freshly-built onedir output so `npm run dev`
+ *    can exercise the real bundle without a packaging step, if it's been
+ *    built (desktop/backend-build/build.sh). Falls back to the venv (below)
+ *    if it hasn't.
+ */
+function bundledBackendPath(): string {
+  if (is.dev) {
+    return join(__dirname, '../../backend-build/dist/pleiades-backend', BACKEND_BIN_NAME)
+  }
+  return join(process.resourcesPath, 'backend', BACKEND_BIN_NAME)
+}
 
 const BACKEND_READY_TIMEOUT_MS = 20_000
 const BACKEND_POLL_INTERVAL_MS = 400
@@ -67,20 +93,36 @@ function getFreePort(): Promise<number> {
 }
 
 function spawnBackend(port: number): void {
-  if (!existsSync(PYTHON_BIN)) {
+  const bundledBin = bundledBackendPath()
+  const useBundled = existsSync(bundledBin)
+
+  if (!useBundled && !existsSync(PYTHON_BIN)) {
     backendState.phase = 'error'
-    backendState.error = `Python interpreter not found at ${PYTHON_BIN}. Is ~/Pleiades checked out with its venv built?`
+    backendState.error =
+      `Neither the bundled backend (${bundledBin}) nor a dev venv Python ` +
+      `(${PYTHON_BIN}) was found. Build the bundle with ` +
+      `desktop/backend-build/build.sh, or check out ~/Pleiades with its venv built.`
     logLine(`[backend] ${backendState.error}`)
     return
   }
 
-  logLine(`[backend] spawning ${PYTHON_BIN} -m pleiades.webui --host 127.0.0.1 --port ${port} --no-browser (cwd=${PLEIADES_ROOT})`)
+  const args = ['--host', '127.0.0.1', '--port', String(port), '--no-browser']
+  const command = useBundled ? bundledBin : PYTHON_BIN
+  const spawnArgs = useBundled ? args : ['-m', 'pleiades.webui', ...args]
+  // The bundled binary is fully self-contained (no venv/site-packages to
+  // resolve relative to a cwd); the dev fallback still needs to run from
+  // PLEIADES_ROOT the way `pleiades.webui` expects.
+  const cwd = useBundled ? join(bundledBin, '..') : PLEIADES_ROOT
 
-  const child = spawn(
-    PYTHON_BIN,
-    ['-m', 'pleiades.webui', '--host', '127.0.0.1', '--port', String(port), '--no-browser'],
-    { cwd: PLEIADES_ROOT, stdio: ['ignore', 'pipe', 'pipe'] }
-  ) as BackendProcess
+  logLine(
+    `[backend] spawning ${useBundled ? 'bundled' : 'dev venv'} backend: ` +
+      `${command} ${spawnArgs.join(' ')} (cwd=${cwd})`
+  )
+
+  const child = spawn(command, spawnArgs, {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe']
+  }) as BackendProcess
 
   backendProcess = child
 
