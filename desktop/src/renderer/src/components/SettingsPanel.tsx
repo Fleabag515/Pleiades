@@ -31,7 +31,7 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-6" onClick={onClose}>
       <div
-        className="flex h-[680px] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-border bg-bg-100 shadow-2xl"
+        className="flex h-[680px] max-h-[calc(100vh-3rem)] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-border bg-bg-100 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-4">

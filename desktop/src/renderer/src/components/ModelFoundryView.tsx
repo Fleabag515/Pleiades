@@ -17,7 +17,6 @@ import type {
   QuantOptionsResponse
 } from '../lib/types'
 import { formatGiB } from '../lib/format'
-import ModelsTab from './settings/ModelsTab'
 
 interface ModelFoundryViewProps {
   base: string
@@ -44,7 +43,7 @@ function useDebounced(value: string, delayMs: number): string {
  * tracks one in-flight fetch at a time (models_fetch 409s otherwise), so
  * download progress is a single global strip fed by polling
  * GET /api/models/fetch/status rather than per-card state. */
-function HfSearchSection({ base, onDownloaded }: { base: string; onDownloaded: () => void }): React.JSX.Element {
+function HfSearchSection({ base }: { base: string }): React.JSX.Element {
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebounced(query, 400)
   const [results, setResults] = useState<HfSearchResult[]>([])
@@ -83,14 +82,26 @@ function HfSearchSection({ base, onDownloaded }: { base: string; onDownloaded: (
   }, [base, debouncedQuery])
 
   // Poll fetch status continuously while this view is mounted so a download
-  // kicked off earlier (or from a previous mount) still shows live progress,
-  // and stop the interval once it settles into done/error/idle.
+  // kicked off earlier (or from a previous mount) still shows live progress.
+  //
+  // NOTE on a bug that used to live here: this used to also call an
+  // `onDownloaded()` callback that bumped a `refreshKey` on a <ModelsTab>
+  // reused inline in this same view, to refresh the local models list
+  // after a download finished. That callback fired on *every* tick where
+  // `status === 'done'` (no edge-detection), and the backend's fetch_state
+  // (a module-level dict in pleiades/webui/server.py) never resets back to
+  // "idle" after a download completes -- it stays "done" forever. So once
+  // any model had ever been downloaded, this 1s poll re-fired the callback
+  // forever, remounting the local models list once a second, permanently
+  // ("local models is spazzing"). Splitting Local Models out into its own
+  // top-level section (LocalModelsView, mounted independently of this
+  // download view) removes the coupling entirely -- there is no longer
+  // anything here for a download-status poll to remount.
   useEffect(() => {
     const tick = async (): Promise<void> => {
       try {
         const s = await fetchStatus(base)
         setStatus(s)
-        if (s.status === 'done') onDownloaded()
       } catch {
         // ignore transient poll failures
       }
@@ -170,7 +181,7 @@ function HfSearchSection({ base, onDownloaded }: { base: string; onDownloaded: (
       )}
       {status.status === 'done' && status.result && (
         <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
-          Downloaded and registered “{status.result.name}”. See Local models below.
+          Downloaded and registered “{status.result.name}”. Find it in the Local Models section.
         </div>
       )}
 
@@ -388,36 +399,54 @@ function CloudModelsSection({ base }: { base: string }): React.JSX.Element {
   )
 }
 
-/** Model Foundry: search Hugging Face for GGUF repos, plan quant placement
- * for this machine, download with live progress, manage already-registered
- * local models (reuses the Settings "Models" tab lifecycle logic rather
- * than duplicating it), and browse/assign cloud models (OpenRouter /
- * Ollama Cloud) to a character. */
+type AcquireTab = 'huggingface' | 'cloud'
+
+const ACQUIRE_TABS: { key: AcquireTab; label: string }[] = [
+  { key: 'huggingface', label: 'Hugging Face' },
+  { key: 'cloud', label: 'Cloud Providers' }
+]
+
+/** Model Foundry: acquiring new models only (the reorg the owner asked for
+ * split "already registered" out into its own top-level Local Models
+ * section — see LocalModelsView / Sidebar). What's left here is purely
+ * about getting a new model onto/available to this install, and even
+ * within that the two very different acquisition paths — searching
+ * Hugging Face for a GGUF to download and plan quantization for, versus
+ * browsing already-hosted cloud models (OpenRouter / Ollama Cloud) to
+ * assign to a character — are now separate tabs instead of two sections
+ * stacked in one scroll, so they read as structurally distinct rather
+ * than one mixed list. */
 function ModelFoundryView({ base }: ModelFoundryViewProps): React.JSX.Element {
-  const [refreshKey, setRefreshKey] = useState(0)
+  const [tab, setTab] = useState<AcquireTab>('huggingface')
 
   return (
     <div className="h-full w-full overflow-y-auto bg-bg-app px-6 py-6">
-      <div className="mx-auto flex max-w-3xl flex-col gap-8">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6">
         <div>
           <h1 className="mb-1 text-lg font-semibold text-ink-bright">Model Foundry</h1>
           <p className="text-sm text-ink-dim">
-            Search Hugging Face, plan quantization for this machine, and download GGUF models.
+            Acquire a new model — search Hugging Face and download a GGUF planned for this machine's
+            hardware, or browse cloud providers to assign a hosted model to a character.
           </p>
-          <div className="mt-4">
-            <HfSearchSection base={base} onDownloaded={() => setRefreshKey((k) => k + 1)} />
-          </div>
         </div>
 
-        <div>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-faint">Local models</h2>
-          <ModelsTab key={refreshKey} base={base} />
+        <div className="flex gap-1 border-b border-border">
+          {ACQUIRE_TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`rounded-t-lg px-3 py-2 text-sm font-medium transition ${
+                tab === t.key
+                  ? 'border-b-2 border-accent text-ink-bright'
+                  : 'text-ink-dim hover:text-ink'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
-        <div>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-faint">Cloud models</h2>
-          <CloudModelsSection base={base} />
-        </div>
+        {tab === 'huggingface' ? <HfSearchSection base={base} /> : <CloudModelsSection base={base} />}
       </div>
     </div>
   )

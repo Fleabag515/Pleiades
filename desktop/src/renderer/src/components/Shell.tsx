@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { createChat, deleteChat, getChat, listChats, listProfiles } from '../lib/api'
 import type { ChatDetail, ChatSummary, Profile } from '../lib/types'
 import ChatView from './ChatView'
+import LocalModelsView from './LocalModelsView'
 import ModelFoundryView from './ModelFoundryView'
 import Sidebar, { type Section } from './Sidebar'
 import SettingsPanel from './SettingsPanel'
@@ -77,7 +78,7 @@ function Shell({ base }: ShellProps): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-bg-app text-ink">
+    <div className="flex h-full w-full overflow-hidden bg-bg-app text-ink">
       <Sidebar
         base={base}
         section={section}
@@ -106,6 +107,8 @@ function Shell({ base }: ShellProps): React.JSX.Element {
             onNewChat={newChat}
             onChatChanged={refreshChats}
           />
+        ) : section === 'models' ? (
+          <LocalModelsView base={base} />
         ) : (
           <ModelFoundryView base={base} />
         )}

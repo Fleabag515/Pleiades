@@ -2,7 +2,7 @@ import type { ChatSummary, Profile } from '../lib/types'
 import { relativeTime } from '../lib/format'
 import Avatar from './Avatar'
 
-export type Section = 'chats' | 'foundry'
+export type Section = 'chats' | 'models' | 'foundry'
 
 interface SidebarProps {
   base: string
@@ -19,12 +19,26 @@ interface SidebarProps {
   onOpenSettings: () => void
 }
 
+const SECTIONS: { key: Section; label: string }[] = [
+  { key: 'chats', label: 'Chats' },
+  { key: 'models', label: 'Local Models' },
+  { key: 'foundry', label: 'Foundry' }
+]
+
 /** Real Claude Desktop's sidebar (measured live via its accessibility
- * tree): ~300px wide, a two-way segmented mode switch at the very top
- * (their "Home"/"Code" -> our "Chats"/"Model Foundry"), tight ~28-32px
- * list-item rows, and a dim uppercase section header above the chat
- * list. This mirrors that density instead of the previous ad-hoc
- * spacing. */
+ * tree): ~300px wide, a segmented mode switch at the very top, tight
+ * ~28-32px list-item rows, and a dim uppercase section header above the
+ * chat list. This mirrors that density instead of the previous ad-hoc
+ * spacing.
+ *
+ * The mode switch is now three-way, not two: "Local Models" (already-
+ * registered/running GGUFs — start/stop/logs) is split out into its own
+ * top-level section, a sibling of Chats and Foundry, rather than being
+ * lumped inside the model-download view. "Foundry" is now scoped purely
+ * to *acquiring* new models (Hugging Face search + cloud browsing) — see
+ * ModelFoundryView. This was an explicit reorg ask: local vs. download
+ * needed to read as organizationally separate in the nav, not just
+ * internally in code. */
 function Sidebar({
   base,
   section,
@@ -43,26 +57,21 @@ function Sidebar({
     <aside className="flex h-full w-[300px] flex-none flex-col bg-bg-sidebar">
       <div className="p-2.5 pb-2">
         <div className="flex gap-0.5 rounded-lg bg-bg-000/40 p-0.5">
-          <button
-            onClick={() => onSectionChange('chats')}
-            className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-              section === 'chats' ? 'bg-bg-400 text-ink-bright' : 'text-ink-dim hover:text-ink'
-            }`}
-          >
-            Chats
-          </button>
-          <button
-            onClick={() => onSectionChange('foundry')}
-            className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-              section === 'foundry' ? 'bg-bg-400 text-ink-bright' : 'text-ink-dim hover:text-ink'
-            }`}
-          >
-            Model Foundry
-          </button>
+          {SECTIONS.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => onSectionChange(s.key)}
+              className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+                section === s.key ? 'bg-bg-400 text-ink-bright' : 'text-ink-dim hover:text-ink'
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {section === 'chats' ? (
+      {section === 'chats' && (
         <>
           <div className="px-2.5 pb-2">
             <button
@@ -131,13 +140,28 @@ function Sidebar({
             </div>
           </div>
         </>
-      ) : (
+      )}
+
+      {section === 'models' && (
+        <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2 pt-1">
+          <div className="mb-1 px-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
+            Local Models
+          </div>
+          <div className="px-2 py-2 text-xs text-ink-faint">
+            Models already registered on this machine. Start, stop, and inspect them in the main panel — to
+            add a new model, switch to Foundry.
+          </div>
+        </div>
+      )}
+
+      {section === 'foundry' && (
         <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2 pt-1">
           <div className="mb-1 px-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
             Model Foundry
           </div>
           <div className="px-2 py-2 text-xs text-ink-faint">
-            Search Hugging Face, plan quantization, download, and manage models in the main panel.
+            Acquire a new model: search Hugging Face and plan quantization, or browse cloud providers
+            (OpenRouter / Ollama Cloud) in the main panel.
           </div>
         </div>
       )}
