@@ -53,6 +53,38 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     # prefill fork), which binary we prefer depends on whether THIS model
     # is MoE.
     meta = read_gguf_meta(model_path)
+
+    # Feature-flagged, off by default (docs/specs/2026-07-21-native-
+    # inference-engine-design.md, Phase 5): the from-scratch libllama-based
+    # engine, once it clears the parity bar Phase 4 benchmarked. Kept as
+    # its own branch with its own minimal command construction rather than
+    # slotting into the native-llama-server branch below -- that branch
+    # assumes whatever binary it gets back understands llama-server's full
+    # flag set (flash-attention toggle, KV quantization, MoE expert
+    # offload, speculative decoding), none of which this engine implements
+    # yet. See find_native_cpp_engine()'s own docstring for the reasoning
+    # (checked against a second independent opinion, not just assumed).
+    if os.environ.get("PLEIADES_ENGINE", "").lower() == "pleiades_native":
+        native_cpp = runtime.find_native_cpp_engine()
+        if native_cpp:
+            n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path)
+            launch_ctx = n_ctx_max
+            forced = None
+            if not (isinstance(n_gpu_layers, str) and n_gpu_layers.strip().lower() in ("", "auto")):
+                try:
+                    forced = int(n_gpu_layers)
+                except (TypeError, ValueError):
+                    forced = None
+            ngl = forced if forced is not None else 0  # no autofit/MoE-split support yet -- CPU-only until Phase 6+
+            cmd = [native_cpp, model_path, host, str(port), str(launch_ctx), str(ngl), name]
+            why = (f"runtime=pleiades-native-engine (Phase 5, experimental) "
+                   f"n_ctx={launch_ctx} n_gpu_layers={ngl}")
+            return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max)
+        print("[launch] PLEIADES_ENGINE=pleiades_native requested but "
+              "pleiades-engine-server not found (build via `cmake --build "
+              "engine/build`, or set PLEIADES_NATIVE_CPP_ENGINE_BIN) -- "
+              "falling back to the normal runtime selection.", flush=True)
+
     cps = runtime.caps(prefer_moe_opts=meta.is_moe)
     native = runtime.find_native(prefer_moe_opts=meta.is_moe) if cps.native else None
     # caps before resolve_context: a MoE model's real ceiling depends on

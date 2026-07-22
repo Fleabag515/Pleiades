@@ -74,6 +74,42 @@ def find_native(prefer_moe_opts: bool = False) -> Optional[str]:
     return shutil.which("llama-server")
 
 
+def find_native_cpp_engine() -> Optional[str]:
+    """Path to `pleiades-engine-server` -- the from-scratch libllama-based
+    engine built under `engine/` (see
+    docs/specs/2026-07-21-native-inference-engine-design.md), NOT the
+    upstream `llama-server` binary `find_native()` resolves above.
+
+    Deliberately kept separate from `find_native()`/`rank()`: that function
+    returns a path assumed to accept llama-server's actual CLI flag shape
+    (-m/-c/-ngl/--jinja/-fa/-ctk/-ctv/--n-cpu-moe/--spec-type/...), and
+    `build_command()` builds those flags assuming whatever binary it gets
+    back understands all of them. `pleiades-engine-server` only supports
+    load/resize/chat-completion today -- no flash-attention toggle, no KV
+    quantization, no MoE expert offload, no speculative decoding. Reusing
+    the same ranked list would either silently drop flags it doesn't
+    understand or require brittle per-flag filtering inside that branch.
+    A second consultant (Kimi, asked independently) agreed: keep this a
+    clearly separate resolver + a clearly separate `launch.py` branch,
+    with its own feature flag, until real feature parity exists -- don't
+    make the capability gap implicit.
+
+    Resolution order: PLEIADES_NATIVE_CPP_ENGINE_BIN (explicit override) ->
+    `engine/build/pleiades-engine-server` relative to this checkout (how
+    Phase 1-4 built it locally; there's no `pleiades runtime install`-style
+    packaged release of this yet) -> PATH.
+    """
+    exe = "pleiades-engine-server.exe" if os.name == "nt" else "pleiades-engine-server"
+    override = os.environ.get("PLEIADES_NATIVE_CPP_ENGINE_BIN", "").strip()
+    if override and Path(override).is_file():
+        return override
+    repo_root = Path(__file__).resolve().parent.parent
+    local_build = repo_root / "engine" / "build" / exe
+    if local_build.is_file():
+        return str(local_build)
+    return shutil.which(exe)
+
+
 def native_env(binary: str) -> dict:
     """Environment needed to RUN a managed llama-server binary.
 

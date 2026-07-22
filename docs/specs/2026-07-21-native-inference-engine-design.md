@@ -351,7 +351,7 @@ recurrent state, only a handful of real attention layers have dense
 KV growth with `n_ctx`; see the Phase 2 "side finding" on `qwen35moe` not
 yet being in `_HYBRID_ARCHS`).
 
-## Phase 5 — Cutover
+## Phase 5 — Cutover (done, results below)
 
 **Goal:** wire the new engine into `pleiades/runtime.py::find_native()` as a
 third ranked option and `pleiades/launch.py::build_command()`, **feature-flagged
@@ -363,6 +363,55 @@ default only after that; demote native `llama-server` to an explicit fallback
 **Anti-patterns:** no silent default flip. This follows the same "prove it on
 the real 35B MoE model first" discipline already used for the `moe-fork`
 benchmark note in `runtime.py`.
+
+**Results (2026-07-22):** wired in with one real deviation from this phase's
+original phrasing, made deliberately and checked against a second opinion
+rather than silently drifted into: the plan said to wire the new engine into
+`find_native()`/`rank()` as a third ranked option. That function returns a
+path assumed to accept native `llama-server`'s actual CLI flag shape
+(`-m`/`-c`/`-ngl`/`--jinja`/`-fa`/`-ctk`/`-ctv`/`--n-cpu-moe`/`--spec-type`/...),
+and `build_command()`'s native branch builds those flags assuming whatever
+binary it gets back understands all of them. `pleiades-engine-server` only
+supports load/resize/chat-completion today — no flash-attention toggle, no
+KV quantization, no MoE expert offload, no speculative decoding. Slotting it
+into the same ranked list would either silently drop unsupported flags or
+require brittle per-flag filtering inside that branch. Asked Kimi
+independently (not just my own judgment) — same conclusion: separate
+resolver, separate `launch.py` branch, own feature flag, unify later once
+real feature parity exists.
+
+Shipped: `runtime.py::find_native_cpp_engine()` (own docstring explains the
+above) — resolution order `PLEIADES_NATIVE_CPP_ENGINE_BIN` override ->
+`engine/build/pleiades-engine-server` relative to the checkout (no
+`pleiades runtime install`-style packaged release of this yet, that's a
+later concern) -> PATH. `launch.py::build_command()` gained an early branch,
+gated on `PLEIADES_ENGINE=pleiades_native` (unset/anything else = 100%
+today's existing behavior, matching the anti-pattern above): builds the
+minimal command `pleiades-engine-server <model> <host> <port> <n_ctx>
+<n_gpu_layers> <alias>`, forces `n_gpu_layers=0` (CPU-only — no
+autofit/MoE-split integration yet, an honest limitation, not silently
+assumed-away) unless explicitly overridden, and falls back to normal
+runtime selection with a printed warning if the binary isn't found rather
+than crashing. `http_server.cpp`'s `main()` gained an explicit `host`
+argument (was hardcoded to `127.0.0.1`) so `build_command()`'s caller-
+supplied host is honored rather than silently ignored, even though every
+registered model in practice uses `127.0.0.1` today.
+
+Verified end-to-end via the REAL production path, not just an isolated
+function call: `PLEIADES_ENGINE=pleiades_native pleiades model start
+qwen2.5-0.5b-instruct` — registry shows it running, correct binary/args
+(`pleiades-engine-server ... 32768 0 qwen2.5-0.5b-instruct`), a real
+`/v1/chat/completions` request through the registered port returns a
+correct answer ("Tokyo" for "capital of Japan"), clean startup log, and
+`pleiades model stop` tears it down cleanly leaving the registry in the
+expected state. Full existing pytest suite still green (239 passed, same
+1 pre-existing unrelated `test_sandbox.py` flake noted throughout this
+whole effort) — the new branch didn't disturb anything on the default path.
+
+**Still off by default** — `PLEIADES_ENGINE` unset or any value other than
+`pleiades_native` behaves exactly as before. Flipping the default, or
+adding autofit/MoE-offload support to this branch, is not part of this
+phase.
 
 ## Phase 6 — Prefix-cache optimization (post-parity)
 

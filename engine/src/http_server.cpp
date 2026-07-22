@@ -156,15 +156,16 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <model.gguf> <port> [n_ctx] [n_gpu_layers] [alias]\n", argv[0]);
+    if (argc < 4) {
+        std::fprintf(stderr, "usage: %s <model.gguf> <host> <port> [n_ctx] [n_gpu_layers] [alias]\n", argv[0]);
         return 2;
     }
     std::string model_path = argv[1];
-    int port = std::atoi(argv[2]);
-    int n_ctx = argc > 3 ? std::atoi(argv[3]) : 4096;
-    int n_gpu_layers = argc > 4 ? std::atoi(argv[4]) : 0;
-    std::string alias = argc > 5 ? argv[5] : "pleiades-engine";
+    std::string host = argv[2];
+    int port = std::atoi(argv[3]);
+    int n_ctx = argc > 4 ? std::atoi(argv[4]) : 4096;
+    int n_gpu_layers = argc > 5 ? std::atoi(argv[5]) : 0;
+    std::string alias = argc > 6 ? argv[6] : "pleiades-engine";
 
     llama_backend_init();
 
@@ -224,9 +225,9 @@ int main(int argc, char** argv) {
             }
         });
 
-        std::printf("[pleiades-engine-server] listening on 127.0.0.1:%d (n_ctx=%d, ceiling=%d, alias=%s)\n", port,
-                    state.ctx.n_ctx(), state.ctx.n_ctx_max(), alias.c_str());
-        svr.listen("127.0.0.1", port);
+        std::printf("[pleiades-engine-server] listening on %s:%d (n_ctx=%d, ceiling=%d, alias=%s)\n",
+                    host.c_str(), port, state.ctx.n_ctx(), state.ctx.n_ctx_max(), alias.c_str());
+        svr.listen(host.c_str(), port);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         llama_backend_free();
