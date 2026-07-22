@@ -3,10 +3,10 @@ browser_view.py — a genuinely live, embeddable browser view for the desktop
 app's right panel.
 
 This is deliberately a SEPARATE capability from ``harness/builtins/browser.py``
-(the Camoufox-first stealth browser the agent itself drives autonomously,
-used elsewhere including the Discord bot). That module stays untouched. This
-one exists purely so a human, looking at the desktop app's right panel, can
-watch (and optionally drive) a real browser window live.
+(the Camoufox-first stealth browser the agent itself drove autonomously
+before the chat path was unified with this module -- see ``tools/browser.py``
+for that unification and why the harness module itself stays untouched,
+still used as-is by the Discord bot and ``pleiades work`` jobs).
 
 Why Playwright + Chromium here, specifically, and not Camoufox/Firefox: the
 embedding trick this needs is Chrome DevTools Protocol's screencast feature
@@ -15,15 +15,28 @@ actual rendered frames of the page over a CDP session as they're painted —
 Firefox (and therefore Camoufox) has no equivalent in CDP/BiDi today. Chromium
 is the only backend that can do this.
 
+Headless by default (owner feedback: a real OS browser window popping open
+unasked is not wanted). Headless Chromium still runs the full rendering
+pipeline and still emits ``Page.screencastFrame`` events over CDP, so the
+panel's live view works identically either way -- headless just means there's
+no on-screen window. ``BrowserViewSession.open_separate()`` is the explicit,
+human-triggered escape hatch: it tears down and relaunches the SAME
+persistent-profile context headed (a real OS window), so logins/cookies
+carry over exactly, and continues streaming frames to the panel at the same
+time. (Chosen over "open a plain system browser" because that would be a
+different profile/session entirely -- the user would lose the very state,
+and the very "same session as chat" property, this whole feature is for.)
+
 Architecture
 ------------
 One ``BrowserViewSession`` per character, created lazily and kept in the
 module-level ``_SESSIONS`` registry. Each session:
 
-  * Launches a headed, persistent-context Chromium via Playwright's *async*
-    API (``playwright.async_api``), so it shares the same asyncio event loop
+  * Launches a persistent-context Chromium via Playwright's *async* API
+    (``playwright.async_api``), so it shares the same asyncio event loop
     FastAPI/uvicorn already run on — no extra thread, no thread-safety
-    headaches bridging callbacks back into async code.
+    headaches bridging callbacks back into async code. Headless unless
+    ``open_separate()`` has been called (see ``self.headed``).
   * Profile dir: ``<profile_dir>/browser_chromium`` — a sibling of (never the
     same as) the Camoufox tool's ``<profile_dir>/browser`` dir, so the two
     tools' persistent state never collides.
@@ -39,10 +52,18 @@ module-level ``_SESSIONS`` registry. Each session:
     / ``insertText`` — real CDP input dispatch, not Playwright's higher-level
     ``page.mouse``/``page.keyboard`` (which do extra actionability/visibility
     waiting that fights a raw pixel-coordinate click coming from a canvas).
+    That's for the panel's own pointer/keyboard forwarding; the chat-path
+    tool (``tools/browser.py``) instead drives ``self.page`` with normal
+    Playwright page-level calls (click/fill/etc.), which is fine for that
+    caller and still shows up in the screencast either way (screencast
+    captures paints, regardless of what triggered them).
 
 This module owns no FastAPI routes itself — ``server.py`` wires small REST
-endpoints (start/stop/status/navigate) plus one WebSocket endpoint
-(frames out, input events in) around it.
+endpoints (start/stop/status/navigate/resize/open-separate) plus one
+WebSocket endpoint (frames out, input events in) around it. ``server.py``
+also calls ``set_main_loop()`` once at startup so ``tools/browser.py`` (the
+chat-path model tool, which runs synchronously on a per-turn worker thread —
+see engine.py) can bridge into this module's async sessions via ``run_sync``.
 """
 
 from __future__ import annotations
@@ -65,7 +86,9 @@ def _ensure_display() -> None:
     name: headed Chromium needs an X display, and the webui backend is
     sometimes started from a process that doesn't inherit the desktop
     session's DISPLAY. Default to :0 (single-seat machine); override with
-    PLEIADES_DISPLAY."""
+    PLEIADES_DISPLAY. Not needed for the default headless path, but still
+    called unconditionally so ``open_separate()`` (which DOES need a
+    display) never has to remember to call it."""
     if os.environ.get("DISPLAY"):
         return
     os.environ["DISPLAY"] = os.environ.get("PLEIADES_DISPLAY", ":0")
@@ -98,6 +121,44 @@ def chromium_profile_dir(name: str) -> str:
 
 
 _DEFAULT_VIEWPORT = {"width": 1280, "height": 800}
+_EXPANDED_VIEWPORT = {"width": 1600, "height": 1000}
+
+# ----------------------------------------------------------------------- #
+# sync/async bridge for tools/browser.py (the chat-path model tool)
+# ----------------------------------------------------------------------- #
+
+_MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Called once from server.py's FastAPI startup hook. A chat turn (and
+    therefore tools/browser.py's BrowserTool.run) executes synchronously on
+    its own worker thread, not on this module's asyncio loop -- run_sync()
+    is the one bridge point that lets that sync call drive these async
+    sessions. Deliberately left unset in any process that never starts the
+    webui/desktop backend (the Discord bot, `pleiades work` jobs): those
+    call main_loop_available() and get False, and fall back to the
+    harness's Camoufox browser unchanged -- this module never affects them."""
+    global _MAIN_LOOP
+    _MAIN_LOOP = loop
+
+
+def main_loop_available() -> bool:
+    return _MAIN_LOOP is not None and _MAIN_LOOP.is_running()
+
+
+def run_sync(coro: Any, timeout: float = 45.0) -> Any:
+    """Run a browser_view coroutine from a synchronous caller (tools/browser.py),
+    blocking that thread for the result. Raises plainly if no loop has been
+    bound yet (main_loop_available() should be checked first by callers that
+    want a graceful fallback instead of an exception)."""
+    if not main_loop_available():
+        raise RuntimeError(
+            "browser_view has no running event loop bound -- not running "
+            "inside the webui/desktop backend process."
+        )
+    fut = asyncio.run_coroutine_threadsafe(coro, _MAIN_LOOP)
+    return fut.result(timeout=timeout)
 
 
 class BrowserViewSession:
@@ -110,6 +171,7 @@ class BrowserViewSession:
         self.error: Optional[str] = None
         self.url: Optional[str] = None
         self.interactive = True          # bidirectional input is wired up (see snapshot())
+        self.headed = False              # True after open_separate() -- a real OS window
 
         self._playwright = None
         self._context = None
@@ -119,6 +181,14 @@ class BrowserViewSession:
         self._subscribers: "set[asyncio.Queue]" = set()
         self._last_frame: Optional[bytes] = None
 
+    @property
+    def page(self):
+        """Public accessor for tools/browser.py -- the chat-path tool drives
+        this Playwright Page directly with normal page-level calls
+        (click/fill/inner_text/...); it's still the exact same page the
+        panel's screencast is watching."""
+        return self._page
+
     # -- lifecycle --------------------------------------------------------
     async def start(self, start_url: str = "") -> None:
         async with self._lock:
@@ -127,39 +197,7 @@ class BrowserViewSession:
             self.status = "starting"
             self.error = None
             try:
-                _ensure_display()
-                _ensure_browsers_path()
-                from playwright.async_api import async_playwright
-
-                profile_dir = chromium_profile_dir(self.character)
-                self._playwright = await async_playwright().start()
-                self._context = await self._playwright.chromium.launch_persistent_context(
-                    user_data_dir=profile_dir,
-                    headless=False,
-                    viewport=self.viewport,
-                    args=["--window-position=0,0"],
-                )
-                self._page = (
-                    self._context.pages[0] if self._context.pages else await self._context.new_page()
-                )
-                self._cdp = await self._context.new_cdp_session(self._page)
-                await self._cdp.send("Page.enable")
-                self._cdp.on("Page.screencastFrame", self._on_frame)
-                await self._cdp.send(
-                    "Page.startScreencast",
-                    {
-                        "format": "jpeg",
-                        "quality": 60,
-                        "maxWidth": self.viewport["width"],
-                        "maxHeight": self.viewport["height"],
-                        "everyNthFrame": 1,
-                    },
-                )
-                if start_url:
-                    if not start_url.startswith(("http://", "https://")):
-                        start_url = "https://" + start_url
-                    await self._page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
-                self.url = self._page.url
+                await self._launch(headless=True, start_url=start_url)
                 self.status = "running"
             except Exception as e:  # surface to the UI, never raise into uvicorn
                 self.status = "error"
@@ -167,11 +205,93 @@ class BrowserViewSession:
                 await self._cleanup()
                 raise
 
+    async def open_separate(self) -> None:
+        """Switch this running session to a real headed OS window, in place.
+        Playwright can't flip headless<->headed on a live browser (it's a
+        launch-time option), so this tears down and relaunches the same
+        persistent profile dir at the same URL -- cookies/logins carry over,
+        and the CDP screencast (and therefore the panel's live view) keeps
+        working exactly as before, now alongside a real visible window."""
+        async with self._lock:
+            if self.status != "running":
+                raise RuntimeError("Start the browser session before opening it separately.")
+            current_url = self.url
+            await self._cleanup()
+            self.status = "starting"
+            try:
+                await self._launch(headless=False, start_url=current_url or "")
+                self.status = "running"
+            except Exception as e:
+                self.status = "error"
+                self.error = str(e)
+                await self._cleanup()
+                raise
+
+    async def resize(self, width: int, height: int) -> None:
+        """Resize the page viewport (used by the panel's expand/fullscreen
+        view to request a bigger, sharper frame instead of just upscaling a
+        blurry small one) and restart the screencast at the new dimensions."""
+        async with self._lock:
+            if self._page is None:
+                raise RuntimeError("Browser session is not running.")
+            self.viewport = {"width": max(320, int(width)), "height": max(240, int(height))}
+            await self._page.set_viewport_size(self.viewport)
+            await self._restart_screencast()
+
+    async def _launch(self, headless: bool, start_url: str = "") -> None:
+        _ensure_display()
+        _ensure_browsers_path()
+        from playwright.async_api import async_playwright
+
+        profile_dir = chromium_profile_dir(self.character)
+        self._playwright = await async_playwright().start()
+        launch_kwargs: dict[str, Any] = dict(
+            user_data_dir=profile_dir,
+            headless=headless,
+            viewport=self.viewport,
+        )
+        if not headless:
+            launch_kwargs["args"] = ["--window-position=0,0"]
+        self._context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+        self._page = (
+            self._context.pages[0] if self._context.pages else await self._context.new_page()
+        )
+        self._cdp = await self._context.new_cdp_session(self._page)
+        await self._cdp.send("Page.enable")
+        self._cdp.on("Page.screencastFrame", self._on_frame)
+        await self._start_screencast()
+        if start_url:
+            if not start_url.startswith(("http://", "https://")):
+                start_url = "https://" + start_url
+            await self._page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
+        self.url = self._page.url
+        self.headed = not headless
+
+    async def _start_screencast(self) -> None:
+        await self._cdp.send(
+            "Page.startScreencast",
+            {
+                "format": "jpeg",
+                "quality": 60,
+                "maxWidth": self.viewport["width"],
+                "maxHeight": self.viewport["height"],
+                "everyNthFrame": 1,
+            },
+        )
+
+    async def _restart_screencast(self) -> None:
+        try:
+            await self._cdp.send("Page.stopScreencast")
+        except Exception:
+            pass
+        await self._start_screencast()
+
     async def stop(self) -> None:
         async with self._lock:
             await self._cleanup()
             self.status = "stopped"
             self.url = None
+            self.headed = False
 
     async def _cleanup(self) -> None:
         cdp, self._cdp = self._cdp, None
@@ -310,6 +430,7 @@ class BrowserViewSession:
             "viewport": self.viewport,
             "interactive": self.interactive,
             "backend": "playwright-chromium",
+            "headed": self.headed,
         }
 
 
@@ -327,7 +448,7 @@ def get_session(name: str) -> BrowserViewSession:
 async def shutdown_all() -> None:
     """Close every live session — called from the FastAPI shutdown hook so a
     normal app quit (SIGTERM -> uvicorn graceful shutdown) never leaves an
-    orphaned headed Chromium process behind."""
+    orphaned headed OR headless Chromium process behind."""
     for s in list(_SESSIONS.values()):
         try:
             await s.stop()

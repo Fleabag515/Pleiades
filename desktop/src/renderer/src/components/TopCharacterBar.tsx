@@ -16,6 +16,11 @@ interface TopCharacterBarProps {
  * at the end that opens character creation. Clicking a bubble switches the
  * active character, which (via ChatSessionsProvider) always shows that
  * character's one persistent live chat.
+ *
+ * Owner feedback round 2: no border/divider under this bar anymore -- the
+ * chat content below (see ChatView's `.scroll-fade-top`) now fades out as it
+ * scrolls underneath instead, so the boundary reads as a soft mask, not a
+ * hard line.
  */
 function TopCharacterBar({
   base,
@@ -25,7 +30,7 @@ function TopCharacterBar({
   onOpenCreate
 }: TopCharacterBarProps): React.JSX.Element {
   return (
-    <div className="flex flex-none items-center gap-2 overflow-x-auto border-b border-border bg-bg-app px-4 py-3">
+    <div className="flex flex-none items-center gap-2 overflow-x-auto bg-bg-app px-4 py-3">
       {profiles.map((p) => (
         <button
           key={p.name}

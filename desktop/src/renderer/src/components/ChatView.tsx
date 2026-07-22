@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useChatSession, useChatStoreActions } from '../lib/chatStore'
 import ApprovalCard from './ApprovalCard'
 import Composer from './Composer'
-import HistoryOverlay from './HistoryOverlay'
 import MessageBubble from './MessageBubble'
 import ReasoningBlock from './ReasoningBlock'
 import RightPanel from './RightPanel'
@@ -10,6 +9,7 @@ import RightPanel from './RightPanel'
 interface ChatViewProps {
   base: string
   character: string
+  rightPanelOpen: boolean
 }
 
 /**
@@ -23,27 +23,31 @@ interface ChatViewProps {
  * opening Settings and coming back never resets or loses anything that
  * streamed in the meantime.
  *
- * Post-launch owner feedback round: this used to render its own h-14
- * header bar (avatar + character name + the History trigger) directly
- * below `TopCharacterBar`'s bubble row. The owner pointed out that bar's
- * name label was redundant — the active bubble up top is already
- * highlighted — so it's gone; the History trigger it also held moved down
- * to a small icon docked under `Composer` instead (see the `onOpenHistory`
- * prop passed below), separate from the right-panel toggle.
+ * Owner feedback round 2:
+ *   - The right-panel open/closed toggle used to float here, oddly placed
+ *     relative to everything else. It's lifted up to Shell.tsx now, so it
+ *     can sit in the same row and at the same size as the Settings
+ *     cogwheel bubble -- this component just receives `rightPanelOpen` as a
+ *     prop and renders RightPanel accordingly.
+ *   - The History trigger (previously its own icon under Composer) is
+ *     retired; History now lives inside RightPanel as a collapsible block.
+ *   - The scrollable message list now carries `.scroll-fade-top` (see
+ *     main.css) so content fades to transparent as it scrolls up underneath
+ *     TopCharacterBar, instead of being hard-clipped at a bordered edge --
+ *     TopCharacterBar's own bottom border was also removed, so there's
+ *     nothing but that soft mask marking the boundary.
  *
- * Phase 14: the outer return is now a real flex ROW — `[chat column]
+ * Phase 14: the outer return is a real flex ROW — `[chat column]
  * [RightPanel]` — instead of a single column with an absolutely-positioned
  * overlay. RightPanel is always mounted (so its own width transition can
  * animate open/close); only its wrapper's width changes, which is why
  * opening it visibly narrows this chat column instead of floating on top
- * of it. See RightPanel.tsx for why History isn't duplicated in there.
+ * of it.
  */
-function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
+function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX.Element {
   const session = useChatSession(character)
   const { ensureLiveChat, send, stop, respondApproval } = useChatStoreActions()
   const scrollRef = useRef<HTMLDivElement>(null)
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [rightPanelOpen, setRightPanelOpen] = useState(false)
 
   useEffect(() => {
     if (character) ensureLiveChat(base, character)
@@ -66,7 +70,10 @@ function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
   return (
     <div className="flex h-full flex-1 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-app">
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-3">
+        <div
+          ref={scrollRef}
+          className="scroll-fade-top min-h-0 flex-1 overflow-y-auto py-3"
+        >
           {session.loading && session.history.length === 0 && (
             <div className="px-5 py-4 text-sm text-ink-dim">Loading…</div>
           )}
@@ -126,31 +133,10 @@ function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
           streaming={session.streaming}
           onSend={(text) => send(base, character, text)}
           onStop={() => stop(base, character)}
-          onOpenHistory={() => setHistoryOpen(true)}
         />
-
-        {/* Toggle for the right-side panel (progress/scheduled-tasks/browser) —
-          see RightPanel.tsx. Opening it squishes this column via the flex
-          row in the outer return, it never overlays on top. */}
-        <button
-          onClick={() => setRightPanelOpen((v) => !v)}
-          title={rightPanelOpen ? 'Close panel' : 'Progress, scheduled tasks &amp; browser panel'}
-          className="absolute bottom-24 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-100/90 text-ink-dim shadow-lg backdrop-blur transition hover:bg-bg-surface-hover hover:text-ink"
-        >
-          <span aria-hidden>&#9776;</span>
-        </button>
-
-        {historyOpen && (
-          <HistoryOverlay base={base} character={character} onClose={() => setHistoryOpen(false)} />
-        )}
       </div>
 
-      <RightPanel
-        base={base}
-        character={character}
-        open={rightPanelOpen}
-        onClose={() => setRightPanelOpen(false)}
-      />
+      <RightPanel base={base} character={character} open={rightPanelOpen} />
     </div>
   )
 }

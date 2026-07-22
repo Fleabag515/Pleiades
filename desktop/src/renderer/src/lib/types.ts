@@ -291,6 +291,7 @@ export interface BrowserViewStatus {
   viewport: { width: number; height: number }
   interactive: boolean
   backend: string
+  headed: boolean
 }
 
 export interface CloudSearchResponse {

@@ -445,3 +445,34 @@ export function browserViewWsUrl(base: string, character: string): string {
   const wsBase = base.replace(/^http/, 'ws')
   return `${wsBase}/api/profiles/${encodeURIComponent(character)}/browser-view/ws`
 }
+
+/** Explicit, human-triggered escape hatch (owner brief item 5): switches the
+ * SAME session to a real headed OS window, in place. Never called
+ * automatically -- only from the panel's "Open separately" button. */
+export async function browserViewOpenSeparate(
+  base: string,
+  character: string
+): Promise<BrowserViewStatus> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(character)}/browser-view/open-separate`, {
+      method: 'POST'
+    })
+  )
+}
+
+/** Used by the panel's expand/fullscreen view to request a bigger rendered
+ * viewport instead of just upscaling a blurry small one. */
+export async function browserViewResize(
+  base: string,
+  character: string,
+  width: number,
+  height: number
+): Promise<BrowserViewStatus> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(character)}/browser-view/resize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ width, height })
+    })
+  )
+}

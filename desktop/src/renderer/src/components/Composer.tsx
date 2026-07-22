@@ -10,7 +10,6 @@ interface ComposerProps {
   streaming: boolean
   onSend: (text: string) => void
   onStop: () => void
-  onOpenHistory: () => void
 }
 
 function modelLabel(model: string, models: ModelEntry[]): string {
@@ -24,22 +23,21 @@ function modelLabel(model: string, models: ModelEntry[]): string {
 
 /**
  * Bottom message composer: auto-growing textarea + send/stop button, plus
- * (owner brief item 5) an inline model picker docked just under the input,
- * Claude-Desktop style — replacing the old top-bar `ModelBadge`, which is
- * now retired since this fully takes over its job. Backend reality is
- * unchanged from ModelBadge's docstring: a model is a per-character setting
+ * an inline model picker docked just under the input, Claude-Desktop style
+ * — replacing the old top-bar `ModelBadge`, which is now retired since this
+ * fully takes over its job. Backend reality is unchanged from ModelBadge's
+ * docstring: a model is a per-character setting
  * (`POST /api/profiles/{name}/model`), not per-chat, so picking one here
  * reassigns the whole character.
  *
- * Post-launch owner feedback round: the History trigger used to live in
- * ChatView's now-removed header bar. The owner asked for it to get "its
- * own small dedicated icon under the chat box", separate from the
- * right-panel toggle — it now sits in this same under-input row, to the
- * right of the model picker, and just calls `onOpenHistory` (ChatView
- * still owns the `historyOpen` state and renders `HistoryOverlay` itself;
- * only the trigger's location changed).
+ * Owner feedback round 2: the History trigger that used to sit here as its
+ * own icon is retired -- History is now one of the collapsible blocks in
+ * the right panel instead (see RightPanel.tsx's HistorySection), so this
+ * row is just the model picker again. Its styling was also toned down to
+ * match the reference screenshots' understated composer controls: small
+ * muted text with just a caret, no chip/badge border or background.
  */
-function Composer({ base, character, disabled, streaming, onSend, onStop, onOpenHistory }: ComposerProps): React.JSX.Element {
+function Composer({ base, character, disabled, streaming, onSend, onStop }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
 
@@ -148,16 +146,15 @@ function Composer({ base, character, disabled, streaming, onSend, onStop, onOpen
           )}
         </div>
 
-        <div className="mt-1.5 flex items-center justify-between px-2">
+        <div className="mt-1.5 flex items-center justify-end px-2">
           <div className="min-w-0">
             {!disabled && profile && (
               <div ref={pickerRef} className="relative">
                 <button
                   onClick={() => setPickerOpen((v) => !v)}
                   title="Change the model assigned to this character"
-                  className="flex items-center gap-1 rounded-full border border-border bg-bg-surface px-2.5 py-1 text-xs text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
+                  className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-ink-faint transition hover:text-ink-dim"
                 >
-                  <span aria-hidden>⬡</span>
                   <span className="max-w-[200px] truncate">{modelLabel(profile.model, models)}</span>
                   <span aria-hidden className="text-[10px]">
                     ▾
@@ -202,15 +199,6 @@ function Composer({ base, character, disabled, streaming, onSend, onStop, onOpen
               </div>
             )}
           </div>
-
-          <button
-            onClick={onOpenHistory}
-            title="Past chats (reference only)"
-            aria-label="Chat history"
-            className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
-          >
-            <span aria-hidden>&#8986;</span>
-          </button>
         </div>
       </div>
     </div>

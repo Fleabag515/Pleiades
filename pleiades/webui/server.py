@@ -179,6 +179,11 @@ class BrowserViewNavigate(BaseModel):
     url: str
 
 
+class BrowserViewResize(BaseModel):
+    width: int
+    height: int
+
+
 class CloudModelBody(BaseModel):
     source: str
     model: str
@@ -1669,6 +1674,34 @@ def create_app() -> FastAPI:
             raise HTTPException(502, str(e))
         return {"ok": True, "url": url}
 
+    @app.post("/api/profiles/{name}/browser-view/open-separate")
+    async def browser_view_open_separate(name: str) -> dict:
+        """Explicit, human-triggered escape hatch: switch this character's
+        headless panel session to a real headed OS window (owner brief item
+        5 -- never a real window by default, only on this explicit action).
+        See BrowserViewSession.open_separate()'s docstring for why this
+        re-homes the SAME profile/session headed rather than opening a
+        separate plain browser."""
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            await session.open_separate()
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return session.snapshot()
+
+    @app.post("/api/profiles/{name}/browser-view/resize")
+    async def browser_view_resize(name: str, body: BrowserViewResize) -> dict:
+        """Used by the panel's expand/fullscreen view to request a bigger
+        rendered viewport (rather than just upscaling a blurry small one)."""
+        from .browser_view import get_session
+        session = get_session(name)
+        try:
+            await session.resize(body.width, body.height)
+        except Exception as e:
+            raise HTTPException(502, str(e))
+        return session.snapshot()
+
     @app.websocket("/api/profiles/{name}/browser-view/ws")
     async def browser_view_ws(websocket: WebSocket, name: str) -> None:
         """Frames out (binary JPEG messages), input events in (JSON: see
@@ -1708,11 +1741,25 @@ def create_app() -> FastAPI:
             sender_task.cancel()
             session.unsubscribe(queue)
 
+    @app.on_event("startup")
+    async def _bind_browser_view_loop() -> None:
+        """Capture this process's running asyncio loop so tools/browser.py
+        (the chat-path model tool, which runs synchronously on a per-turn
+        worker thread -- see engine.py) can bridge synchronous Tool.run()
+        calls into browser_view.py's async Playwright sessions. Only ever
+        set inside this webui/desktop backend process -- the Discord bot and
+        `pleiades work` jobs never call create_app()/run this, so
+        browser_view.main_loop_available() stays False there and
+        tools/browser.py falls back to the harness's Camoufox browser
+        unchanged."""
+        from .browser_view import set_main_loop
+        set_main_loop(asyncio.get_running_loop())
+
     @app.on_event("shutdown")
     async def _shutdown_browser_views() -> None:
-        """Never leave an orphaned headed Chromium behind a normal app quit
-        (Electron sends SIGTERM -> uvicorn's default signal handling runs
-        this before the process exits)."""
+        """Never leave an orphaned headed or headless Chromium behind a
+        normal app quit (Electron sends SIGTERM -> uvicorn's default signal
+        handling runs this before the process exits)."""
         from .browser_view import shutdown_all
         await shutdown_all()
 

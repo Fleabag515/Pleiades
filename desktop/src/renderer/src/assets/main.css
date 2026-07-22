@@ -93,3 +93,14 @@ body {
 .animate-tool-blink {
   animation: tool-blink 0.9s ease-in-out infinite alternate;
 }
+
+/* Owner brief item 4: content scrolling underneath the character bar fades
+   to transparent right at the boundary, instead of a hard cutoff line --
+   applied to the scrollABLE content's top edge, not the bar itself. The
+   fade band (32px) starts fully transparent at the very top and is fully
+   opaque by 32px down; content above that band is masked out as it scrolls
+   under the bar rather than being hard-clipped. */
+.scroll-fade-top {
+  mask-image: linear-gradient(to bottom, transparent 0, black 32px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 32px);
+}

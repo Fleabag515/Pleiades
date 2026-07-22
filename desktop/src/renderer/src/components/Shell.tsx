@@ -27,6 +27,7 @@ function Shell({ base }: ShellProps): React.JSX.Element {
   const [activeCharacter, setActiveCharacter] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refreshProfiles = useCallback(async () => {
@@ -60,7 +61,7 @@ function Shell({ base }: ShellProps): React.JSX.Element {
       )}
 
       <div className="min-h-0 flex-1">
-        <ChatView base={base} character={activeCharacter} />
+        <ChatView base={base} character={activeCharacter} rightPanelOpen={rightPanelOpen} />
       </div>
 
       <button
@@ -70,6 +71,19 @@ function Shell({ base }: ShellProps): React.JSX.Element {
         className="absolute bottom-4 left-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-border bg-bg-200 text-lg text-ink-dim shadow-lg transition hover:bg-bg-300 hover:text-ink"
       >
         <span aria-hidden>&#9881;</span>
+      </button>
+
+      {/* Owner feedback round 2: this used to float at bottom-24 right-4 as
+        a 9x9 button, "weirdly placed" per the owner -- now it's level with
+        (same bottom-4 row as) the Settings cogwheel and the same 11x11
+        size, just mirrored to the right edge. */}
+      <button
+        onClick={() => setRightPanelOpen((v) => !v)}
+        title={rightPanelOpen ? 'Close panel' : 'Progress, history, browser & scheduled tasks'}
+        aria-label="Toggle right panel"
+        className="absolute bottom-4 right-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-border bg-bg-200 text-lg text-ink-dim shadow-lg transition hover:bg-bg-300 hover:text-ink"
+      >
+        <span aria-hidden>&#9776;</span>
       </button>
 
       {settingsOpen && <SettingsPanel base={base} onClose={() => setSettingsOpen(false)} />}
