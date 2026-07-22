@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { useChatSession, useChatStoreActions } from '../lib/chatStore'
-import Avatar from './Avatar'
 import ApprovalCard from './ApprovalCard'
 import Composer from './Composer'
 import HistoryOverlay from './HistoryOverlay'
@@ -14,15 +13,23 @@ interface ChatViewProps {
 }
 
 /**
- * Main pane: top bar, streaming message list, composer. Owner brief item 4:
- * there's no "pick a chat" list anymore — this always shows the one live
- * chat for `character` (resolved/created by `ensureLiveChat` in
- * lib/chatStore.tsx). Owner brief item 3: unlike the old version, none of
- * the message history/streaming/approval state lives here anymore — it's
- * all read from `useChatSession`, which is backed by a Provider mounted
- * once at the app root, so switching characters or opening Settings and
- * coming back never resets or loses anything that streamed in the
- * meantime.
+ * Main pane: streaming message list + composer, no separate header bar.
+ * Owner brief item 4: there's no "pick a chat" list anymore — this always
+ * shows the one live chat for `character` (resolved/created by
+ * `ensureLiveChat` in lib/chatStore.tsx). Owner brief item 3: unlike the
+ * old version, none of the message history/streaming/approval state lives
+ * here anymore — it's all read from `useChatSession`, which is backed by a
+ * Provider mounted once at the app root, so switching characters or
+ * opening Settings and coming back never resets or loses anything that
+ * streamed in the meantime.
+ *
+ * Post-launch owner feedback round: this used to render its own h-14
+ * header bar (avatar + character name + the History trigger) directly
+ * below `TopCharacterBar`'s bubble row. The owner pointed out that bar's
+ * name label was redundant — the active bubble up top is already
+ * highlighted — so it's gone; the History trigger it also held moved down
+ * to a small icon docked under `Composer` instead (see the `onOpenHistory`
+ * prop passed below), separate from the right-panel toggle.
  */
 function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
   const session = useChatSession(character)
@@ -51,18 +58,6 @@ function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
 
   return (
     <div className="relative flex h-full flex-1 flex-col overflow-hidden bg-bg-app">
-      <div className="flex h-14 flex-none items-center gap-2.5 border-b border-border px-5">
-        <Avatar base={base} character={character} size={24} />
-        <span className="font-medium text-ink-bright">{character}</span>
-        <button
-          onClick={() => setHistoryOpen(true)}
-          title="Past chats (reference only)"
-          className="ml-auto rounded-full p-1.5 text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
-        >
-          <span aria-hidden>&#8986;</span>
-        </button>
-      </div>
-
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-3">
         {session.loading && session.history.length === 0 && (
           <div className="px-5 py-4 text-sm text-ink-dim">Loading…</div>
@@ -120,6 +115,7 @@ function ChatView({ base, character }: ChatViewProps): React.JSX.Element {
         streaming={session.streaming}
         onSend={(text) => send(base, character, text)}
         onStop={() => stop(base, character)}
+        onOpenHistory={() => setHistoryOpen(true)}
       />
 
       {/* Reserved toggle for the future right-side panel (history/progress/

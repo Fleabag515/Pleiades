@@ -1,5 +1,5 @@
-import { memo } from 'react'
-import type { ChatMessageEntry } from '../lib/types'
+import { memo, useState } from 'react'
+import type { AssistantItem, ChatMessageEntry, ToolItem } from '../lib/types'
 import Avatar from './Avatar'
 
 interface MessageBubbleProps {
@@ -9,46 +9,113 @@ interface MessageBubbleProps {
   streaming?: boolean
 }
 
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s
+}
+
 /**
- * Renders one completed (or in-flight) tool call inline in the transcript.
- *
- * Structure/clarity deliberately matches the legacy webui's `toolBlock()`
- * (pleiades/webui/static/app.js): a collapsible `<details>` with a summary
- * line (status icon + tool name + a pending/done/error tag) and a body
- * showing the raw args followed by a `<pre>` of the output — read-only
- * reference styling, not the approval-gating `ApprovalCard` (that's a
- * different concern: a pending permission gate on a tool call that hasn't
- * run yet, vs. this, a completed call's name/args/result on display).
+ * One row in a `ToolChain`'s shared detail card (owner brief item 3): a
+ * label/value pair, monospace value, matching the legacy webui's `.kv`
+ * rows in `showNodeDetail()` (pleiades/webui/static/next.html) rather than
+ * a JSON blob.
  */
-function ToolBlock({
-  name,
-  args,
-  output,
-  ok
-}: {
-  name: string
-  args: string
-  output: string | null
-  ok: boolean | null
-}): React.JSX.Element {
-  const pending = output === null
-  const tagClass = pending ? 'text-amber-400' : ok === false ? 'text-rose-400' : 'text-emerald-400'
-  const tagText = pending ? 'running…' : ok === false ? 'error' : 'done'
+function DetailRow({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }): React.JSX.Element {
   return (
-    <details className="my-1.5 rounded-lg border border-border bg-bg-100 text-xs">
-      <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-ink-dim [&::-webkit-details-marker]:hidden">
-        <span className={tagClass}>{pending ? '◌' : ok === false ? '✕' : '✓'}</span>
-        <span className="text-ink">{name}</span>
-        <span className={`ml-auto text-[10.5px] uppercase tracking-wide ${tagClass}`}>{tagText}</span>
-      </summary>
-      <div className="border-t border-border px-3 py-2">
-        {args && <div className="mb-1.5 break-all font-mono text-[11px] text-ink-faint">{args}</div>}
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-ink-dim">
-          {pending ? '…' : output || '(no output)'}
-        </pre>
-      </div>
-    </details>
+    <div className="flex items-start gap-2 py-0.5">
+      <span className="w-14 flex-none text-[11px] text-ink-dim">{label}</span>
+      <span className={`min-w-0 flex-1 break-all font-mono text-[11px] ${valueClassName ?? 'text-ink'}`}>{value}</span>
+    </div>
   )
+}
+
+/**
+ * Renders one turn's tool call(s) the way the real legacy webui does it —
+ * this replaced a from-scratch guess (a per-call `<details>` accordion
+ * showing icon+name+tag then full args/output) after actually launching
+ * `pleiades ui`, opening a chat with Claude, and watching a live tool call
+ * render: pleiades/webui/static/next.html's "pipeline" pattern
+ * (`buildToolNodes`/`.pipe-node`/`.pipe-detail`), NOT the older
+ * `pleiades/webui/static/app.js` `toolBlock()` the previous attempt read
+ * (that file is a stale fallback the server only serves when next.html is
+ * missing — see server.py's `@app.get("/")`).
+ *
+ * What that looks like: a horizontal row of small pill-shaped chips (one
+ * per tool call, monospace, just the tool name — no icon, no "done"/
+ * "running" tag text), chained with a plain "→" when several calls happen
+ * back to back in the same turn. State is conveyed purely by the chip's
+ * border color: amber + a slow blink while running, green once it
+ * succeeds, red on error; hovering (or the currently selected chip) gets
+ * a cyan border. There is no per-chip expansion — clicking a chip opens a
+ * *single* shared detail card below the whole row (cyan-bordered) showing
+ * tool/args/output/status as short key-value rows, each value truncated
+ * to 400 chars, not a scrolling `<pre>` dump.
+ */
+function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
+  const [selected, setSelected] = useState<number | null>(null)
+  const active = selected !== null ? tools[selected] : null
+
+  return (
+    <div className="my-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tools.map((t, i) => {
+          const pending = t.output === null
+          const err = t.ok === false
+          const isSel = selected === i
+          const stateClass = pending
+            ? 'border-amber-400 animate-tool-blink'
+            : err
+              ? 'border-rose-400'
+              : 'border-emerald-400'
+          return (
+            <div key={i} className="flex items-center gap-1.5">
+              {i > 0 && <span className="select-none text-[13px] text-ink-faint">&rarr;</span>}
+              <button
+                onClick={() => setSelected(isSel ? null : i)}
+                className={`whitespace-nowrap rounded-lg border bg-bg-100 px-3 py-1.5 font-mono text-[11.5px] text-ink transition-colors hover:border-cyan-400 hover:bg-bg-200 ${
+                  isSel ? 'border-cyan-400 bg-bg-200' : stateClass
+                }`}
+              >
+                {t.name}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+
+      {active && (
+        <div className="mt-1.5 rounded-lg border border-cyan-400/70 bg-bg-surface px-3 py-2.5 text-xs">
+          <DetailRow label="tool" value={active.name} valueClassName="text-cyan-300" />
+          {active.args && <DetailRow label="args" value={truncate(active.args, 400)} />}
+          {active.output != null && <DetailRow label="output" value={truncate(active.output, 400)} />}
+          <DetailRow
+            label="status"
+            value={active.output === null ? '…' : active.ok === false ? 'error' : 'ok'}
+            valueClassName={active.output === null ? 'text-amber-400' : active.ok === false ? 'text-rose-400' : 'text-emerald-400'}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Groups an assistant turn's items so consecutive tool calls render as one
+ * `ToolChain` (matching the legacy webui, where every tool call from a turn
+ * lands in a single `.pipe-nodes` row) instead of one box per call. Text
+ * segments in between still break the chain, same as the source data. */
+function groupItems(
+  items: AssistantItem[]
+): Array<{ kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] }> {
+  const groups: Array<{ kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] }> = []
+  for (const item of items) {
+    if (item.t === 'tool') {
+      const last = groups[groups.length - 1]
+      if (last && last.kind === 'tools') last.tools.push(item)
+      else groups.push({ kind: 'tools', tools: [item] })
+    } else {
+      groups.push({ kind: 'text', text: item.text })
+    }
+  }
+  return groups
 }
 
 /** Renders one persisted (or in-progress) chat turn.
@@ -72,6 +139,7 @@ function MessageBubble({ message, base, character, streaming }: MessageBubblePro
   }
 
   const hasContent = message.items.length > 0
+  const groups = groupItems(message.items)
   return (
     <div className="flex gap-3 px-5 py-2.5">
       <Avatar base={base} character={character} size={24} />
@@ -83,13 +151,13 @@ function MessageBubble({ message, base, character, streaming }: MessageBubblePro
             <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-dim [animation-delay:300ms]" />
           </span>
         )}
-        {message.items.map((item, i) =>
-          item.t === 'text' ? (
+        {groups.map((g, i) =>
+          g.kind === 'text' ? (
             <div key={i} className="whitespace-pre-wrap break-words">
-              {item.text}
+              {g.text}
             </div>
           ) : (
-            <ToolBlock key={i} name={item.name} args={item.args} output={item.output} ok={item.ok} />
+            <ToolChain key={i} tools={g.tools} />
           )
         )}
         {!streaming && (message.meta?.tps || message.meta?.stopped) && (

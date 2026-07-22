@@ -76,3 +76,20 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--color-bg-surface-hover) transparent;
 }
+
+/* Matches the legacy webui's running-tool-call blink exactly
+   (pleiades/webui/static/next.html: `@keyframes ndblink`) -- a slow
+   opacity blink on the chip while a tool call is in flight, distinct from
+   Tailwind's built-in `animate-pulse` timing. */
+@keyframes tool-blink {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-tool-blink {
+  animation: tool-blink 0.9s ease-in-out infinite alternate;
+}

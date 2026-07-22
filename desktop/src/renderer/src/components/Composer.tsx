@@ -9,6 +9,7 @@ interface ComposerProps {
   streaming: boolean
   onSend: (text: string) => void
   onStop: () => void
+  onOpenHistory: () => void
 }
 
 function modelLabel(model: string): string {
@@ -26,8 +27,16 @@ function modelLabel(model: string): string {
  * unchanged from ModelBadge's docstring: a model is a per-character setting
  * (`POST /api/profiles/{name}/model`), not per-chat, so picking one here
  * reassigns the whole character.
+ *
+ * Post-launch owner feedback round: the History trigger used to live in
+ * ChatView's now-removed header bar. The owner asked for it to get "its
+ * own small dedicated icon under the chat box", separate from the
+ * right-panel toggle — it now sits in this same under-input row, to the
+ * right of the model picker, and just calls `onOpenHistory` (ChatView
+ * still owns the `historyOpen` state and renders `HistoryOverlay` itself;
+ * only the trigger's location changed).
  */
-function Composer({ base, character, disabled, streaming, onSend, onStop }: ComposerProps): React.JSX.Element {
+function Composer({ base, character, disabled, streaming, onSend, onStop, onOpenHistory }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
 
@@ -136,57 +145,70 @@ function Composer({ base, character, disabled, streaming, onSend, onStop }: Comp
           )}
         </div>
 
-        {!disabled && profile && (
-          <div ref={pickerRef} className="relative mt-1.5 px-2">
-            <button
-              onClick={() => setPickerOpen((v) => !v)}
-              title="Change the model assigned to this character"
-              className="flex items-center gap-1 rounded-full border border-border bg-bg-surface px-2.5 py-1 text-xs text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
-            >
-              <span aria-hidden>⬡</span>
-              <span className="max-w-[200px] truncate">{modelLabel(profile.model)}</span>
-              <span aria-hidden className="text-[10px]">
-                ▾
-              </span>
-            </button>
+        <div className="mt-1.5 flex items-center justify-between px-2">
+          <div className="min-w-0">
+            {!disabled && profile && (
+              <div ref={pickerRef} className="relative">
+                <button
+                  onClick={() => setPickerOpen((v) => !v)}
+                  title="Change the model assigned to this character"
+                  className="flex items-center gap-1 rounded-full border border-border bg-bg-surface px-2.5 py-1 text-xs text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
+                >
+                  <span aria-hidden>⬡</span>
+                  <span className="max-w-[200px] truncate">{modelLabel(profile.model)}</span>
+                  <span aria-hidden className="text-[10px]">
+                    ▾
+                  </span>
+                </button>
 
-            {pickerOpen && (
-              <div className="absolute bottom-full left-0 z-30 mb-1.5 w-72 rounded-xl border border-border bg-bg-100 p-3 shadow-2xl">
-                <p className="mb-2 text-[11px] text-ink-faint">
-                  Sets the model for <span className="text-ink-dim">{character}</span> as a whole — it applies to
-                  every chat with this character (Pleiades has no per-chat model override).
-                </p>
-                <div className="flex max-h-52 flex-col gap-0.5 overflow-y-auto">
-                  <button
-                    onClick={() => chooseModel('')}
-                    disabled={assigning}
-                    className={`rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
-                      !profile.model ? 'bg-bg-300 text-ink-bright' : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
-                    }`}
-                  >
-                    Default engine (PLEIADES_MODEL_PATH)
-                  </button>
-                  {models.map((m) => (
-                    <button
-                      key={m.name}
-                      onClick={() => chooseModel(m.name)}
-                      disabled={assigning}
-                      className={`truncate rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
-                        profile.model === m.name
-                          ? 'bg-bg-300 text-ink-bright'
-                          : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
-                      }`}
-                    >
-                      {m.name}
-                    </button>
-                  ))}
-                </div>
-                {pickerError && <div className="mt-2 text-[11px] text-rose-300">{pickerError}</div>}
-                {assigning && <div className="mt-2 text-[11px] text-ink-faint">Saving…</div>}
+                {pickerOpen && (
+                  <div className="absolute bottom-full left-0 z-30 mb-1.5 w-72 rounded-xl border border-border bg-bg-100 p-3 shadow-2xl">
+                    <p className="mb-2 text-[11px] text-ink-faint">
+                      Sets the model for <span className="text-ink-dim">{character}</span> as a whole — it applies to
+                      every chat with this character (Pleiades has no per-chat model override).
+                    </p>
+                    <div className="flex max-h-52 flex-col gap-0.5 overflow-y-auto">
+                      <button
+                        onClick={() => chooseModel('')}
+                        disabled={assigning}
+                        className={`rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
+                          !profile.model ? 'bg-bg-300 text-ink-bright' : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
+                        }`}
+                      >
+                        Default engine (PLEIADES_MODEL_PATH)
+                      </button>
+                      {models.map((m) => (
+                        <button
+                          key={m.name}
+                          onClick={() => chooseModel(m.name)}
+                          disabled={assigning}
+                          className={`truncate rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
+                            profile.model === m.name
+                              ? 'bg-bg-300 text-ink-bright'
+                              : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
+                          }`}
+                        >
+                          {m.name}
+                        </button>
+                      ))}
+                    </div>
+                    {pickerError && <div className="mt-2 text-[11px] text-rose-300">{pickerError}</div>}
+                    {assigning && <div className="mt-2 text-[11px] text-ink-faint">Saving…</div>}
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
+
+          <button
+            onClick={onOpenHistory}
+            title="Past chats (reference only)"
+            aria-label="Chat history"
+            className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
+          >
+            <span aria-hidden>&#8986;</span>
+          </button>
+        </div>
       </div>
     </div>
   )
