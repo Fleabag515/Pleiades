@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Shell from './components/Shell'
+import TitleBar from './components/TitleBar'
 
 interface BackendStatus {
   phase: 'starting' | 'ready' | 'error'
@@ -71,36 +72,46 @@ function App(): React.JSX.Element {
   }, [connect])
 
   if (view.kind === 'connected') {
-    return <Shell base={view.url} />
+    return (
+      <div className="flex h-screen w-full flex-col overflow-hidden">
+        <TitleBar />
+        <div className="min-h-0 flex-1">
+          <Shell base={view.url} />
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-bg-app p-8 text-ink">
-      <div className="w-full max-w-lg rounded-2xl border border-border bg-bg-surface p-8 shadow-xl">
-        <h1 className="mb-1 text-xl font-semibold tracking-tight">Pleiades</h1>
-        <p className="mb-6 text-sm text-ink-dim">Connecting to the local backend…</p>
+    <div className="flex h-screen w-full flex-col overflow-hidden">
+      <TitleBar />
+      <div className="flex min-h-0 flex-1 items-center justify-center bg-bg-app p-8 text-ink">
+        <div className="w-full max-w-lg rounded-2xl border border-border bg-bg-surface p-8 shadow-xl">
+          <h1 className="mb-1 text-xl font-semibold tracking-tight">Pleiades</h1>
+          <p className="mb-6 text-sm text-ink-dim">Connecting to the local backend…</p>
 
-        {view.kind === 'connecting' && (
-          <div className="flex items-center gap-3 text-ink">
-            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" />
-            <span>{view.detail}</span>
-          </div>
-        )}
-
-        {view.kind === 'error' && (
-          <div className="space-y-4">
-            <div className="flex items-start gap-3 text-rose-300">
-              <span className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-rose-400" />
-              <span className="text-sm">{view.message}</span>
+          {view.kind === 'connecting' && (
+            <div className="flex items-center gap-3 text-ink">
+              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" />
+              <span>{view.detail}</span>
             </div>
-            <button
-              onClick={connect}
-              className="rounded-lg bg-bg-surface-hover px-4 py-2 text-sm font-medium text-ink transition hover:bg-accent hover:text-white"
-            >
-              Retry
-            </button>
-          </div>
-        )}
+          )}
+
+          {view.kind === 'error' && (
+            <div className="space-y-4">
+              <div className="flex items-start gap-3 text-rose-300">
+                <span className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-rose-400" />
+                <span className="text-sm">{view.message}</span>
+              </div>
+              <button
+                onClick={connect}
+                className="rounded-lg bg-bg-surface-hover px-4 py-2 text-sm font-medium text-ink transition hover:bg-accent hover:text-white"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

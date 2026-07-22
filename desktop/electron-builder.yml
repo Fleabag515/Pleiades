@@ -41,6 +41,16 @@ linux:
   # the AppImage/deb need nothing pre-installed on the target machine -- see
   # src/main/index.ts's bundledBackendPath()/spawnBackend() for the runtime
   # lookup, and desktop/backend-build/build.sh to (re)produce the bundle.
+  #
+  # Tray icon: resources/tray-icon.png (32px, @2x at 64px) is loaded directly
+  # via nativeImage in src/main/index.ts -- no electron-builder config needed
+  # for it specifically, it ships as part of the app bundle like any other
+  # ?asset import. Verified working on Linux Mint Cinnamon (Muffin/xapp-status
+  # SNI). TODO(windows): Windows' tray convention is a smaller 16x16 icon
+  # (traditionally .ico); resources/tray-icon-16.png exists and is wired up
+  # conditionally in main/index.ts (see the TODO there) but is UNTESTED --
+  # no Windows machine available here. Verify sizing/format looks right on
+  # an actual Windows build before shipping.
   target:
     - AppImage
     - deb

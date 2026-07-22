@@ -1,4 +1,5 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron'
+import type { MenuItemConstructorOptions } from 'electron'
 import { spawn, ChildProcessByStdio } from 'child_process'
 import type { Readable } from 'stream'
 import { createServer } from 'net'
@@ -7,6 +8,15 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import trayIconAsset from '../../resources/tray-icon.png?asset'
+// TODO(windows): Windows' system tray convention is a much smaller icon
+// (16x16, traditionally .ico) than Linux's SNI/AppIndicator convention
+// (which reads fine at 32-48px, verified on this machine). tray-icon-16.png
+// exists in resources/ for this but isn't wired up/tested anywhere -- no
+// Windows machine available in this environment. If the tray icon looks
+// oversized/blurry on Windows, switch to it there, e.g.:
+//   trayIconAsset (Linux/macOS) vs. a 16px asset on win32.
+import trayIconWin from '../../resources/tray-icon-16.png?asset'
 
 // ---------------------------------------------------------------------------
 // Backend lifecycle
@@ -62,6 +72,10 @@ type BackendProcess = ChildProcessByStdio<null, Readable, Readable>
 
 let backendProcess: BackendProcess | null = null
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+// Set true once we've committed to a real, full app quit (via the tray's
+// Quit item, Ctrl/Cmd+Q, or the app menu). While false, closing the window
+// just hides it (minimize-to-tray) instead of tearing anything down.
 let quitting = false
 let logStream: WriteStream | null = null
 
@@ -250,6 +264,16 @@ function stopBackend(): Promise<void> {
 function registerIpcHandlers(): void {
   ipcMain.handle('pleiades:get-backend-url', () => backendState.url)
   ipcMain.handle('pleiades:get-backend-status', () => ({ ...backendState }))
+
+  // Custom title bar window controls (see createWindow's frame: false).
+  ipcMain.handle('pleiades:window-minimize', () => mainWindow?.minimize())
+  ipcMain.handle('pleiades:window-maximize-toggle', () => {
+    if (!mainWindow) return
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  })
+  ipcMain.handle('pleiades:window-close', () => mainWindow?.close())
+  ipcMain.handle('pleiades:window-is-maximized', () => mainWindow?.isMaximized() ?? false)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +288,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
+    frame: false,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -276,6 +301,44 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
+  })
+
+  // Custom title bar needs to reflect maximize/restore state for its icon.
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('pleiades:window-maximized-changed', true))
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('pleiades:window-maximized-changed', false))
+
+  // Tray-resident app pattern: clicking the OS window-close button hides the
+  // window instead of destroying it, so the backend keeps running and the
+  // app stays reachable from the tray icon. A real quit (tray "Quit", the
+  // app menu, or Ctrl/Cmd+Q) sets `quitting` via the existing before-quit
+  // handler *before* it re-invokes app.quit(), so by the time Electron
+  // actually closes this window as part of that quit sequence, `quitting`
+  // is already true and this handler steps out of the way.
+  mainWindow.on('close', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    // Verified on this machine (Linux Mint Cinnamon/Muffin, xapp-status
+    // panel applet): the panel hides this app's tray icon the instant the
+    // window receives ANY close request (WM_DELETE_WINDOW / EWMH
+    // _NET_CLOSE_WINDOW) -- confirmed identical across hide(), minimize(),
+    // and even letting the window actually destroy; the panel reacts to
+    // the close request itself, not to what we do afterward, and it's
+    // unrelated to the SNI's own registration (still "Active" per
+    // busctl/dbus-send introspection the whole time). That's a Cinnamon/
+    // xapp-status quirk outside this app's control.
+    //
+    // minimize() (rather than hide()) is the mitigation: it keeps the
+    // window in _NET_CLIENT_LIST, so it stays reachable via Alt+Tab / the
+    // window-list applet even if the tray icon itself is invisible --
+    // guaranteeing the app is never truly unreachable, which a plain
+    // hide() could not guarantee on this desktop (verified: wmctrl -l
+    // shows nothing and the tray slot disappears from the panel layout
+    // entirely, blind clicks at its old coordinates do nothing).
+    mainWindow?.minimize()
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
   })
 
   // Never let the renderer navigate to or open remote content.
@@ -297,6 +360,111 @@ function createWindow(): void {
   }
 }
 
+function showMainWindow(): void {
+  if (!mainWindow) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+}
+
+function toggleMainWindow(): void {
+  if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) {
+    mainWindow.hide()
+  } else {
+    showMainWindow()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tray
+// ---------------------------------------------------------------------------
+
+function createTray(): void {
+  // TODO(windows): verify this looks right when a Windows build is
+  // actually testable -- see the TODO on the trayIconWin import above.
+  const iconPath = process.platform === 'win32' ? trayIconWin : trayIconAsset
+  const image = nativeImage.createFromPath(iconPath)
+  tray = new Tray(image)
+  tray.setToolTip('Pleiades')
+
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Open Pleiades', click: () => showMainWindow() },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        // Reuses the exact same before-quit -> stopBackend() -> app.quit()
+        // path as the app menu / Ctrl+Q -- no separate shutdown logic here.
+        app.quit()
+      }
+    }
+  ])
+  tray.setContextMenu(contextMenu)
+
+  // On Linux (StatusNotifierItem/AppIndicator), left-click support varies by
+  // desktop environment; where it's not delivered as a distinct 'click'
+  // event, users still have "Open Pleiades" one right-click away via the
+  // context menu above. Where 'click' *is* delivered (verified on this
+  // machine's Cinnamon/Muffin session), it toggles show/hide for parity with
+  // the macOS/Windows tray convention.
+  tray.on('click', () => toggleMainWindow())
+  // Explicit popUpContextMenu() on 'right-click' is a defensive no-op on
+  // most desktops (setContextMenu already wires this up), but a few Linux
+  // tray hosts need it triggered explicitly to show anything at all.
+  //
+  // NOTE (verified on this machine, Linux Mint Cinnamon/Muffin, xapp-status
+  // panel applet hosting the StatusNotifierItem): right-clicking the icon
+  // here shows Cinnamon's own generic applet-management menu (Move to
+  // other monitor / Applet preferences / Minimize / Maximize / Close)
+  // instead of the menu below, and this handler never fires -- Cinnamon
+  // intercepts the right-click at the panel level before Electron sees it.
+  // That's a desktop-environment limitation, not something fixable from
+  // here. Left-click show/hide (above) is unaffected and is the primary,
+  // reliable way to reach the window from the tray on this machine; a
+  // real quit is always additionally reachable once the window is open
+  // via Ctrl/Cmd+Q or File > Quit.
+  tray.on('right-click', () => tray?.popUpContextMenu(contextMenu))
+}
+
+// ---------------------------------------------------------------------------
+// Application menu (mainly: a reliable CmdOrCtrl+Q that always does a real,
+// full quit -- including backend shutdown -- regardless of the minimize-to-
+// tray behavior on the window's own close button).
+// ---------------------------------------------------------------------------
+
+function createAppMenu(): void {
+  const isMac = process.platform === 'darwin'
+
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? ([
+          {
+            label: app.name,
+            submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }]
+          }
+        ] as MenuItemConstructorOptions[])
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Quit',
+          accelerator: 'CmdOrCtrl+Q',
+          click: () => app.quit()
+        }
+      ]
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' }
+  ]
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
@@ -310,14 +478,21 @@ app.whenReady().then(() => {
   })
 
   registerIpcHandlers()
+  createAppMenu()
   createWindow()
+  createTray()
   void startBackend()
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else showMainWindow()
   })
 })
 
+// With a tray icon present, closing the window (handled above via 'close')
+// keeps the app alive, so this normally won't fire from that path anymore.
+// Left in place as a safety net for the (non-mac) case where every window
+// has genuinely been destroyed outright.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
@@ -326,11 +501,19 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', (event) => {
   if (quitting) return
-  if (!backendProcess) return
-  event.preventDefault()
   quitting = true
+  if (!backendProcess) {
+    tray?.destroy()
+    tray = null
+    return
+  }
+  event.preventDefault()
   logLine('[app] before-quit: stopping backend before exit')
-  stopBackend().finally(() => app.quit())
+  stopBackend().finally(() => {
+    tray?.destroy()
+    tray = null
+    app.quit()
+  })
 })
 
 // Make sure Ctrl+C in a terminal / `kill -TERM` on the Electron process also
