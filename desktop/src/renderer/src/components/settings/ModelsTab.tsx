@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { deleteModel, listModels, modelLogs, startModel, stopModel, updateModel } from '../../lib/api'
+import {
+  deleteModel,
+  listModels,
+  modelLogs,
+  startModel,
+  stopModel,
+  updateModel
+} from '../../lib/api'
 import type { ModelEntry } from '../../lib/types'
 import { modelDisplayName } from '../../lib/format'
 
@@ -34,6 +41,7 @@ function ModelsTab({ base }: ModelsTabProps): React.JSX.Element {
   const [logText, setLogText] = useState('')
   const [logError, setLogError] = useState<string | null>(null)
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const modelsPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refresh = async (): Promise<void> => {
     try {
@@ -48,10 +56,42 @@ function ModelsTab({ base }: ModelsTabProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base])
 
-  // Stop polling logs when the panel closes or the tab unmounts.
+  // A model going from "loading" to "running" (or "crashed") is a real
+  // server-side transition that can take many seconds for a large GGUF --
+  // there was previously no live poll here at all, just a single one-shot
+  // refresh 400ms after clicking Start (see `toggle` below), which almost
+  // never actually catches the real end state. That's the bug behind
+  // "status is stuck on starting until I switch pages" -- switching pages
+  // and back just remounts this component, re-running the effect above
+  // once, which happened to catch the updated state by coincidence. Poll
+  // for real instead, same 2s interval already used for the log tail
+  // below, and only while it's actually needed (a model is mid-transition)
+  // so this doesn't churn forever once everything's settled.
+  useEffect(() => {
+    const anyLoading = models.some((m) => m.state === 'loading')
+    if (!anyLoading) {
+      if (modelsPollRef.current) {
+        clearInterval(modelsPollRef.current)
+        modelsPollRef.current = null
+      }
+      return
+    }
+    if (modelsPollRef.current) return
+    modelsPollRef.current = setInterval(refresh, 2000)
+    return () => {
+      if (modelsPollRef.current) {
+        clearInterval(modelsPollRef.current)
+        modelsPollRef.current = null
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [models])
+
+  // Stop polling logs/model-status when the panel closes or the tab unmounts.
   useEffect(() => {
     return () => {
       if (logPollRef.current) clearInterval(logPollRef.current)
+      if (modelsPollRef.current) clearInterval(modelsPollRef.current)
     }
   }, [])
 
@@ -177,7 +217,10 @@ function ModelsTab({ base }: ModelsTabProps): React.JSX.Element {
                 <div className="flex items-center gap-2">
                   <span className="truncate font-medium text-ink">{modelDisplayName(m)}</span>
                   {m.display_name && (
-                    <span className="truncate text-xs text-ink-faint" title="Underlying registered name">
+                    <span
+                      className="truncate text-xs text-ink-faint"
+                      title="Underlying registered name"
+                    >
                       ({m.name})
                     </span>
                   )}
@@ -194,7 +237,8 @@ function ModelsTab({ base }: ModelsTabProps): React.JSX.Element {
               )}
               {renameError && <div className="mt-1 text-xs text-rose-300">{renameError}</div>}
               <div className="truncate text-xs text-ink-dim">
-                ctx {m.n_ctx} · gpu_layers {m.n_gpu_layers} {m.chat_format ? `· ${m.chat_format}` : ''}
+                ctx {m.n_ctx} · gpu_layers {m.n_gpu_layers}{' '}
+                {m.chat_format ? `· ${m.chat_format}` : ''}
               </div>
             </div>
             <div className="flex flex-none items-center gap-1.5">

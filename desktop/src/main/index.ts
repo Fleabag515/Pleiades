@@ -140,8 +140,12 @@ function spawnBackend(port: number): void {
 
   backendProcess = child
 
-  child.stdout.on('data', (chunk: Buffer) => logLine(`[backend stdout] ${chunk.toString().trimEnd()}`))
-  child.stderr.on('data', (chunk: Buffer) => logLine(`[backend stderr] ${chunk.toString().trimEnd()}`))
+  child.stdout.on('data', (chunk: Buffer) =>
+    logLine(`[backend stdout] ${chunk.toString().trimEnd()}`)
+  )
+  child.stderr.on('data', (chunk: Buffer) =>
+    logLine(`[backend stderr] ${chunk.toString().trimEnd()}`)
+  )
 
   child.on('error', (err) => {
     logLine(`[backend] spawn error: ${err.message}`)
@@ -304,8 +308,12 @@ function createWindow(): void {
   })
 
   // Custom title bar needs to reflect maximize/restore state for its icon.
-  mainWindow.on('maximize', () => mainWindow?.webContents.send('pleiades:window-maximized-changed', true))
-  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('pleiades:window-maximized-changed', false))
+  mainWindow.on('maximize', () =>
+    mainWindow?.webContents.send('pleiades:window-maximized-changed', true)
+  )
+  mainWindow.on('unmaximize', () =>
+    mainWindow?.webContents.send('pleiades:window-maximized-changed', false)
+  )
 
   // Tray-resident app pattern: clicking the OS window-close button hides the
   // window instead of destroying it, so the backend keeps running and the
@@ -368,6 +376,17 @@ function showMainWindow(): void {
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
+  // `focus()` above only grants the BrowserWindow OS-level window focus --
+  // on Linux (Cinnamon/Muffin, confirmed environment) that doesn't
+  // reliably re-route keyboard input to the page's own focused element
+  // after a hide()/show() cycle (this is a tray-resident app: the window
+  // close button hides rather than destroys, so this path runs far more
+  // often than a fresh createWindow() would). Symptom this fixes: window
+  // is visible, but clicking into the message box doesn't let you type
+  // until the app is fully closed and reopened. Explicitly focusing the
+  // webContents (distinct from window-level focus) is the standard fix
+  // for this class of Electron/Linux bug.
+  mainWindow.webContents.focus()
 }
 
 function toggleMainWindow(): void {
