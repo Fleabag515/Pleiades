@@ -14,6 +14,81 @@ actually has). They compose: the native engine's context governor should read th
 model-memory-profile this doc introduces (Phase 0 below) rather than assuming every
 model is a dense transformer with linearly-growing KV.
 
+## REPRIORITIZATION (second council stress-test, 2026-07-21) — read this first
+
+Fleagle asked, bluntly, after the first pass shipped: **"is this really the best
+method?"** Ran it back through the council with deliberately adversarial framing
+(don't confirm, find the hole). Both qwen3.8-max and a fresh Opus independently
+landed on the same correction, and it changes the lead recommendation:
+
+**The first pass led with the wrong headline.** Recognizing and serving
+already-hybrid/recurrent GGUFs (Phase 0.A/Phase 1 below) is correct engineering
+and worth keeping, but it's *opportunistic* — it only helps for whatever narrow
+slice of models the open-source community happens to publish as Mamba/RWKV/
+Jamba/Qwen3-Next-class, which is smaller and often weaker at chat/agentic work
+than the mainstream dense/MoE models people actually want to run (Llama,
+Mistral, DeepSeek, most Qwen variants). Selling that as "the" answer to
+"remove the context window" oversells a bonus catalog as the main event.
+
+**The corrected framing — and the actual best available method within "no
+training, ever":** you don't remove the context window, you *demote it from a
+wall to a bounded working cache*. Anamnesis is already the real unbounded
+memory (disk-backed, no limit). The model's attention window doesn't need to
+disappear — it needs to be sized, per turn, to exactly what Anamnesis decides
+that turn needs, via [[2026-07-21-native-inference-engine-design.md]]'s
+already-planned elastic resize. That's not O(1) at the attention-math level,
+but it's **O(working-set) in practice**, and it covers essentially every model,
+not just an exotic minority. This is what actually delivers "never hit an
+artificial wall, never waste VRAM reserving unused context" — which is the
+real, underlying thing Fleagle described wanting.
+
+**Revised priority order (supersedes the original "what game-changing should
+mean" section below, kept further down for history):**
+1. **Elastic context engine + Anamnesis is the lead.** Already planned in the
+   companion doc. This is the honest scalability story for the 95%-mainstream-
+   model case: memory moves from "infinite context window" to "external memory
+   (Anamnesis) + bounded working context (elastic KV)," controlled by product
+   logic (what Anamnesis chooses to inject), not raw model context size.
+2. **Instrument before building more.** Measure real turn sizes flowing through
+   Anamnesis today. If turns really do stay in the 16-32k range Fleagle
+   described earlier, the "hard wall" problem may already be nearly solved by
+   elastic resize alone — check before prioritizing further engineering here.
+3. **Prefix/prompt KV caching — already live, verified in real production
+   logs (checked before writing this in, not assumed).** The council flagged
+   this as high-value, expecting it to be missing. It isn't: native
+   `llama-server`'s slot manager already does automatic longest-common-prefix
+   (LCP) reuse across requests — confirmed directly in a real log,
+   `~/.pleiades/logs/model-qwythos-9b-claude-mythos-5-1m.log`: cold prompts
+   process at single-digit-to-low-hundreds tok/s, while requests matching an
+   existing slot by LCP similarity (`selected slot by LCP similarity, sim_best
+   = 0.48/0.39`) hit **1893-2370 tok/s prompt processing — a 20-300x speedup
+   from reuse, already happening today, zero code changes**. Separately,
+   llama-server also ships a RAM-backed idle-slot prompt cache (`--cache-ram`,
+   default 8192 MiB when the flag is simply omitted — PR ggml-org/llama.cpp
+   #16391) that Pleiades' `launch.py` doesn't override, so it's very likely
+   also active at its default; not yet confirmed via a fresh startup log at
+   sufficient verbosity, worth a quick check but not an engineering task.
+   **Net: no work needed here — this win already shipped upstream and
+   Pleiades already benefits from it by not getting in its way.**
+4. **Dense-model fallback, upgraded and demoted to explicit safety net.** The
+   original Phase 0.5 (below) proposed naive StreamingLLM/attention-sinks. Both
+   consultants said a heavy-hitter/SnapKV/PyramidKV-class eviction policy is
+   meaningfully smarter for near-zero extra engineering cost — evict by
+   actual importance, not just position — while being explicit that this is
+   *still* lossy and a crash-prevention safety net, not a feature to sell. Its
+   real job is to almost never fire, because Anamnesis + elastic resize already
+   bound what's live in the prompt.
+5. **Hybrid/recurrent GGUF recognition — correct to keep, demoted to a bonus
+   lane.** Phase 0.A (shipped) and Phase 1 (below) still ship as-is — don't
+   reserve linear-model KV like it's a growing dense cache, and do surface
+   genuinely O(1) models for users who specifically want that tradeoff and
+   accept the smaller/weaker model pool. Just don't lead with it.
+
+The rest of this document (Phases 0/0.A/0.5/1/2/3 below) is preserved as
+written for history and because the underlying engineering is still correct —
+read it with the reprioritization above as the actual lead, not these phases'
+original framing.
+
 ## The prior system Fleagle remembered — found
 
 His separate "New Brain" research project already built exactly this pattern for
