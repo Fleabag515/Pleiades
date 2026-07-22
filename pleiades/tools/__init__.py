@@ -148,8 +148,16 @@ class ToolBelt:
         # exec_policy gate for side-effecting tools. No ctx/settings (e.g. a
         # trusted internal caller or a unit test) means no policy to enforce —
         # fall through and run the tool rather than crash.
+        #
+        # Per-character override: ctx.profile.exec_policy (set via
+        # POST /api/profiles/{name}, or the composer's Approve/Ask dropdown)
+        # takes priority over the process-wide ctx.settings.exec_policy when
+        # present, so one character can be "ask" while another is "allow"
+        # under the same running backend. None on the profile means "not
+        # configured for this character" -> fall back to the global setting.
         if not tool.safe:
-            policy = getattr(getattr(ctx, "settings", None), "exec_policy", None)
+            policy = (getattr(getattr(ctx, "profile", None), "exec_policy", None)
+                      or getattr(getattr(ctx, "settings", None), "exec_policy", None))
             if policy == "deny":
                 return f"[error] tool '{name}' blocked by exec_policy=deny"
             if policy == "ask":

@@ -16,6 +16,13 @@ export interface Profile {
   persona_source: string
   model: string
   has_email: boolean
+  // Per-character tool-call approval override (composer's Approve/Ask
+  // dropdown; see pleiades/profiles.py Profile.exec_policy). null means
+  // "not configured" -- ProfileManager migrates any profile.json missing
+  // this key to "allow" on first read, so in practice this is always a
+  // real string for any profile loaded through the API, but the type stays
+  // nullable to match what the backend can technically return.
+  exec_policy: 'allow' | 'ask' | 'deny' | null
 }
 
 export interface ChatSummary {

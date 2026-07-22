@@ -18,12 +18,15 @@
     "dist:win": "npm run typecheck && electron-vite build && electron-builder --win"
   },
   "dependencies": {
-    "@electron-toolkit/utils": "^4.0.0"
+    "@electron-toolkit/utils": "^4.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
@@ -38,10 +41,9 @@
     "prettier": "^3.7.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "typescript": "^5.9.3",
-    "vite": "^7.2.6",
     "tailwindcss": "^4.3.3",
-    "@tailwindcss/vite": "^4.3.3"
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
   },
   "private": true,
   "homepage": "https://github.com/Fleabag515/Pleiades"

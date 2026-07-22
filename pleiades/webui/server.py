@@ -79,6 +79,10 @@ class ProfileUpdate(BaseModel):
     discord_require_mention: Optional[bool] = None
     discord_respond_to_bots: Optional[bool] = None
     discord_allowed_channels: Optional[str] = None
+    # Per-character tool-call approval override (composer's Approve/Ask
+    # dropdown). None/omitted leaves it untouched; "allow"/"ask"/"deny" sets
+    # it. See profiles.Profile.exec_policy and ToolBelt.dispatch's gate.
+    exec_policy: Optional[str] = None
 
 
 class EmailConfig(BaseModel):
@@ -557,10 +561,12 @@ def create_app() -> FastAPI:
             p = pm.get(name)
         except FileNotFoundError:
             raise HTTPException(404, f"No profile '{name}'")
+        if body.exec_policy is not None and body.exec_policy not in ("allow", "ask", "deny"):
+            raise HTTPException(400, "exec_policy must be one of: allow, ask, deny")
         for f in ("email_address", "imap_host", "imap_port", "smtp_host",
                   "smtp_port", "persona_source", "discord_enabled",
                   "discord_require_mention", "discord_respond_to_bots",
-                  "discord_allowed_channels"):
+                  "discord_allowed_channels", "exec_policy"):
             val = getattr(body, f)
             if val is not None:
                 setattr(p, f, val)
@@ -1310,18 +1316,29 @@ def create_app() -> FastAPI:
     # streaming run short between rounds/chunks (see Engine.stream_events).
     chat_stops: dict[str, threading.Event] = {}
 
-    def _chat_approve_cb(chat_id: str):
+    def _chat_approve_cb(chat_id: str, profile: Optional[Profile] = None):
         import threading
 
         ctl = {"pending": None, "event": threading.Event(), "answer": {"ok": False}}
         chat_approvals[chat_id] = ctl
 
         def approve(tool, args) -> bool:
-            try:
-                from ..harness import Config as HarnessConfig
-                policy = HarnessConfig.load().exec_policy
-            except Exception:
-                policy = "ask"
+            # Per-character override wins over the global default: a fresh
+            # ProfileManager read here (not the `profile` snapshot taken at
+            # stream-start) so a dropdown change lands on the very next tool
+            # call of an in-flight turn, not just the next message.
+            policy = None
+            if profile is not None:
+                try:
+                    policy = getattr(pm.get(profile.name), "exec_policy", None)
+                except Exception:
+                    policy = getattr(profile, "exec_policy", None)
+            if not policy:
+                try:
+                    from ..harness import Config as HarnessConfig
+                    policy = HarnessConfig.load().exec_policy
+                except Exception:
+                    policy = "ask"
             if policy == "allow":
                 return True
             if policy == "deny":
@@ -1392,7 +1409,7 @@ def create_app() -> FastAPI:
                 from ..engine import Engine
                 engine = Engine(settings=config.Settings.load(),
                                 manager=pm, anamnesis=an,
-                                approve=_chat_approve_cb(chat_id))
+                                approve=_chat_approve_cb(chat_id, p))
                 # Pump the engine on a thread and emit a {"type":"ping"}
                 # whenever it's been quiet for 10s: slow local models (MoE
                 # with CPU experts, long thinking phases) legitimately sit
@@ -1514,11 +1531,17 @@ def create_app() -> FastAPI:
 
                 def _policy_only(tool, args) -> bool:
                     # No approval UI on this legacy endpoint: 'ask' fails safe.
-                    try:
-                        from ..harness import Config as HarnessConfig
-                        return HarnessConfig.load().exec_policy == "allow"
-                    except Exception:
-                        return False
+                    # Per-character override (see profiles.Profile.exec_policy)
+                    # still wins over the global default here, same as the
+                    # live chat endpoint above.
+                    policy = getattr(p, "exec_policy", None)
+                    if not policy:
+                        try:
+                            from ..harness import Config as HarnessConfig
+                            policy = HarnessConfig.load().exec_policy
+                        except Exception:
+                            policy = "ask"
+                    return policy == "allow"
 
                 engine = Engine(settings=config.Settings.load(),
                                 manager=pm, anamnesis=an, approve=_policy_only)
@@ -1595,6 +1618,16 @@ def create_app() -> FastAPI:
                 cfg = HarnessConfig.load()
                 if body.policy:
                     cfg.exec_policy = body.policy
+                elif body.character:
+                    # No explicit job-level policy: fall back to the
+                    # character's own exec_policy override (composer's
+                    # Approve/Ask dropdown) before the process-wide default.
+                    try:
+                        char_policy = getattr(pm.get(body.character), "exec_policy", None)
+                        if char_policy:
+                            cfg.exec_policy = char_policy
+                    except Exception:
+                        pass
                 if body.character:
                     _identity.bind_character(body.character, cfg=cfg)
                 bind_memory(WorkingMemory.from_config(cfg))

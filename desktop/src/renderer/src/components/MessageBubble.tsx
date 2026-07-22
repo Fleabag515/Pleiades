@@ -1,4 +1,6 @@
 import { memo, useState } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkBreaks from 'remark-breaks'
 import type { AssistantItem, ChatMessageEntry, ToolItem } from '../lib/types'
 import ReasoningBlock from './ReasoningBlock'
 
@@ -129,6 +131,97 @@ function groupItems(
   return groups
 }
 
+/**
+ * Style overrides so `react-markdown`'s output fits the existing dark
+ * theme/tokens (main.css's --color-ink, --color-bg, --color-accent ramps)
+ * instead of default browser styling -- every tag react-markdown can emit for basic
+ * CommonMark (the owner asked for bold/italic/code/lists/headings, not a
+ * full GFM+extensions stack, so no tables/strikethrough/task-list overrides
+ * here) gets a small, deliberately understated rule matching the rest of
+ * the chat UI's visual weight (ToolChain/ReasoningBlock use the same
+ * ink-dim/ink-faint/border tokens).
+ *
+ * `code`/`pre`: react-markdown v9+ dropped the old `inline` prop (it was
+ * never reliable), so the standard replacement is checking the `code`
+ * element's className for a `language-xxx` token, which remark-rehype only
+ * ever adds to FENCED code blocks -- inline `` `code` `` never gets one.
+ * `pre` is overridden once for the block-code wrapper (a bordered card like
+ * ToolChain's detail card); the inline variant gets its own small pill
+ * instead so a stray backtick never causes a nested/double `<pre>`.
+ */
+const markdownComponents: Components = {
+  p: ({ children }) => <p className="mb-2 whitespace-pre-wrap break-words last:mb-0">{children}</p>,
+  strong: ({ children }) => <strong className="font-semibold text-ink-bright">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-accent underline underline-offset-2 hover:text-accent-hover"
+    >
+      {children}
+    </a>
+  ),
+  ul: ({ children }) => <ul className="my-1.5 ml-5 list-disc space-y-0.5 marker:text-ink-faint">{children}</ul>,
+  ol: ({ children }) => <ol className="my-1.5 ml-5 list-decimal space-y-0.5 marker:text-ink-faint">{children}</ol>,
+  li: ({ children }) => <li className="pl-0.5">{children}</li>,
+  h1: ({ children }) => <h1 className="mb-1.5 mt-3 text-lg font-semibold text-ink-bright first:mt-0">{children}</h1>,
+  h2: ({ children }) => (
+    <h2 className="mb-1.5 mt-3 text-base font-semibold text-ink-bright first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mb-1 mt-2.5 text-[15px] font-semibold text-ink-bright first:mt-0">{children}</h3>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="my-1.5 border-l-2 border-border pl-3 text-ink-dim">{children}</blockquote>
+  ),
+  hr: () => <hr className="my-3 border-border" />,
+  pre: ({ children }) => (
+    <pre className="my-2 overflow-x-auto rounded-lg border border-border bg-bg-100 p-3 text-[13px]">{children}</pre>
+  ),
+  code: ({ className, children, ...rest }) => {
+    const isBlock = /(?:^|\s)language-/.test(className ?? '')
+    if (isBlock) {
+      return (
+        <code className={`font-mono text-ink ${className ?? ''}`} {...rest}>
+          {children}
+        </code>
+      )
+    }
+    return (
+      <code className="rounded bg-bg-300 px-1 py-0.5 font-mono text-[13px] text-ink-bright" {...rest}>
+        {children}
+      </code>
+    )
+  }
+}
+
+/** Renders assistant message text as markdown (bold/italic/inline code/
+ * lists/headings) instead of raw literal syntax -- the owner's ask was
+ * `**Progress:**` showing up literally with asterisks instead of bold.
+ * `remark-breaks` turns a single newline into a real line break (CommonMark
+ * alone only breaks paragraphs on a BLANK line, which would otherwise
+ * silently swallow single `\n`s that used to render via the old
+ * `whitespace-pre-wrap` plain-text path -- a real regression for models
+ * that format with single newlines between short lines/list items).
+ *
+ * Verified live against a partial/streaming buffer (e.g. an unterminated
+ * "**bold" while tokens are still arriving): react-markdown's underlying
+ * parser (micromark, via remark) treats unmatched `**`/`*`/`` ` ``
+ * delimiters as literal text rather than erroring, so a mid-stream chunk
+ * just renders as plain text until its closing delimiter arrives, then
+ * re-renders as the formatted element on the very next chunk -- no crash,
+ * no leftover raw asterisks once the turn finishes.
+ */
+function Markdown({ text }: { text: string }): React.JSX.Element {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkBreaks]} components={markdownComponents}>
+      {text}
+    </ReactMarkdown>
+  )
+}
+
 /** Renders one persisted (or in-progress) chat turn.
  *
  * Structure matches what live accessibility-tree inspection of the real
@@ -168,8 +261,8 @@ function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.El
             return <ReasoningBlock key={i} text={g.text} streaming={isLive} />
           }
           return (
-            <div key={i} className="whitespace-pre-wrap break-words">
-              {g.text}
+            <div key={i} className="break-words">
+              <Markdown text={g.text} />
             </div>
           )
         })}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { assignModel, getProfile, listModels } from '../lib/api'
+import { assignModel, getProfile, listModels, setExecPolicy } from '../lib/api'
 import type { ModelEntry, ProfileDetail } from '../lib/types'
 import { modelDisplayName } from '../lib/format'
 import { subscribeModelsChanged } from '../lib/modelEvents'
@@ -30,6 +30,19 @@ function statusDotClass(m: ModelEntry): string {
   if (m.running) return 'bg-emerald-400'
   if (m.state === 'crashed') return 'bg-rose-400'
   return 'bg-ink-faint'
+}
+
+/** Composer's Approve/Ask control label. `null`/`"allow"` both read as
+ * "Approve" -- new and migrated characters default to "allow" (see
+ * pleiades/profiles.py), so a bare `null` should look identical to an
+ * explicit "allow" here, never fall back to some third label. An explicit
+ * "deny" (only reachable by hand-editing profile.json / the API, not from
+ * this dropdown, which only ever writes allow/ask) still shows plainly
+ * rather than silently rendering as one of the two offered choices. */
+function policyLabel(execPolicy: 'allow' | 'ask' | 'deny' | null): string {
+  if (execPolicy === 'ask') return 'Ask'
+  if (execPolicy === 'deny') return 'Deny'
+  return 'Approve'
 }
 
 /**
@@ -94,6 +107,11 @@ function Composer({
   const [pickerError, setPickerError] = useState<string | null>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
 
+  const [policyOpen, setPolicyOpen] = useState(false)
+  const [policySaving, setPolicySaving] = useState(false)
+  const [policyError, setPolicyError] = useState<string | null>(null)
+  const policyRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     let cancelled = false
     setProfile(null)
@@ -139,6 +157,15 @@ function Composer({
   }, [pickerOpen])
 
   useEffect(() => {
+    if (!policyOpen) return
+    const onDocClick = (e: MouseEvent): void => {
+      if (policyRef.current && !policyRef.current.contains(e.target as Node)) setPolicyOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [policyOpen])
+
+  useEffect(() => {
     const ta = taRef.current
     if (!ta) return
     ta.style.height = 'auto'
@@ -163,6 +190,20 @@ function Composer({
       setPickerError((e as Error).message)
     } finally {
       setAssigning(false)
+    }
+  }
+
+  const choosePolicy = async (value: 'allow' | 'ask'): Promise<void> => {
+    setPolicySaving(true)
+    setPolicyError(null)
+    try {
+      const updated = await setExecPolicy(base, character, value)
+      setProfile(updated)
+      setPolicyOpen(false)
+    } catch (e) {
+      setPolicyError((e as Error).message)
+    } finally {
+      setPolicySaving(false)
     }
   }
 
@@ -248,6 +289,48 @@ function Composer({
                       </div>
                       {pickerError && <div className="mt-2 text-[11px] text-rose-300">{pickerError}</div>}
                       {assigning && <div className="mt-2 text-[11px] text-ink-faint">Saving…</div>}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!disabled && profile && (
+                <div ref={policyRef} className="relative flex-none">
+                  <button
+                    onClick={() => setPolicyOpen((v) => !v)}
+                    title="Tool-call approval for this character: Approve runs tools immediately, Ask prompts every time"
+                    className="flex items-center gap-1 rounded-md px-1.5 py-1.5 text-xs text-ink-faint transition hover:text-ink-dim"
+                  >
+                    <span className="max-w-[140px] truncate">{policyLabel(profile.exec_policy)}</span>
+                    <span aria-hidden className="text-[10px]">
+                      ▾
+                    </span>
+                  </button>
+
+                  {policyOpen && (
+                    <div className="absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-xl border border-border bg-bg-100 p-3 shadow-2xl">
+                      <p className="mb-2 text-[11px] text-ink-faint">
+                        Tool-call approval for <span className="text-ink-dim">{character}</span> — Approve runs
+                        every tool call immediately; Ask prompts you first, every time.
+                      </p>
+                      <div className="flex flex-col gap-0.5">
+                        {(['allow', 'ask'] as const).map((value) => (
+                          <button
+                            key={value}
+                            onClick={() => choosePolicy(value)}
+                            disabled={policySaving}
+                            className={`truncate rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
+                              (profile.exec_policy ?? 'allow') === value
+                                ? 'bg-bg-300 text-ink-bright'
+                                : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
+                            }`}
+                          >
+                            {value === 'allow' ? 'Approve' : 'Ask'}
+                          </button>
+                        ))}
+                      </div>
+                      {policyError && <div className="mt-2 text-[11px] text-rose-300">{policyError}</div>}
+                      {policySaving && <div className="mt-2 text-[11px] text-ink-faint">Saving…</div>}
                     </div>
                   )}
                 </div>

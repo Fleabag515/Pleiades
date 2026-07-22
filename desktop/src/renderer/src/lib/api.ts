@@ -286,6 +286,26 @@ export async function assignModel(
   )
 }
 
+/** Sets a character's tool-call approval override (composer's Approve/Ask
+ * dropdown). Extends the existing PUT /api/profiles/{name} endpoint rather
+ * than adding a new route -- same pattern as every other per-character
+ * field (email, discord, persona_source). Takes effect on the character's
+ * very next tool call, no restart needed: the engine re-reads the profile
+ * from disk on each approval check (see server.py's _chat_approve_cb). */
+export async function setExecPolicy(
+  base: string,
+  name: string,
+  execPolicy: 'allow' | 'ask'
+): Promise<ProfileDetail> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exec_policy: execPolicy })
+    })
+  )
+}
+
 export async function listVault(base: string, name: string): Promise<VaultEntryMeta[]> {
   const data = await asJson<{ entries: VaultEntryMeta[] }>(
     await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/vault`)
