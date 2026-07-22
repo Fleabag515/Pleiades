@@ -42,6 +42,11 @@ std::string token_to_piece(const llama_vocab* vocab, llama_token token) {
 Engine::Engine(ModelManager& models, ContextGovernor& ctx) : models_(models), ctx_(ctx) {}
 
 GenerationResult Engine::complete(const std::string& prompt, int n_predict) {
+    return generate(prompt, n_predict, nullptr);
+}
+
+GenerationResult Engine::generate(const std::string& prompt, int n_predict,
+                                   const std::function<bool(const std::string&)>& on_token) {
     if (!models_.is_loaded()) {
         throw std::runtime_error("pleiades_engine: no model loaded");
     }
@@ -74,7 +79,13 @@ GenerationResult Engine::complete(const std::string& prompt, int n_predict) {
         if (llama_vocab_is_eog(vocab, next)) {
             break;
         }
-        text += token_to_piece(vocab, next);
+        std::string piece = token_to_piece(vocab, next);
+        text += piece;
+        bool keep_going = on_token ? on_token(piece) : true;
+        if (!keep_going) {
+            ++generated;  // count the token we just emitted before stopping
+            break;
+        }
 
         llama_batch next_batch = llama_batch_get_one(&next, 1);
         if (llama_decode(ctx, next_batch) != 0) {

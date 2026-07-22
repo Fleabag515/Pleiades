@@ -37,6 +37,7 @@ add_library(pleiades_engine STATIC
   src/model_manager.cpp
   src/context_governor.cpp
   src/engine.cpp
+  src/chat_template.cpp
 )
 target_include_directories(pleiades_engine PUBLIC include)
 target_link_libraries(pleiades_engine PUBLIC llama)
@@ -48,3 +49,20 @@ target_link_libraries(pleiades-engine-cli PRIVATE pleiades_engine)
 # Python elastic engine and native llama-server's restart-only option.
 add_executable(pleiades-engine-bench-resize src/bench_resize.cpp)
 target_link_libraries(pleiades-engine-bench-resize PRIVATE pleiades_engine)
+
+# Phase 3: HTTP transport shim. cpp-httplib and nlohmann/json are both
+# vendored inside the llama.cpp submodule already (vendor/cpp-httplib,
+# vendor/nlohmann) -- compiled/included directly here rather than turning on
+# LLAMA_BUILD_COMMON (see chat_template.h for why common/chat.cpp + minja
+# are deliberately not wired in yet).
+find_package(Threads REQUIRED)
+set(LLAMA_CPP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp)
+
+add_library(pleiades_httplib STATIC ${LLAMA_CPP_DIR}/vendor/cpp-httplib/httplib.cpp)
+target_include_directories(pleiades_httplib PUBLIC ${LLAMA_CPP_DIR}/vendor/cpp-httplib)
+target_link_libraries(pleiades_httplib PUBLIC Threads::Threads)
+target_compile_features(pleiades_httplib PUBLIC cxx_std_17)
+
+add_executable(pleiades-engine-server src/http_server.cpp)
+target_include_directories(pleiades-engine-server PRIVATE ${LLAMA_CPP_DIR}/vendor)
+target_link_libraries(pleiades-engine-server PRIVATE pleiades_engine pleiades_httplib)

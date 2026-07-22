@@ -204,7 +204,7 @@ budget and leaving fewer layers offloadable than necessary as `n_ctx`
 grows. Worth a small Phase 0.A follow-up (add `qwen35`/`qwen35moe` to
 `_HYBRID_ARCHS`), tracked here rather than fixed mid-Phase-2.
 
-## Phase 3 — HTTP transport shim (OpenAI-compatible)
+## Phase 3 — HTTP transport shim (OpenAI-compatible) (done, results below)
 
 **Goal:** thin HTTP layer over the Phase 1/2 core, matching the existing
 contract in `pleiades/inference/server.py` closely enough that
@@ -223,6 +223,58 @@ in this exact codebase.
 server's HTTP contract pass unmodified against this new binary (point
 `PLEIADES_RUNTIME_BIN`-equivalent env var at it for a manual A/B — don't wire
 into `find_native()` yet, that's Phase 5).
+
+**Results (2026-07-22):** `engine/src/http_server.cpp`, new `pleiades-engine-server`
+binary. Design decision made via council (qwen3.8-max + Kimi, asked
+independently): real per-model jinja chat-templating (`common/chat.cpp` +
+minja) was deliberately deferred rather than wired in now. Qwen's first
+suggestion — "surgically" compile only `chat.cpp` + minja, skip the rest of
+`common/` — was checked against the actual pinned source rather than taken
+on faith: `common/chat.cpp` directly `#include`s `common.h`,
+`json-schema-to-grammar.h`, `log.h`, plus its own auto-parser/peg-parser
+files (confirmed via `grep` on the real file, ~10K lines total across that
+dependency set) — not a light lift. Kimi's independent read agreed
+extraction wasn't realistic and recommended a hardcoded stopgap instead,
+which is what shipped: `chat_template.h`/`.cpp` hardcodes Qwen2/2.5/3.x's
+stable ChatML format (`<|im_start|>role\ncontent<|im_end|>`) since Pleiades
+serves mostly Qwen-family GGUFs today. Real multi-model/tool-calling
+templating via `common/chat.cpp` is tracked as a later follow-up, not
+Phase 3 scope.
+
+`Engine` gained a `generate()` method (callback-per-token) alongside
+`complete()`, so streaming forwards real per-token latency instead of
+buffering the whole completion before responding — `complete()` is now just
+`generate()` with no callback.
+
+cpp-httplib and nlohmann/json (both already vendored inside the llama.cpp
+submodule at `vendor/cpp-httplib` and `vendor/nlohmann`) are compiled/
+included directly in `engine/CMakeLists.txt` as their own small targets,
+without turning on `LLAMA_BUILD_COMMON` — keeps Phase 1's "don't build
+`common/`" decision intact.
+
+Implemented: `GET /`, `GET /health`, `GET /props`, `POST /resize`,
+`POST /v1/chat/completions` (streaming + non-streaming). Not implemented
+(out of scope, not depended on by Anamnesis's real proxy — verified by
+reading `~/.local/share/anamnesis/src/proxy.js` directly rather than
+assuming): `/v1/models`, `/tokenize`, `/extras/tokenize/count`, `/metrics`,
+prompt-overflow auto-upshift, `kv_bytes_per_token` in `/props` (that's
+`hardware.py`'s KV-cost formula, not yet ported to C++). Anamnesis's proxy
+only reads `n_ctx` (falling back to `default_generation_settings.n_ctx`)
+from `/props` and otherwise just forwards `chat/completions` — both are
+present and correct in this shim's output.
+
+One `std::mutex` serializes every request (chat generation AND resize) —
+matches `EngineState`'s own `self.lock` in `server.py` and guards against
+the real bug Qwen's council answer flagged: a `/resize` arriving mid-decode
+would otherwise free the `llama_context*` out from under an in-flight
+`llama_decode()` call.
+
+Manually verified end-to-end against the real small Qwen2.5-0.5B GGUF
+(GPU free at the time): non-streaming chat returns a correct, OpenAI-shaped
+response; streaming chat produces real per-token SSE chunks ending in
+`data: [DONE]`; `/props` reflects `n_ctx`/`n_ctx_max`/gears correctly;
+`POST /resize {"n_ctx":16384}` resizes in 130ms and a follow-up chat
+completion after the resize still produces a correct, coherent answer.
 
 ## Phase 4 — Bench harness + test suite
 
