@@ -26,3 +26,11 @@ export function initial(name: string): string {
 export function formatGiB(bytes: number): string {
   return (bytes / 1073741824).toFixed(1)
 }
+
+/** Custom display-name override (falls back to the real registered name).
+ * Single source of truth for rendering a model's name anywhere in the UI —
+ * Models tab, composer picker, character model-assign dropdown — so a
+ * rename is consistent everywhere without hunting down each call site. */
+export function modelDisplayName(m: { name: string; display_name?: string }): string {
+  return m.display_name?.trim() || m.name
+}

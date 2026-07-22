@@ -76,6 +76,10 @@ export interface ModelEntry {
   n_ctx: number | 'auto'
   n_gpu_layers: number | 'auto'
   chat_format: string
+  // UI-only rename override (pleiades/models.py Model.display_name, added
+  // alongside this feature) — blank/absent means "show `name`". Never used
+  // as a registry key; start/stop/delete/logs all still address by `name`.
+  display_name?: string
   port: number
   state: 'running' | 'loading' | 'crashed' | 'stopped'
   running: boolean

@@ -17,8 +17,10 @@ interface ShellProps {
  * the bottom-left corner opens Settings (unchanged content, still a modal
  * overlay). The main pane below the character bar is always that
  * character's one live `ChatView` — no separate "pick a chat" list, no
- * mode-switch for Local Models/Foundry (folded into Settings, see
- * SettingsPanel's new Foundry tab).
+ * mode-switch for Local Models/Foundry (folded into Settings; Settings
+ * itself now has a left-nav Characters/Hardware/Models layout, with Models
+ * owning its own Models/Download/Ollama Cloud/OpenRouter internal tabs —
+ * see SettingsPanel and ModelsSection).
  */
 function Shell({ base }: ShellProps): React.JSX.Element {
   const [profiles, setProfiles] = useState<Profile[]>([])

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { assignModel, listModels } from '../../lib/api'
 import type { ModelEntry, ProfileDetail } from '../../lib/types'
+import { modelDisplayName } from '../../lib/format'
 import SaveStatus, { type SaveStatusValue } from './SaveStatus'
 
 interface ModelAssignSectionProps {
@@ -74,7 +75,7 @@ function ModelAssignSection({ base, profile, onUpdated }: ModelAssignSectionProp
           <option value="">Default engine (PLEIADES_MODEL_PATH)</option>
           {models.map((m) => (
             <option key={m.name} value={m.name}>
-              {m.name}
+              {modelDisplayName(m)}
             </option>
           ))}
         </select>

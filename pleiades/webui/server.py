@@ -123,6 +123,8 @@ class ModelUpdate(BaseModel):
     n_ctx: "Optional[int | str]" = None
     n_gpu_layers: "Optional[int | str]" = None
     chat_format: Optional[str] = None
+    # UI-only display name override; "" clears it back to showing `name`.
+    display_name: Optional[str] = None
 
 
 class AvatarBody(BaseModel):
@@ -277,6 +279,8 @@ def _model_mgr_update(mm: ModelManager, name: str, body: ModelUpdate) -> dict:
         entry["n_gpu_layers"] = body.n_gpu_layers
     if body.chat_format is not None:
         entry["chat_format"] = body.chat_format
+    if body.display_name is not None:
+        entry["display_name"] = body.display_name
     mm._save(reg)  # noqa: SLF001
     entry = dict(entry)
     entry["running"] = mm.is_running(name)

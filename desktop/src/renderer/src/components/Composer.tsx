@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { assignModel, getProfile, listModels } from '../lib/api'
 import type { ModelEntry, ProfileDetail } from '../lib/types'
+import { modelDisplayName } from '../lib/format'
 
 interface ComposerProps {
   base: string
@@ -12,11 +13,13 @@ interface ComposerProps {
   onOpenHistory: () => void
 }
 
-function modelLabel(model: string): string {
+function modelLabel(model: string, models: ModelEntry[]): string {
   if (!model) return 'Default engine'
   if (model.startsWith('openrouter:')) return model.slice('openrouter:'.length)
   if (model.startsWith('ollama-cloud:')) return model.slice('ollama-cloud:'.length)
-  return model
+  // Local registry model: show its custom display name if one is set.
+  const entry = models.find((m) => m.name === model)
+  return entry ? modelDisplayName(entry) : model
 }
 
 /**
@@ -155,7 +158,7 @@ function Composer({ base, character, disabled, streaming, onSend, onStop, onOpen
                   className="flex items-center gap-1 rounded-full border border-border bg-bg-surface px-2.5 py-1 text-xs text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
                 >
                   <span aria-hidden>⬡</span>
-                  <span className="max-w-[200px] truncate">{modelLabel(profile.model)}</span>
+                  <span className="max-w-[200px] truncate">{modelLabel(profile.model, models)}</span>
                   <span aria-hidden className="text-[10px]">
                     ▾
                   </span>
@@ -188,7 +191,7 @@ function Composer({ base, character, disabled, streaming, onSend, onStop, onOpen
                               : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
                           }`}
                         >
-                          {m.name}
+                          {modelDisplayName(m)}
                         </button>
                       ))}
                     </div>

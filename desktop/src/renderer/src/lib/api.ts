@@ -126,6 +126,35 @@ export async function stopModel(base: string, name: string): Promise<void> {
   await fetch(`${base}/api/models/${encodeURIComponent(name)}/stop`, { method: 'POST' })
 }
 
+/** PUT /api/models/{name} — currently only used from the UI to set/clear
+ * `display_name` (the rename feature), but mirrors the full backend
+ * ModelUpdate shape so it isn't a dead end if more fields get editable later. */
+export async function updateModel(
+  base: string,
+  name: string,
+  body: { display_name?: string; path?: string; n_ctx?: number | 'auto'; n_gpu_layers?: number | 'auto'; chat_format?: string }
+): Promise<ModelEntry> {
+  return asJson(
+    await fetch(`${base}/api/models/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+  )
+}
+
+/** DELETE /api/models/{name} — the backend also deletes the underlying GGUF
+ * file from disk (ModelManager.remove(name) defaults delete_file=True), so
+ * callers must confirm with the user before calling this; it's not
+ * reversible. */
+export async function deleteModel(base: string, name: string): Promise<{ ok: boolean }> {
+  return asJson(await fetch(`${base}/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' }))
+}
+
+export async function modelLogs(base: string, name: string, lines = 250): Promise<{ name: string; state: string; log: string }> {
+  return asJson(await fetch(`${base}/api/models/${encodeURIComponent(name)}/logs?lines=${lines}`))
+}
+
 /**
  * Streams a chat turn, invoking `onEvent` for each NDJSON line as it arrives.
  * Resolves when the stream ends (naturally or via `signal` abort).
