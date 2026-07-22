@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { ChatMessageEntry } from '../lib/types'
 import Avatar from './Avatar'
 
@@ -86,4 +87,10 @@ function MessageBubble({ message, base, character, streaming }: MessageBubblePro
   )
 }
 
-export default MessageBubble
+// Memoized: ChatView re-renders on every streamed token (draft/reasoning
+// state changes), which would otherwise re-run every historical
+// MessageBubble's render function on every token for long conversations.
+// Historical `message`/`base`/`character` props are referentially stable
+// between those re-renders, so memo turns that into a no-op for anything
+// but the live streaming bubble.
+export default memo(MessageBubble)

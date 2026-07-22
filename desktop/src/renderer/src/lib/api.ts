@@ -1,4 +1,17 @@
-import type { ApiStatus, ChatDetail, ChatSummary, ModelEntry, PendingApproval, Profile, StreamEvent } from './types'
+import type {
+  ApiStatus,
+  ChatDetail,
+  ChatSummary,
+  DiscordInfo,
+  EmailPresets,
+  HardwareInfo,
+  ModelEntry,
+  PendingApproval,
+  Profile,
+  ProfileDetail,
+  StreamEvent,
+  VaultEntryMeta
+} from './types'
 
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -130,4 +143,101 @@ export async function streamMessage(
       // ignore
     }
   }
+}
+
+export async function getProfile(base: string, name: string): Promise<ProfileDetail> {
+  return asJson(await fetch(`${base}/api/profiles/${encodeURIComponent(name)}`))
+}
+
+export async function getEmailPresets(base: string): Promise<EmailPresets> {
+  return asJson(await fetch(`${base}/api/email/presets`))
+}
+
+export async function setEmailConfig(
+  base: string,
+  name: string,
+  body: { email_address: string; imap_host: string; imap_port: number; smtp_host: string; smtp_port: number; password?: string | null }
+): Promise<ProfileDetail> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+  )
+}
+
+export async function setDiscordConfig(
+  base: string,
+  name: string,
+  body: {
+    token?: string | null
+    enabled: boolean
+    require_mention?: boolean
+    respond_to_bots?: boolean
+    allowed_channels?: string
+  }
+): Promise<ProfileDetail> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/discord`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+  )
+}
+
+export async function getDiscordInfo(base: string, name: string): Promise<DiscordInfo> {
+  return asJson(await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/discord/info`))
+}
+
+export async function assignModel(base: string, name: string, model: string): Promise<ProfileDetail> {
+  return asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/model`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model })
+    })
+  )
+}
+
+export async function listVault(base: string, name: string): Promise<VaultEntryMeta[]> {
+  const data = await asJson<{ entries: VaultEntryMeta[] }>(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/vault`)
+  )
+  return data.entries
+}
+
+export async function revealVaultEntry(base: string, name: string, key: string): Promise<string> {
+  const data = await asJson<{ key: string; value: string }>(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/vault/${encodeURIComponent(key)}`)
+  )
+  return data.value
+}
+
+export async function setVaultEntry(
+  base: string,
+  name: string,
+  body: { key: string; value: string; note?: string }
+): Promise<VaultEntryMeta[]> {
+  const data = await asJson<{ entries: VaultEntryMeta[] }>(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/vault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+  )
+  return data.entries
+}
+
+export async function deleteVaultEntry(base: string, name: string, key: string): Promise<void> {
+  await asJson(
+    await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/vault/${encodeURIComponent(key)}`, {
+      method: 'DELETE'
+    })
+  )
+}
+
+export async function getHardware(base: string): Promise<HardwareInfo> {
+  return asJson(await fetch(`${base}/api/hardware`))
 }

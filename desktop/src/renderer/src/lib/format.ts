@@ -21,3 +21,8 @@ export function initial(name: string): string {
   const trimmed = name.trim()
   return trimmed ? trimmed[0].toUpperCase() : '?'
 }
+
+/** Bytes -> GiB, one decimal place — matches the legacy webui's `GiB()`. */
+export function formatGiB(bytes: number): string {
+  return (bytes / 1073741824).toFixed(1)
+}

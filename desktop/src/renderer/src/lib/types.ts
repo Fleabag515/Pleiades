@@ -117,3 +117,77 @@ export interface PendingApproval {
   tool: string
   args: string
 }
+
+export interface VaultEntryMeta {
+  key: string
+  meta: { note?: string; reserved?: boolean } | null
+  reserved: boolean
+  site: string | null
+  created_at: number
+  updated_at: number
+}
+
+export interface ModelInfo {
+  registered: boolean
+  running: boolean
+}
+
+export interface ProfileDetail extends Profile {
+  browser_dir: string
+  vault: VaultEntryMeta[]
+  model_info?: ModelInfo
+}
+
+export interface EmailPreset {
+  imap_host: string
+  imap_port: number
+  smtp_host: string
+  smtp_port: number
+  note?: string
+}
+
+export type EmailPresets = Record<string, EmailPreset>
+
+export interface DiscordInfo {
+  configured: boolean
+  valid?: boolean
+  error?: string
+  bot?: { username: string; id: string }
+  guilds?: { id: string; name: string }[]
+}
+
+export interface GpuInfo {
+  vendor: string
+  name: string
+  vram_total: number
+  vram_free: number
+}
+
+export interface ModelPlan {
+  model: string
+  n_gpu_layers: number | string
+  n_layers: number
+  strategy: string
+  est_tps: number
+  moe: boolean
+  n_cpu_moe: number
+  reason: string
+  fits_fully: boolean
+}
+
+export interface RuntimeStatus {
+  native: string | null
+  moe_offload: boolean
+  version?: string
+}
+
+export interface HardwareInfo {
+  gpus: GpuInfo[]
+  ram_total: number
+  ram_available: number
+  cpu_threads: number
+  unified_memory: boolean
+  summary: string
+  plans: ModelPlan[]
+  runtime: RuntimeStatus
+}
