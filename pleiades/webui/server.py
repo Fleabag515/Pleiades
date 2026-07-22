@@ -45,8 +45,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import config
+from .. import scheduler
 from ..profiles import ProfileManager, Profile
 from ..models import ModelManager, ModelError
+from ..scheduler import ScheduledTaskManager, ScheduleError
 from ..vault import RESERVED_KEYS
 from ..anamnesis import Anamnesis
 
@@ -174,6 +176,26 @@ class WorkStart(BaseModel):
 
 class WorkApprove(BaseModel):
     approve: bool = False
+
+
+class ScheduledTaskCreate(BaseModel):
+    task: str
+    character: str = ""
+    cron: str = ""
+    fire_at: float = 0.0     # epoch seconds; 0 means "not one-time" (use cron)
+    tier: str = ""
+    policy: str = ""
+
+
+class ScheduledTaskUpdate(BaseModel):
+    task: Optional[str] = None
+    character: Optional[str] = None
+    cron: Optional[str] = None
+    fire_at: Optional[float] = None
+    tier: Optional[str] = None
+    policy: Optional[str] = None
+    enabled: Optional[bool] = None
+
 
 class BrowserViewStart(BaseModel):
     url: str = ""
@@ -1574,15 +1596,16 @@ def create_app() -> FastAPI:
             for j in sorted(work_jobs.values(), key=lambda x: -x["started"])
         ]}
 
-    @app.post("/api/work")
-    def work_start(body: WorkStart) -> dict:
+    def _launch_work_job(task_text: str, character: str = "", tier: str = "",
+                         policy: str = "") -> str:
+        """Start a work job and return its id. The shared core behind both
+        POST /api/work (a human/UI-triggered run) and the scheduler (a
+        cron/one-time-triggered run) -- one job-execution code path, two
+        triggers. Caller validates task_text is non-empty."""
         import uuid
-        task_text = (body.task or "").strip()
-        if not task_text:
-            raise HTTPException(400, "Task must not be empty.")
         job_id = uuid.uuid4().hex[:12]
-        job = {"id": job_id, "task": task_text, "character": body.character,
-               "tier": body.tier, "policy": body.policy, "status": "running",
+        job = {"id": job_id, "task": task_text, "character": character,
+               "tier": tier, "policy": policy, "status": "running",
                "started": time.time(), "finished": None, "events": [],
                "result": "", "error": "", "steps": 0,
                "pending_approval": None, "cancel": False}
@@ -1616,28 +1639,28 @@ def create_app() -> FastAPI:
                 from ..harness.anamnesis import Anamnesis as WorkingMemory
 
                 cfg = HarnessConfig.load()
-                if body.policy:
-                    cfg.exec_policy = body.policy
-                elif body.character:
+                if policy:
+                    cfg.exec_policy = policy
+                elif character:
                     # No explicit job-level policy: fall back to the
                     # character's own exec_policy override (composer's
                     # Approve/Ask dropdown) before the process-wide default.
                     try:
-                        char_policy = getattr(pm.get(body.character), "exec_policy", None)
+                        char_policy = getattr(pm.get(character), "exec_policy", None)
                         if char_policy:
                             cfg.exec_policy = char_policy
                     except Exception:
                         pass
-                if body.character:
-                    _identity.bind_character(body.character, cfg=cfg)
+                if character:
+                    _identity.bind_character(character, cfg=cfg)
                 bind_memory(WorkingMemory.from_config(cfg))
 
                 def approve(tool, args) -> bool:
                     """Permission gate; 'ask' surfaces an approval card in the UI."""
-                    policy = cfg.exec_policy
-                    if policy == "allow":
+                    p = cfg.exec_policy
+                    if p == "allow":
                         return True
-                    if policy == "deny":
+                    if p == "deny":
                         return False
                     import json as _json
                     job["pending_approval"] = {
@@ -1649,7 +1672,7 @@ def create_app() -> FastAPI:
                     job["pending_approval"] = None
                     return bool(ctl["answer"]["ok"]) if answered else False
 
-                agent = Agent(cfg, tier_name=body.tier or None, approve=approve)
+                agent = Agent(cfg, tier_name=tier or None, approve=approve)
                 bind_context(cfg, depth=0, approve=agent.approve)
                 result = agent.run(task_text, on_event=emit)
                 job["result"] = getattr(result, "answer", str(result))
@@ -1662,6 +1685,21 @@ def create_app() -> FastAPI:
                 job["finished"] = time.time()
 
         threading.Thread(target=runner, daemon=True).start()
+        return job_id
+
+    # Scheduler fires jobs through the exact same path a human-triggered
+    # POST /api/work does -- see the startup hook below for where this is
+    # actually wired in (scheduler.set_job_launcher).
+    def _scheduled_job_launcher(task_text: str, character: str, tier: str,
+                                policy: str) -> str:
+        return _launch_work_job(task_text, character, tier, policy)
+
+    @app.post("/api/work")
+    def work_start(body: WorkStart) -> dict:
+        task_text = (body.task or "").strip()
+        if not task_text:
+            raise HTTPException(400, "Task must not be empty.")
+        job_id = _launch_work_job(task_text, body.character, body.tier, body.policy)
         return {"id": job_id}
 
     @app.get("/api/work/{job_id}")
@@ -1691,6 +1729,40 @@ def create_app() -> FastAPI:
         if ctl and job["pending_approval"]:        # unblock a waiting approval
             ctl["answer"]["ok"] = False
             ctl["event"].set()
+        return {"ok": True}
+
+    # ----------------------------- scheduled tasks --------------------------- #
+    # Same manager the schedule harness tools (pleiades/harness/builtins/
+    # schedule.py) use -- a character's own create_scheduled_task and this
+    # desktop-app CRUD surface are two front doors onto one JSON store
+    # (~/.pleiades/scheduled_tasks.json), never two sources of truth.
+    stm = ScheduledTaskManager()
+
+    @app.get("/api/scheduled-tasks")
+    def scheduled_tasks_list() -> dict:
+        return {"tasks": stm.list()}
+
+    @app.post("/api/scheduled-tasks")
+    def scheduled_tasks_create(body: ScheduledTaskCreate) -> dict:
+        try:
+            return stm.create(body.task, character=body.character, cron=body.cron,
+                              fire_at=body.fire_at, tier=body.tier, policy=body.policy)
+        except ScheduleError as e:
+            raise HTTPException(400, str(e))
+
+    @app.patch("/api/scheduled-tasks/{task_id}")
+    def scheduled_tasks_update(task_id: str, body: ScheduledTaskUpdate) -> dict:
+        patch = {k: v for k, v in body.model_dump().items() if v is not None}
+        try:
+            return stm.update(task_id, **patch)
+        except ScheduleError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/api/scheduled-tasks/{task_id}")
+    def scheduled_tasks_delete(task_id: str) -> dict:
+        ok = stm.delete(task_id)
+        if not ok:
+            raise HTTPException(404, "No such scheduled task.")
         return {"ok": True}
 
     # ----------------------------- browser view (Playwright/Chromium) ------- #
@@ -1799,6 +1871,16 @@ def create_app() -> FastAPI:
         finally:
             sender_task.cancel()
             session.unsubscribe(queue)
+
+    @app.on_event("startup")
+    async def _start_scheduler() -> None:
+        """Wire the scheduler to fire jobs through the same path POST
+        /api/work uses, then start its once-a-minute background thread.
+        Idempotent (start_scheduler_thread no-ops on a second call), so this
+        is safe even though create_app() can in principle run more than
+        once in a process (tests do this)."""
+        scheduler.set_job_launcher(_scheduled_job_launcher)
+        scheduler.start_scheduler_thread()
 
     @app.on_event("startup")
     async def _bind_browser_view_loop() -> None:

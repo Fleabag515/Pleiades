@@ -11,6 +11,7 @@ from . import notebook    # noqa: F401  notebook_read / notebook_append / notebo
 from . import documents  # noqa: F401  read_pdf / read_docx / read_xlsx / read_image
 from . import quality    # noqa: F401  format_code / lint_code / run_tests
 from . import events     # noqa: F401  start/stop_webhook_listener / wait_for_event / list_events
+from . import schedule   # noqa: F401  create/list/update/delete_scheduled_task
 from . import browser    # noqa: F401  browser_open/read/click/fill/screenshot/close (optional dep)
 from . import inference  # noqa: F401  hardware / models / profile / characters
 from . import practice   # noqa: F401  practice_status / study_tool / record_lesson
