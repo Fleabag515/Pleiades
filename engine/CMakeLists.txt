@@ -18,6 +18,9 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+option(PLEIADES_ENGINE_BUILD_TESTS "Build engine/tests (downloads a tiny fixture GGUF)" ON)
+include(CTest)
+
 # We only need libllama itself for this phase (llama_sampler_* and the
 # context/batch/decode API all live directly in include/llama.h) -- not
 # `common` (chat templates, json-schema-grammar, CLI arg parsing), so skip
@@ -50,6 +53,9 @@ target_link_libraries(pleiades-engine-cli PRIVATE pleiades_engine)
 add_executable(pleiades-engine-bench-resize src/bench_resize.cpp)
 target_link_libraries(pleiades-engine-bench-resize PRIVATE pleiades_engine)
 
+add_executable(pleiades-engine-bench-ladder src/bench_ladder.cpp)
+target_link_libraries(pleiades-engine-bench-ladder PRIVATE pleiades_engine)
+
 # Phase 3: HTTP transport shim. cpp-httplib and nlohmann/json are both
 # vendored inside the llama.cpp submodule already (vendor/cpp-httplib,
 # vendor/nlohmann) -- compiled/included directly here rather than turning on
@@ -66,3 +72,7 @@ target_compile_features(pleiades_httplib PUBLIC cxx_std_17)
 add_executable(pleiades-engine-server src/http_server.cpp)
 target_include_directories(pleiades-engine-server PRIVATE ${LLAMA_CPP_DIR}/vendor)
 target_link_libraries(pleiades-engine-server PRIVATE pleiades_engine pleiades_httplib)
+
+if (PLEIADES_ENGINE_BUILD_TESTS)
+  add_subdirectory(tests)
+endif()

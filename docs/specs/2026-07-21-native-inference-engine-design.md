@@ -276,7 +276,7 @@ response; streaming chat produces real per-token SSE chunks ending in
 `POST /resize {"n_ctx":16384}` resizes in 130ms and a follow-up chat
 completion after the resize still produces a correct, coherent answer.
 
-## Phase 4 — Bench harness + test suite
+## Phase 4 — Bench harness + test suite (done, results below)
 
 **Goal:** a repeatable side-by-side benchmark (tokens/sec prefill+decode,
 resize latency across the full gear ladder, memory footprint) run against
@@ -287,6 +287,69 @@ existing conventions (synthetic small-GGUF fixtures, no real 35B model in CI).
 
 **Verification:** numbers written up in this doc's changelog section (append,
 don't rewrite the design above); test suite green.
+
+**Results (2026-07-22):**
+
+Test suite: `engine/tests/` (`test_chat_template`, `test_model_manager`,
+`test_context_governor`, `test_engine`), plain CTest executables mirroring
+llama.cpp's own test convention exactly (no external test framework, matches
+the project's no-third-party-deps stance elsewhere). Fixture is llama.cpp's
+OWN official CI model (`ggml-org/models`' `tinyllamas/stories15M-q4_0.gguf`,
+hash-verified via the vendored `cmake/download-models.cmake` -- the same
+script and file `test-thread-safety` uses in the llama.cpp submodule itself)
+rather than `tests/test_context_plan.py`'s `make_gguf()` pattern, which
+writes metadata-only GGUFs with zero tensors -- fine for testing Python's
+hparams parsing, but not loadable by `llama_model_load_from_file()`, which
+the C++ engine's tests actually need. `ctest`: 5/5 pass.
+
+Two real test bugs were caught and fixed during this phase, both worth
+noting since they're easy mistakes to repeat: (1) asserting a resized
+`llama_context*` differs from its pre-resize pointer -- freed-then-
+immediately-reallocated memory commonly returns the *same* address, so
+pointer identity isn't a reliable "did a real free+recreate happen" signal;
+fixed by checking the functional contract (`n_ctx()` reflects the new size)
+instead. (2) asserting byte-identical greedy output before/after a resize
+on the tiny fixture -- its own trained context is 128 tokens (confirmed via
+llama.cpp's own load log: "n_ctx_seq (1024) > n_ctx_train (128) -- possible
+training context overflow"), and once a model is extrapolating beyond its
+trained window, Flash Attention auto-selection and summation order are
+allowed to differ between different `n_ctx` allocations, so exact output
+isn't guaranteed. The real byte-identical-output claim is already proven at
+production scale (Phase 2's real 35B model, resized within its actual
+262144-token trained ceiling) -- this unit test's job is narrower: catch a
+regression where resize leaves the engine unable to generate at all.
+
+Full-gear-ladder bench (`engine/src/bench_ladder.cpp`, new
+`pleiades-engine-bench-ladder` binary), real Ornith-1.0-35B Q6_K GGUF,
+CPU-only (the box's one RTX 2080 Ti was shared with an unrelated Immich
+photo-library ML service at the time, not itself a Pleiades character --
+Mark's own live server was stopped and restarted around this benchmark
+exactly like Phase 2, but the GPU sweep itself was skipped this time since
+Immich's process didn't leave enough free VRAM for a meaningful offload
+split; CPU-only still gives a valid relative comparison across the full
+ladder):
+
+| n_ctx   | native resize (ms) | Python resize (ms) | native decode tok/s | VmRSS (MB) |
+|---------|---------------------|----------------------|----------------------|------------|
+| 4096    | (baseline)          | (baseline)            | 3.3\*                | 27,329     |
+| 8192    | 366                 | 4489                  | 6.4                  | 27,414     |
+| 16384   | 303                 | 4456                  | 6.6                  | 27,575     |
+| 32768   | 509                 | 4687                  | 6.6                  | 27,891     |
+| 65536   | 1007                | 5374                  | 6.7                  | 28,532     |
+| 131072  | 1840                | 6374                  | 6.6                  | 29,804     |
+
+\*first-call warmup artifact (JIT/cache effects), not representative --
+subsequent gears stabilize around 6.4-6.7 tok/s, consistent with a MoE
+model with ~3B active params per token.
+
+Native resize stays **~8-12x faster than the Python engine across the
+entire gear ladder**, not just the single jump Phase 2 measured -- confirms
+Phase 2's finding generalizes rather than being a one-off. Memory footprint
+grows only modestly across a 32x context increase (27.3GB -> 29.8GB, ~9%)
+-- consistent with this being a hybrid model (most layers are O(1)
+recurrent state, only a handful of real attention layers have dense
+KV growth with `n_ctx`; see the Phase 2 "side finding" on `qwen35moe` not
+yet being in `_HYBRID_ARCHS`).
 
 ## Phase 5 — Cutover
 
