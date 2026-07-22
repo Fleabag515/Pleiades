@@ -38,6 +38,7 @@ except Exception:  # pragma: no cover
     httpx = None  # type: ignore
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -338,6 +339,16 @@ def _memory_stats(name: str) -> dict:
 # --------------------------------------------------------------------------- #
 def create_app() -> FastAPI:
     app = FastAPI(title="Pleiades Control Panel", version="2.0.0")
+    # Desktop app (Electron renderer, served from a Vite dev-server origin or
+    # file://) talks to this loopback-only server cross-origin. Scope CORS to
+    # localhost/127.0.0.1 only — this server never leaves the machine anyway.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|file://|null)$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     settings = config.Settings.load()
     pm = ProfileManager(settings)
