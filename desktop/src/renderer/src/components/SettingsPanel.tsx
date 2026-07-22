@@ -4,19 +4,25 @@ import type { Profile } from '../lib/types'
 import ModelsTab from './settings/ModelsTab'
 import CharactersTab from './settings/CharactersTab'
 import HardwareTab from './settings/HardwareTab'
+import ModelFoundryView from './ModelFoundryView'
 
 interface SettingsPanelProps {
   base: string
   onClose: () => void
 }
 
-type Tab = 'models' | 'characters' | 'hardware'
+type Tab = 'models' | 'foundry' | 'characters' | 'hardware'
 
-const TABS: Tab[] = ['models', 'characters', 'hardware']
+const TABS: Tab[] = ['models', 'foundry', 'characters', 'hardware']
 
-/** Gear-icon modal: Models (start/stop registered GGUFs), Characters (full
- * per-character email/Discord/model/vault editing), and Hardware (this
- * machine's detected GPU/RAM/CPU + per-model offload plans). */
+/** Gear-icon modal: Models (start/stop registered GGUFs), Foundry (acquire a
+ * new model — HF search/quant/download/cloud; folded in here as its new
+ * home now that the old sidebar's top-level Foundry section is gone),
+ * Characters (full per-character email/Discord/model/vault editing), and
+ * Hardware (this machine's detected GPU/RAM/CPU + per-model offload
+ * plans). Tab content itself is otherwise unchanged from before — this
+ * phase only adds the Foundry tab for reachability, it doesn't restructure
+ * any tab's internal layout (that's a separate phase). */
 function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element {
   const [tab, setTab] = useState<Tab>('models')
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -66,6 +72,7 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
           )}
 
           {tab === 'models' && <ModelsTab base={base} />}
+          {tab === 'foundry' && <ModelFoundryView base={base} />}
           {tab === 'characters' && <CharactersTab base={base} profiles={profiles} />}
           {tab === 'hardware' && <HardwareTab base={base} />}
         </div>

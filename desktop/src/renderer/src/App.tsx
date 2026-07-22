@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Shell from './components/Shell'
 import TitleBar from './components/TitleBar'
+import { ChatSessionsProvider } from './lib/chatStore'
 
 interface BackendStatus {
   phase: 'starting' | 'ready' | 'error'
@@ -76,7 +77,9 @@ function App(): React.JSX.Element {
       <div className="flex h-screen w-full flex-col overflow-hidden">
         <TitleBar />
         <div className="min-h-0 flex-1">
-          <Shell base={view.url} />
+          <ChatSessionsProvider>
+            <Shell base={view.url} />
+          </ChatSessionsProvider>
         </div>
       </div>
     )

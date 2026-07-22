@@ -9,6 +9,17 @@ interface MessageBubbleProps {
   streaming?: boolean
 }
 
+/**
+ * Renders one completed (or in-flight) tool call inline in the transcript.
+ *
+ * Structure/clarity deliberately matches the legacy webui's `toolBlock()`
+ * (pleiades/webui/static/app.js): a collapsible `<details>` with a summary
+ * line (status icon + tool name + a pending/done/error tag) and a body
+ * showing the raw args followed by a `<pre>` of the output — read-only
+ * reference styling, not the approval-gating `ApprovalCard` (that's a
+ * different concern: a pending permission gate on a tool call that hasn't
+ * run yet, vs. this, a completed call's name/args/result on display).
+ */
 function ToolBlock({
   name,
   args,
@@ -20,21 +31,23 @@ function ToolBlock({
   output: string | null
   ok: boolean | null
 }): React.JSX.Element {
+  const pending = output === null
+  const tagClass = pending ? 'text-amber-400' : ok === false ? 'text-rose-400' : 'text-emerald-400'
+  const tagText = pending ? 'running…' : ok === false ? 'error' : 'done'
   return (
-    <div className="my-1.5 rounded-lg bg-bg-100 px-3 py-2 text-xs">
-      <div className="flex items-center gap-1.5 font-mono text-ink-dim">
-        <span className={ok === false ? 'text-rose-400' : ok === true ? 'text-emerald-400' : 'text-amber-400'}>
-          {ok === null ? '…' : ok ? '✓' : '✕'}
-        </span>
+    <details className="my-1.5 rounded-lg border border-border bg-bg-100 text-xs">
+      <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-ink-dim [&::-webkit-details-marker]:hidden">
+        <span className={tagClass}>{pending ? '◌' : ok === false ? '✕' : '✓'}</span>
         <span className="text-ink">{name}</span>
-        <span className="truncate opacity-70">{args}</span>
-      </div>
-      {output != null && (
-        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-ink-dim">
-          {output}
+        <span className={`ml-auto text-[10.5px] uppercase tracking-wide ${tagClass}`}>{tagText}</span>
+      </summary>
+      <div className="border-t border-border px-3 py-2">
+        {args && <div className="mb-1.5 break-all font-mono text-[11px] text-ink-faint">{args}</div>}
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-ink-dim">
+          {pending ? '…' : output || '(no output)'}
         </pre>
-      )}
-    </div>
+      </div>
+    </details>
   )
 }
 

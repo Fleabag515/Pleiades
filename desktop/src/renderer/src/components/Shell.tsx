@@ -1,119 +1,83 @@
 import { useCallback, useEffect, useState } from 'react'
-import { createChat, deleteChat, getChat, listChats, listProfiles } from '../lib/api'
-import type { ChatDetail, ChatSummary, Profile } from '../lib/types'
+import { listProfiles } from '../lib/api'
+import type { Profile } from '../lib/types'
 import ChatView from './ChatView'
-import LocalModelsView from './LocalModelsView'
-import ModelFoundryView from './ModelFoundryView'
-import Sidebar, { type Section } from './Sidebar'
+import CreateCharacterOverlay from './CreateCharacterOverlay'
 import SettingsPanel from './SettingsPanel'
+import TopCharacterBar from './TopCharacterBar'
 
 interface ShellProps {
   base: string
 }
 
-/** Top-level authenticated app shell: sidebar + main pane + settings
- * modal, all backed by the live pleiades.webui REST API at `base`.
- * Mirrors Claude Desktop's shape: a top-level section switch in the
- * sidebar (their Home/Code -> our Chats/Model Foundry) alongside the
- * chat UI, rather than the previous single chat-only view. */
+/**
+ * Top-level app shell after the sidebar-removal rebuild (owner brief items
+ * 1-2): a top bar of character bubbles (+ the "+" create bubble) replaces
+ * the entire old left sidebar, and a floating circular cogwheel bubble in
+ * the bottom-left corner opens Settings (unchanged content, still a modal
+ * overlay). The main pane below the character bar is always that
+ * character's one live `ChatView` — no separate "pick a chat" list, no
+ * mode-switch for Local Models/Foundry (folded into Settings, see
+ * SettingsPanel's new Foundry tab).
+ */
 function Shell({ base }: ShellProps): React.JSX.Element {
-  const [section, setSection] = useState<Section>('chats')
   const [profiles, setProfiles] = useState<Profile[]>([])
-  const [chats, setChats] = useState<ChatSummary[]>([])
   const [activeCharacter, setActiveCharacter] = useState('')
-  const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const refreshChats = useCallback(async () => {
+  const refreshProfiles = useCallback(async () => {
     try {
-      setChats(await listChats(base))
+      const d = await listProfiles(base)
+      setProfiles(d.profiles)
+      setActiveCharacter((c) => c || d.profiles[0]?.name || '')
     } catch (e) {
       setError((e as Error).message)
     }
   }, [base])
 
   useEffect(() => {
-    listProfiles(base)
-      .then((d) => {
-        setProfiles(d.profiles)
-        if (d.profiles.length > 0) setActiveCharacter((c) => c || d.profiles[0].name)
-      })
-      .catch((e) => setError((e as Error).message))
-    refreshChats()
-  }, [base, refreshChats])
-
-  const openChat = async (id: string): Promise<void> => {
-    try {
-      const detail = await getChat(base, id)
-      setActiveChat(detail)
-      setActiveCharacter(detail.character)
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
-
-  const newChat = async (): Promise<void> => {
-    if (!activeCharacter) {
-      setError('Create a character first (no profiles found).')
-      return
-    }
-    try {
-      const chat = await createChat(base, activeCharacter)
-      setActiveChat(chat)
-      await refreshChats()
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
-
-  const removeChat = async (id: string): Promise<void> => {
-    try {
-      await deleteChat(base, id)
-      if (activeChat?.id === id) setActiveChat(null)
-      await refreshChats()
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
+    refreshProfiles()
+  }, [refreshProfiles])
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-bg-app text-ink">
-      <Sidebar
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-bg-app text-ink">
+      <TopCharacterBar
         base={base}
-        section={section}
-        onSectionChange={setSection}
         profiles={profiles}
         activeCharacter={activeCharacter}
         onSelectCharacter={setActiveCharacter}
-        chats={chats}
-        activeChatId={activeChat?.id ?? null}
-        onSelectChat={openChat}
-        onNewChat={newChat}
-        onDeleteChat={removeChat}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenCreate={() => setCreateOpen(true)}
       />
-      <div className="flex min-w-0 flex-1 flex-col">
-        {error && (
-          <div className="flex-none border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
-            {error}
-          </div>
-        )}
-        {section === 'chats' ? (
-          <ChatView
-            base={base}
-            chat={activeChat}
-            activeCharacter={activeCharacter}
-            onNewChat={newChat}
-            onChatChanged={refreshChats}
-          />
-        ) : section === 'models' ? (
-          <LocalModelsView base={base} />
-        ) : (
-          <ModelFoundryView base={base} />
-        )}
+
+      {error && (
+        <div className="flex-none border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
+          {error}
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1">
+        <ChatView base={base} character={activeCharacter} />
       </div>
+
+      <button
+        onClick={() => setSettingsOpen(true)}
+        title="Settings"
+        aria-label="Settings"
+        className="absolute bottom-4 left-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-border bg-bg-200 text-lg text-ink-dim shadow-lg transition hover:bg-bg-300 hover:text-ink"
+      >
+        <span aria-hidden>&#9881;</span>
+      </button>
+
       {settingsOpen && <SettingsPanel base={base} onClose={() => setSettingsOpen(false)} />}
+      {createOpen && (
+        <CreateCharacterOverlay
+          base={base}
+          onClose={() => setCreateOpen(false)}
+          onCreated={refreshProfiles}
+        />
+      )}
     </div>
   )
 }

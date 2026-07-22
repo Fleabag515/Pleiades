@@ -43,6 +43,29 @@ export async function listProfiles(base: string): Promise<{ profiles: Profile[];
   return asJson(await fetch(`${base}/api/profiles`))
 }
 
+export async function createProfile(
+  base: string,
+  body: {
+    name: string
+    email_address?: string
+    imap_host?: string
+    imap_port?: number
+    smtp_host?: string
+    smtp_port?: number
+    email_password?: string | null
+    discord_token?: string | null
+    persona_source?: string
+  }
+): Promise<Profile> {
+  return asJson(
+    await fetch(`${base}/api/profiles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+  )
+}
+
 export async function listChats(base: string): Promise<ChatSummary[]> {
   const data = await asJson<{ chats: ChatSummary[] }>(await fetch(`${base}/api/chats`))
   return data.chats
