@@ -1075,11 +1075,44 @@ function AgentsSection({
 // hatches this component wires up: "Pop out" (switches the running session
 // to a real headed OS window in place -- backend endpoint/function names
 // stayed `open-separate`/`browserViewOpenSeparate`, only the visible label
-// changed) and "Expand" (a larger in-app modal, requesting a bigger
+// changed) and "Expand" (a larger in-app view, requesting a bigger
 // server-side viewport via resize() rather than just upscaling a blurry
-// small image; see controlsRow()/the aspect-ratio wrapper below for a
-// bugfix pass on that modal -- it used to drop all controls and letterbox
-// with black bars).
+// small image).
+//
+// fix/browser-popout-border pass (see the `expanded &&` block below):
+// two owner complaints, addressed together since fixing #2 changes the
+// shape of the container #1's fix has to fit inside.
+//   1) "thick border only on top and bottom" -- the frame's own
+//      aspect-ratio-preserving box (aspectRatio: viewport.width/height)
+//      was never actually broken in isolation; the bug was the ancestor
+//      box it had to fit inside. The old modal card was a *fixed*
+//      rectangle (`max-w-5xl` x `max-h-[90vh]`, ~1024px x 90% of viewport
+//      height) with no relationship to the frame's own ratio, so on any
+//      reasonably wide window the 1024px width cap bit before the 90vh
+//      height cap did, leaving the frame width-bound with real vertical
+//      space unused inside that fixed card -- the asymmetric top/bottom
+//      bars reported (thin left/right margin from the card padding,
+//      thick top/bottom from the unused height). The fix removes the
+//      fixed-size ancestor entirely: the card is now `w-fit`/content-
+//      sized on both axes, so it always hugs exactly whatever size the
+//      frame's own aspect-ratio box computes, no leftover space possible
+//      inside the card on either axis. The frame's max-width/max-height
+//      are expressed directly in vw/vh/rem (not percentages of the
+//      card, which would be circular once the card shrinks to content),
+//      so this holds for any real viewport.width/height the browser
+//      session resizes to, not just today's 1600x1000/1280x800 values.
+//   2) The expanded view previously was a `fixed inset-0` backdrop modal
+//      covering the entire window, chat column included. Per owner
+//      request ("pop out the live chat onto the side... so you can see
+//      the model thing and do, and can interject if needed"), it's now
+//      a right-anchored drawer: a `fixed`, `pointer-events-none`
+//      positioner (inset-y-3/right-3, no backdrop, no click-to-close)
+//      that vertically centers the actual card, which is
+//      `pointer-events-auto`. The chat column ChatView renders to this
+//      panel's left -- messages, streaming draft, and the live Composer
+//      -- stays fully visible and clickable the entire time the drawer
+//      is open, so the owner can watch the browser and interject in
+//      chat at the same time instead of one eclipsing the other.
 // --------------------------------------------------------------------------
 
 /** Map a pointer/keyboard-capable client rect to the backend's fixed
@@ -1445,15 +1478,40 @@ function BrowserViewSection({
       {error && <div className="mt-2 text-xs text-rose-300">{error}</div>}
 
       {expanded && (
-        <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-8"
-          onClick={() => toggleExpand()}
-        >
-          <div
-            className="flex h-full max-h-[90vh] w-full max-w-5xl flex-col gap-3 rounded-2xl bg-bg-100 p-4 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex flex-none items-center justify-between">
+        // Right-anchored drawer, not a full-bleed backdrop modal: chat
+        // (rendered by ChatView to this panel's left -- messages,
+        // streaming draft, and the live Composer) stays visible and
+        // clickable the whole time this is open, so the owner can watch
+        // the browser and interject in chat at the same time instead of
+        // one eclipsing the other.
+        //
+        // This outer positioner is `fixed` with only inset-y-3/right-3
+        // set (no `left`), which per CSS gives it auto width (shrinks to
+        // its child's own width) while its height *does* get stretched to
+        // fill top-to-bottom (both insets specified) -- that stretch is
+        // intentional, it's just how `items-center` below gets something
+        // to vertically center the actual card within. The stretched
+        // region itself is invisible (no bg) and `pointer-events-none`,
+        // so it never blocks clicks into chat behind it; only the visible
+        // card (`pointer-events-auto`) is interactive.
+        <div className="pointer-events-none fixed inset-y-3 right-3 z-40 flex items-center">
+          {/* The card is `w-fit`/content-sized on both axes -- no
+              max-w-5xl-style fixed box for the video to float inside with
+              leftover background showing as a border. Its actual size
+              comes entirely from the video wrapper below, which is given
+              explicit vw/vh/rem-based max-width/max-height (not
+              percentages of this card, which would be circular since the
+              card's own size is "shrink to content"). The video wrapper
+              picks the largest box matching the live frame's real
+              viewport.width/height ratio that fits those absolute bounds,
+              and the card then hugs exactly that -- header and
+              controlsRow above/below, zero extra padding-as-border on any
+              side. `max-h-[calc(100vh-1.5rem)]` is just a hard ceiling
+              matching this positioner's own inset-y-3 margin, so a
+              mis-estimate in the reserved-chrome math below can only
+              clip/scroll, never overflow past the viewport. */}
+          <div className="pointer-events-auto flex max-h-[calc(100vh-1.5rem)] w-fit max-w-full flex-col gap-3 rounded-2xl border border-border bg-bg-100 p-4 shadow-2xl">
+            <div className="flex flex-none items-center justify-between gap-3">
               <span className="truncate text-sm text-ink-dim">{status?.url || character}</span>
               <button
                 onClick={() => toggleExpand()}
@@ -1463,24 +1521,28 @@ function BrowserViewSection({
                 &#10005;
               </button>
             </div>
-            {/* Wrapped in a box constrained to the actual live frame's
-                aspect ratio (viewport.width/height -- the same values the
-                resize() call above requested from the backend), instead of
-                being stretched to fill whatever shape this modal happens
-                to be. That mismatch (this box forced to h-full/w-full of
-                an unrelated max-w-5xl/90vh container, vs. e.g. a 1600x1000
-                frame) is what produced the reported black letterboxing
-                bars: object-contain was correctly preserving the frame's
-                own aspect ratio, but inside a box of a *different* ratio,
-                so the unfilled space showed the container's bg-black/40
-                through. Constraining this wrapper to the same ratio first
-                means the frame fills it edge-to-edge in the common case,
-                and only letterboxes (unavoidably) if the modal truly has
-                no room for that shape at the current window size. */}
-            <div className="flex min-h-0 flex-1 items-center justify-center">
+            {/* Reserved chrome subtracted from 100vh here: 1.5rem
+                positioner margin (inset-y-3 x2) + 2rem card padding
+                (p-4 x2) + ~2rem header row + ~2.25rem controlsRow row
+                (buttons wrap onto one line at any width this drawer
+                actually reaches) + 1.5rem for the two gap-3 gutters
+                between header/video/controls ~= 9.25rem; rounded up to
+                10rem so the video always comes in slightly under budget
+                rather than right at the edge. Width budget mirrors the
+                same min(64vw, 72rem) drawer-size intent from the layout
+                pass, minus this card's own 2rem of horizontal p-4
+                padding. Both are plain viewport-relative math, not
+                today's specific window size, so this holds for any real
+                page dimensions the browser session resizes to (the ratio
+                itself -- viewport.width/height -- already comes from
+                live state, not a hardcoded constant). */}
+            <div className="flex min-h-0 items-center justify-center overflow-hidden">
               <div
-                style={{ aspectRatio: `${viewport.width} / ${viewport.height}` }}
-                className="max-h-full max-w-full"
+                style={{
+                  aspectRatio: `${viewport.width} / ${viewport.height}`,
+                  maxWidth: 'calc(min(64vw, 72rem) - 2rem)',
+                  maxHeight: 'calc(100vh - 10rem)'
+                }}
               >
                 {frameView(expandedImgRef, true)}
               </div>
