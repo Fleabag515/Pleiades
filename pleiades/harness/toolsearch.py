@@ -18,28 +18,59 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 
 from .tools import tool, registry, Tool
 
 _WORD = re.compile(r"[a-z0-9]{2,}")
-_CTX: dict[str, object] = {"approve": None, "allowed": None}
+
+# Per-THREAD dispatch context, not a shared global dict. Multiple agents can
+# be genuinely concurrent in this process now (a pleiades/agents.py background
+# agent runs on its own thread while the main chat turn keeps going on its
+# own; dispatch_subagents_parallel fans out onto a pool of worker threads
+# too) and each one calls bind_dispatch() with its OWN approve callback and
+# allow-list at the start of its own Agent.run() (see
+# harness.agent.Agent._active_tools()). A plain module-level dict here would
+# let one agent's bind_dispatch call clobber another's mid-flight: agent A
+# (restricted) binds its narrow allow-list, agent B (unrestricted, e.g. the
+# main chat with agents_enabled) rebinds the SAME global before A's model gets
+# around to calling call_tool, and A's call now runs under B's allow-list --
+# a real sandbox-escape race, not a theoretical one (see
+# tests/test_agents_concurrency.py::test_bind_dispatch_is_thread_isolated, which
+# reproduces the bypass against the pre-fix shared-dict version). threading
+# .local() gives each thread its own independent context, so no agent's
+# binding is ever visible to, or overwritable by, another thread.
+_local = threading.local()
+
+
+def _ctx() -> dict:
+    ctx = getattr(_local, "ctx", None)
+    if ctx is None:
+        ctx = {"approve": None, "allowed": None}
+        _local.ctx = ctx
+    return ctx
 
 
 def bind_dispatch(approve, allowed: "set[str] | None" = None) -> None:
-    """Bind the permission gate (and optional allow-list) for this run.
+    """Bind the permission gate (and optional allow-list) for the CURRENT
+    THREAD only.
 
     allowed: tool names this agent may discover/call. None = no restriction.
     A restricted subagent passes its own tool set so call_tool can't reach
-    tools outside that sandbox, even when tool-search is active.
+    tools outside that sandbox, even when tool-search is active. Scoped to
+    this thread so a concurrently running agent on another thread (main
+    chat, another spawned agent, a dispatch_subagents_parallel worker) can
+    never see or overwrite it.
     """
-    _CTX["approve"] = approve
-    _CTX["allowed"] = set(allowed) if allowed is not None else None
+    ctx = _ctx()
+    ctx["approve"] = approve
+    ctx["allowed"] = set(allowed) if allowed is not None else None
 
 
 def _discoverable() -> list[Tool]:
     # everything except the discovery plumbing itself, restricted to the
-    # active agent's allow-list when one is bound.
-    allowed = _CTX.get("allowed")
+    # active agent's allow-list when one is bound (this thread's only).
+    allowed = _ctx().get("allowed")
     return [t for t in registry.all()
             if "search" not in t.tags
             and (allowed is None or t.name in allowed)]
@@ -99,7 +130,8 @@ def call_tool(name: str, arguments: dict) -> str:
     """
     from .agent import execute_tool  # shared permission gate + error handling
 
-    allowed = _CTX.get("allowed")
+    ctx = _ctx()
+    allowed = ctx.get("allowed")
     if allowed is not None and name not in allowed:
         return (f"Error: tool '{name}' is not available to this agent. "
                 "Use find_tools to see what you can call.")
@@ -112,5 +144,5 @@ def call_tool(name: str, arguments: dict) -> str:
             arguments = json.loads(arguments)
         except Exception:
             arguments = {}
-    out, err = execute_tool(t, arguments or {}, _CTX["approve"])
+    out, err = execute_tool(t, arguments or {}, ctx["approve"])
     return out
