@@ -218,7 +218,20 @@ class Agent:
         tier = self.cfg.tier(self.tier_name)
 
         active = self._active_tools()
-        tool_index = {t.name: t for t in registry.all()}
+        # Restricted to what THIS agent was actually constructed with --
+        # not the full global registry. A model backend that emits a
+        # tool_call for a name it was never advertised (hallucination,
+        # prompt injection from task/tool-result text, or a local
+        # llama.cpp model that doesn't strictly validate function names
+        # against the request schema) must not be able to reach tools
+        # outside self.tools just because they exist somewhere in the
+        # process -- see tests/test_agents_concurrency.py for the
+        # regression (a restricted subagent's stubbed backend calling
+        # "dispatch_subagent" directly, never having been shown that
+        # tool). call_tool's own, separately-gated registry.get() lookup
+        # (harness/toolsearch.py) is the deliberate, audited exception --
+        # not this one.
+        tool_index = {t.name: t for t in self.tools}
 
         # inject memory up front
         system = self.system

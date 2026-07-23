@@ -11,6 +11,7 @@ then returns only its final answer - keeping the parent's context clean.
 from __future__ import annotations
 
 import concurrent.futures
+import time
 
 from .config import Config
 from .tools import tool, registry
@@ -22,6 +23,24 @@ ROLE_TOOLS: dict[str, dict] = {
     "fast":     {"tier": "fast",     "tags": ["read", "web"]},
     "general":  {"tier": "chat",     "tags": None},
 }
+
+# Overall wall-clock budget for one dispatch_subagents_parallel call. Bounds
+# two separate things:
+#   1. each worker's own Agent.run() loop, via should_stop (polled once per
+#      step -- same cooperative cancellation as every other Agent.run() call
+#      in this codebase; can't interrupt a single already-in-flight blocking
+#      LLM/tool call, same documented caveat as elsewhere).
+#   2. how long THIS call can block the calling agent's own turn -- see
+#      dispatch_subagents_parallel's use of pool.shutdown(wait=False, ...)
+#      below. A plain `with ThreadPoolExecutor(...) as pool:` block calls
+#      shutdown(wait=True) on exit, which blocks the CALLING thread (the
+#      chat turn's own belt.dispatch()) until every worker thread finishes --
+#      even a wedged one -- regardless of should_stop or any per-future
+#      result() timeout in the loop above it. Bound (1) reduces how often
+#      bound (2) actually matters, but (2) is what makes the calling turn's
+#      unblock time deterministic even when a worker never notices
+#      should_stop (a single hung network call, for instance).
+PARALLEL_SUBAGENT_TIMEOUT_SECONDS = 300
 
 _CTX: dict[str, object] = {"cfg": None, "depth": 0, "approve": None}
 
@@ -92,6 +111,8 @@ def dispatch_subagents_parallel(tasks: list) -> str:
     from .builtins.tasks import bind_job, current_job_id
     _job_id = current_job_id()
 
+    deadline = time.monotonic() + PARALLEL_SUBAGENT_TIMEOUT_SECONDS
+
     def _run_one(item: dict) -> str:
         if _job_id:
             bind_job(_job_id)
@@ -106,17 +127,31 @@ def dispatch_subagents_parallel(tasks: list) -> str:
         )
         sub = Agent(cfg, tools=tools, tier_name=spec["tier"], depth=depth + 1,
                     approve=_CTX["approve"])  # type: ignore[arg-type]
-        result = sub.run(task)
+        result = sub.run(task, should_stop=lambda: time.monotonic() >= deadline)
         return f"[{role}] {result.answer}"
 
     max_workers = min(len(tasks), cfg.max_subagent_depth * 2, 8)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    try:
         futures = [pool.submit(_run_one, t) for t in tasks]
         results = []
         for i, fut in enumerate(futures):
+            remaining = max(0.0, deadline - time.monotonic())
             try:
-                results.append(f"### Task {i+1}\n{fut.result(timeout=300)}")
+                results.append(f"### Task {i+1}\n{fut.result(timeout=remaining)}")
             except Exception as e:
-                results.append(f"### Task {i+1}\n[error: {e}]")
-
-    return "\n\n".join(results)
+                results.append(
+                    f"### Task {i+1}\n[error: subagent did not finish within "
+                    f"{PARALLEL_SUBAGENT_TIMEOUT_SECONDS}s ({e}); it may still "
+                    "be running in the background but its result is not "
+                    "included here]")
+        return "\n\n".join(results)
+    finally:
+        # wait=False -- never block the CALLING turn on a wedged/slow worker
+        # (see PARALLEL_SUBAGENT_TIMEOUT_SECONDS' docstring above for why the
+        # default `with ThreadPoolExecutor(...) as pool:` context-manager exit
+        # is unsafe here). cancel_futures drops anything not yet started;
+        # should_stop (wired into each sub.run() above) makes well-behaved
+        # workers already in flight wind down close to the same deadline
+        # instead of running to their own step ceiling unattended.
+        pool.shutdown(wait=False, cancel_futures=True)
