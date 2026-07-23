@@ -1444,7 +1444,15 @@ def create_app() -> FastAPI:
 
                 def _pump():
                     try:
+                        # Recent turns from THIS chat's own transcript, resent
+                        # alongside the new message so Anamnesis's recency-
+                        # window mechanism has real prior context to work with
+                        # (see chats.recent_messages docstring — fixes losing
+                        # the subject on short pronoun follow-ups like
+                        # "message him again").
+                        hist = chats.recent_messages(chat)
                         for _evt in engine.stream_events(p, body.message, system=body.system,
+                                                         history=hist,
                                                          should_stop=stop_evt.is_set):
                             evq.put(_evt)
                         evq.put(_END)

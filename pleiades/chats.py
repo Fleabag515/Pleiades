@@ -77,6 +77,52 @@ def list_chats() -> list[dict]:
     return sorted(out, key=lambda c: -c["updated"])
 
 
+def recent_messages(chat: dict, max_turns: int = 8) -> list[dict]:
+    """Flatten the last `max_turns` user/assistant turns into plain
+    {"role","content"} messages, for resending to Anamnesis alongside the
+    new user message.
+
+    Why this exists: Anamnesis's own "recency window" (selector.js
+    recencyMsgs/recencyTurns, default 8 turns) is built from the CURRENT
+    request's own `messages` array, not from its persisted turn DB. Pleiades'
+    engine.py used to send ONLY the bare new user message every turn, so that
+    recency floor had nothing to work with — a short pronoun-heavy follow-up
+    ("message him again") could miss Anamnesis's semantic-similarity floor
+    entirely and lose the subject. Resending the last few real turns here
+    lets Anamnesis's existing, already-tested mechanism engage as designed.
+    Confirmed safe against proxy.js: only the LAST user message in an
+    incoming request is ever persisted as a new turn (deduped via
+    history.lastUserTurnContent), so replaying older turns here does not
+    create duplicate history rows.
+
+    Tool-call detail is summarized inline ("[used tool X]") rather than
+    reconstructed as OpenAI tool_calls/tool message pairs — this transcript
+    format doesn't preserve exact tool_call_id linkage across turns, and a
+    mismatched pairing can make some chat templates error out. A short
+    inline note is enough context for continuity purposes.
+    """
+    msgs = chat.get("messages", [])
+    tail = msgs[-(max_turns * 2):] if max_turns else msgs
+    out: list[dict] = []
+    for m in tail:
+        role = m.get("role")
+        if role == "user":
+            content = m.get("content", "")
+            if content:
+                out.append({"role": "user", "content": content})
+        elif role == "assistant":
+            parts = []
+            for item in m.get("items", []):
+                if item.get("t") == "text" and item.get("text"):
+                    parts.append(item["text"])
+                elif item.get("t") == "tool":
+                    parts.append(f"[used tool {item.get('name', '?')}]")
+            content = "\n".join(parts).strip()
+            if content:
+                out.append({"role": "assistant", "content": content})
+    return out
+
+
 def append_turn(chat_id: str, user_text: str, assistant_items: list[dict],
                 meta: dict) -> None:
     chat = load(chat_id)

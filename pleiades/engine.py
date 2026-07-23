@@ -464,8 +464,17 @@ class Engine:
 
     @staticmethod
     def _base_messages(user_message: str, system: Optional[str],
-                       env_note: Optional[str] = None) -> list[dict]:
-        """The new turn only (Anamnesis supplies memory/history) + local time.
+                       env_note: Optional[str] = None,
+                       history: Optional[list[dict]] = None) -> list[dict]:
+        """The new turn (Anamnesis supplies deep memory/history) + local time.
+
+        `history` is an optional short tail of recent real turns (see
+        chats.recent_messages) resent alongside the new message so
+        Anamnesis's own recency-window mechanism has something to work with
+        (see the docstring on chats.recent_messages for why this matters).
+        It is NOT a substitute for Anamnesis's memory — just enough raw
+        context for pronoun/short-follow-up continuity within the current
+        conversation.
 
         When no caller system prompt is given, fall back to the default operating
         contract so the character actually drives its tools and stays in voice.
@@ -477,8 +486,11 @@ class Engine:
         base = system.rstrip() if system and system.strip() else DEFAULT_OPERATING_CONTRACT
         env = f"\n\n{env_note.rstrip()}" if env_note else ""
         sys_text = f"{base}{env}\n\n{time_line}"
-        return [{"role": "system", "content": sys_text},
-                {"role": "user", "content": user_message}]
+        messages = [{"role": "system", "content": sys_text}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_message})
+        return messages
 
     @staticmethod
     def _environment_note(profile: Profile) -> str:
@@ -560,6 +572,7 @@ class Engine:
 
     def stream_events(self, profile: Union[str, Profile], user_message: str,
                       *, system: Optional[str] = None,
+                      history: Optional[list[dict]] = None,
                       should_stop: Optional[Callable[[], bool]] = None):
         """The full turn as a stream of structured events.
 
@@ -586,7 +599,8 @@ class Engine:
         t_first = t_last = None
         try:
             messages = self._base_messages(user_message, system,
-                                           self._environment_note(profile))
+                                           self._environment_note(profile),
+                                           history)
             tools = belt.openai_schema()
             import time as _time
 
@@ -711,8 +725,9 @@ class Engine:
         finally:
             ctx.close()
 
-    def stream(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None):
+    def stream(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None,
+              history: Optional[list[dict]] = None):
         """Text-only view of stream_events (CLI REPL / Discord)."""
-        for evt in self.stream_events(profile, user_message, system=system):
+        for evt in self.stream_events(profile, user_message, system=system, history=history):
             if evt["type"] == "token":
                 yield evt["text"]
