@@ -1773,6 +1773,18 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "No such scheduled task.")
         return {"ok": True}
 
+    @app.post("/api/scheduled-tasks/{task_id}/run")
+    def scheduled_tasks_run_now(task_id: str) -> dict:
+        """Manual "Run now" trigger (desktop UI button) -- fires the task
+        immediately through the same job-launcher the background tick thread
+        uses, out of band from its schedule. A one-time task still disables
+        itself afterward; a recurring task's next_run is untouched by this
+        (still computed from its cron, not shifted by the manual run)."""
+        try:
+            return stm.run_now(task_id)
+        except ScheduleError as e:
+            raise HTTPException(404, str(e))
+
     # ----------------------------- browser view (Playwright/Chromium) ------- #
     # Live, embeddable browser-use view for the desktop app's right panel.
     # Separate capability from harness/builtins/browser.py's Camoufox tool —

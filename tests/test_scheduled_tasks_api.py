@@ -69,3 +69,22 @@ def test_delete_unknown_task_is_404():
     c = _client()
     r = c.delete("/api/scheduled-tasks/does-not-exist")
     assert r.status_code == 404
+
+
+def test_run_now_fires_task_immediately():
+    c = _client()
+    created = c.post("/api/scheduled-tasks",
+                     json={"task": "manual run via api", "fire_at": time.time() + 3600})
+    tid = created.json()["id"]
+
+    r = c.post(f"/api/scheduled-tasks/{tid}/run")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["last_run"] > 0
+    assert body["enabled"] is False   # one-time task fired -> disabled
+
+
+def test_run_now_unknown_task_is_404():
+    c = _client()
+    r = c.post("/api/scheduled-tasks/does-not-exist/run")
+    assert r.status_code == 404
