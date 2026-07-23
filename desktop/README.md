@@ -22,13 +22,21 @@ $ npm run dev
 
 ### Build
 
+The bundled Python backend (PyInstaller onedir, see `backend-build/`) must be
+built first, on the target OS -- PyInstaller does not cross-compile, so a
+Windows backend bundle has to be produced by running `backend-build/build.sh`
+(or a Windows equivalent -- none exists yet, see repo audit notes) on an
+actual Windows machine with the project's venv.
+
 ```bash
-# For windows
-$ npm run build:win
+# Linux (.deb, AppImage)
+$ npm run dist:linux
 
-# For macOS
-$ npm run build:mac
-
-# For Linux
-$ npm run build:linux
+# Windows (NSIS installer) -- untested end-to-end; see repo audit notes
+$ npm run dist:win
 ```
+
+There is currently no macOS build script wired up in `package.json`
+(`electron-builder.yml` has a `mac:`/`dmg:` section, but no `dist:mac` npm
+script exists yet, and it is unsigned/unnotarized).
+

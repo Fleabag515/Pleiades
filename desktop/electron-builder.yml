@@ -21,6 +21,15 @@ extraResources:
     to: backend
 win:
   executableName: pleiades-desktop
+  # Explicit rather than relying on electron-builder's implicit per-platform
+  # default (which today happens to also be nsis) -- keeps this file honest
+  # about what actually ships instead of depending on a default that could
+  # change out from under it. Code signing is NOT configured (no cert
+  # available in this environment) -- an unsigned NSIS installer will trip
+  # SmartScreen ("Windows protected your PC") on first run. See follow-up
+  # notes for what's needed to sign it (CLAUDE.md / audit notes).
+  target:
+    - nsis
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
