@@ -54,6 +54,16 @@ class Profile:
     # currently running (see agents.AgentManager._resolve_model). Set from
     # the desktop app's Agents panel model picker.
     agents_model: str = ""
+    # Manual vision/capability override for THIS character's assigned model,
+    # comma-separated (e.g. "vision"). Only meaningful when `model` is a
+    # cloud brain (openrouter:/ollama-cloud: prefixed) -- those have no local
+    # GGUF file for engine.py to inspect for an mmproj sidecar the way
+    # models.Model.vision does for a local registry entry, so there's no way
+    # to auto-detect capability short of trusting the provider's own model
+    # listing (see webui/server.py's assign_cloud_model, which best-effort
+    # auto-populates this from OpenRouter's architecture.modality when the
+    # caller doesn't set it explicitly). Ignored for local models.
+    model_capabilities: str = ""
 
     @property
     def browser_dir(self) -> str:

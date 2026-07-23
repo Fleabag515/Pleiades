@@ -141,3 +141,62 @@ def test_start_relocates_occupied_port(tmp_path, monkeypatch):
         run.pop("porttest", None)
         mm._save_running(run)
         mm.remove("porttest")
+
+
+def test_model_add_auto_detects_sibling_mmproj(tmp_path):
+    gguf = tmp_path / "vlm-model.gguf"
+    gguf.write_bytes(b"fake-model")
+    mmproj = tmp_path / "mmproj-vlm-model-f16.gguf"
+    mmproj.write_bytes(b"fake-mmproj")
+    mm = ModelManager()
+    m = mm.add("vlm1", str(gguf))
+    assert m["mmproj"] == str(mmproj)
+    mm.remove("vlm1", delete_file=False)
+
+
+def test_model_add_without_sibling_mmproj_leaves_it_blank(tmp_path):
+    gguf = tmp_path / "text-model.gguf"
+    gguf.write_bytes(b"fake-model")
+    mm = ModelManager()
+    m = mm.add("text1", str(gguf))
+    assert m["mmproj"] == ""
+    mm.remove("text1", delete_file=False)
+
+
+def test_model_add_explicit_mmproj_overrides_autodetect(tmp_path):
+    gguf = tmp_path / "vlm-model2.gguf"
+    gguf.write_bytes(b"fake-model")
+    (tmp_path / "mmproj-vlm-model2-f16.gguf").write_bytes(b"fake-mmproj-auto")
+    explicit = tmp_path / "elsewhere-mmproj.gguf"
+    explicit.write_bytes(b"fake-mmproj-explicit")
+    mm = ModelManager()
+    m = mm.add("vlm2", str(gguf), mmproj=str(explicit))
+    assert m["mmproj"] == str(explicit)
+    mm.remove("vlm2", delete_file=False)
+
+
+def test_model_add_capabilities_override(tmp_path):
+    gguf = tmp_path / "cloud-ish.gguf"
+    gguf.write_bytes(b"fake-model")
+    mm = ModelManager()
+    m = mm.add("caps1", str(gguf), capabilities="vision")
+    assert m["capabilities"] == "vision"
+    mm.remove("caps1", delete_file=False)
+
+
+def test_model_vision_dataclass_property():
+    from pleiades.models import Model
+    assert Model(name="a", path="/x", mmproj="/y/mmproj-a.gguf").vision is True
+    assert Model(name="a", path="/x").vision is False
+    assert Model(name="a", path="/x", capabilities="vision").vision is True
+    assert Model(name="a", path="/x", capabilities="chat,vision").vision is True
+    assert Model(name="a", path="/x", capabilities="chat").vision is False
+
+
+def test_is_vision_capable_helper():
+    from pleiades.models import is_vision_capable
+    assert is_vision_capable(None) is False
+    assert is_vision_capable({}) is False
+    assert is_vision_capable({"mmproj": "/x/mmproj-a.gguf"}) is True
+    assert is_vision_capable({"mmproj": "", "capabilities": "vision"}) is True
+    assert is_vision_capable({"mmproj": "", "capabilities": "chat"}) is False

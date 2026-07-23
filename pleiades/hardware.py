@@ -536,6 +536,36 @@ def is_mmproj(filename: str) -> bool:
     return Path(filename).name.lower().startswith("mmproj")
 
 
+def find_mmproj_sibling(model_path: str) -> str:
+    """Look for a companion mmproj-*.gguf sitting next to a model file.
+
+    Same `is_mmproj()` test used everywhere else to EXCLUDE these sidecars
+    from the model candidate pool (group_split_ggufs, pick_quant) -- here
+    it's flipped to DETECT one instead, for Model.mmproj auto-association
+    (see models.py ModelManager.add() / fetch.py fetch_model()). Vision
+    serving needs the exact file the rest of this module is built to throw
+    away, so this is deliberately the one place that goes looking for it.
+
+    Returns the absolute path of the first mmproj-*.gguf found in the same
+    directory as `model_path`, or "" if there isn't one (no directory, no
+    match, or the path doesn't exist). Picks the largest match when more
+    than one is present (mirrors the model itself: a bigger mmproj is
+    almost always the higher-quality/less-quantized one, e.g. an f16
+    projector alongside a Q8_0 one) -- multiple mmproj files for one model
+    directory is unusual but not invalid (some HF repos ship both).
+    """
+    try:
+        d = Path(model_path).expanduser().resolve().parent
+    except OSError:
+        return ""
+    if not d.is_dir():
+        return ""
+    candidates = [p for p in d.glob("*.gguf") if is_mmproj(p.name)]
+    if not candidates:
+        return ""
+    return str(max(candidates, key=lambda p: p.stat().st_size))
+
+
 def is_mtp(filename: str) -> bool:
     """Multi-token-prediction draft-head sidecars (*-MTP.gguf, mtp-*.gguf, or
     files under an 'MTP/' folder) are not standalone models either.

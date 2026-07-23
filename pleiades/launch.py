@@ -44,9 +44,21 @@ class LaunchPlan:
 
 def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                   n_ctx: "int | str" = "auto", n_gpu_layers: "int | str" = "auto",
-                  chat_format: str = "", settings: Optional[Settings] = None) -> LaunchPlan:
+                  chat_format: str = "", settings: Optional[Settings] = None,
+                  mmproj: str = "") -> LaunchPlan:
     """Plan + assemble the server command: MoE-aware on the native llama-server
-    runtime (autodetected), layer-split on the bundled python fallback."""
+    runtime (autodetected), layer-split on the bundled python fallback.
+
+    `mmproj` (path to a multimodal-projector GGUF, see models.Model.mmproj) is
+    ONLY ever wired into the native llama-server branch below via --mmproj.
+    Scoped there deliberately, not to the `llama_cpp.server` python fallback
+    or the PLEIADES_ENGINE=pleiades_native custom engine branch above: llama.
+    cpp's own bundled server has no first-class multimodal flag in the
+    version pinned here, and the from-scratch native C++ engine
+    (engine/http_server.cpp) doesn't implement image handling at all yet
+    (see docs/specs/2026-07-23-vision-routing-design.md) -- silently
+    dropping `mmproj` on those two paths is intentional, not an oversight.
+    """
     eff = settings or Settings.load()
 
     # meta before caps: with two managed runtimes (mainline + the MoE-
@@ -128,6 +140,18 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                # each with its own compute-buffer VRAM allocation — wasted memory
                # we'd rather have as headroom (see autofit's CPU-bias margin).
                "--parallel", "1"]
+        if mmproj and os.path.isfile(mmproj):
+            # Live-verified (2026-07-23, real ggml-org/SmolVLM-500M-Instruct
+            # and ggml-org/Qwen2.5-VL-3B-Instruct GGUFs + their mmproj
+            # sidecars, this project's pinned llama-server build): --mmproj
+            # loads the multimodal projector alongside the model and
+            # /v1/chat/completions correctly renders an OpenAI content-parts
+            # image_url part through --jinja's chat-template path -- the
+            # model's reply demonstrably reflected the actual image content,
+            # not a hallucinated generic description. See
+            # docs/specs/2026-07-23-vision-routing-design.md for the full
+            # verification transcript.
+            cmd += ["--mmproj", mmproj]
         fa = eff.flash_attn
         if eff.kv_cache_type and fa == "auto":
             # A quantized V-cache requires flash attention; "auto" can
@@ -191,6 +215,7 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                f"ngl={ngl}" + (f" n_cpu_moe={pl.n_cpu_moe}" if pl.n_cpu_moe else "")
                + (f" ub={ub}" if ub else "")
                + (" +moe-prefill-opts" if "GGML_SCHED_PREFETCH_EXPERTS" in env else "")
+               + (" +mmproj (vision)" if mmproj and os.path.isfile(mmproj) else "")
                + f" est={pl.est_tps} tok/s — {pl.reason}")
         if forced is not None:
             why = f"runtime=llama-server ngl={forced} (explicit override)"

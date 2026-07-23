@@ -126,6 +126,12 @@ class ModelCreate(BaseModel):
     n_ctx: "int | str" = "auto"          # "auto" = planned from hardware at launch
     n_gpu_layers: "int | str" = "auto"   # "auto" = planned from hardware at launch
     chat_format: str = ""
+    # Vision: path to a sibling mmproj GGUF. Blank = auto-detect a
+    # mmproj-*.gguf next to `path` (see hardware.find_mmproj_sibling(),
+    # models.ModelManager.add()); set explicitly only when the sidecar lives
+    # somewhere auto-detection won't find it.
+    mmproj: str = ""
+    capabilities: str = ""
 
 
 class ModelUpdate(BaseModel):
@@ -135,6 +141,8 @@ class ModelUpdate(BaseModel):
     chat_format: Optional[str] = None
     # UI-only display name override; "" clears it back to showing `name`.
     display_name: Optional[str] = None
+    mmproj: Optional[str] = None
+    capabilities: Optional[str] = None
 
 
 class AvatarBody(BaseModel):
@@ -232,6 +240,12 @@ class BrowserViewResize(BaseModel):
 class CloudModelBody(BaseModel):
     source: str
     model: str
+    # Manual vision/capability override, comma-separated (e.g. "vision").
+    # Blank = best-effort auto-populate from OpenRouter's own model listing
+    # (architecture.modality) when source == "openrouter"; ollama-cloud has
+    # no equivalent public listing, so it stays blank there unless the
+    # caller sets it.
+    capabilities: str = ""
 
 
 class ApiKeyBody(BaseModel):
@@ -331,6 +345,10 @@ def _model_mgr_update(mm: ModelManager, name: str, body: ModelUpdate) -> dict:
         entry["chat_format"] = body.chat_format
     if body.display_name is not None:
         entry["display_name"] = body.display_name
+    if body.mmproj is not None:
+        entry["mmproj"] = body.mmproj
+    if body.capabilities is not None:
+        entry["capabilities"] = body.capabilities
     mm._save(reg)  # noqa: SLF001
     entry = dict(entry)
     entry["running"] = mm.is_running(name)
@@ -1241,7 +1259,8 @@ def create_app() -> FastAPI:
     def models_add(body: ModelCreate) -> dict:
         try:
             entry = mm.add(body.name, body.path, n_ctx=body.n_ctx,
-                           n_gpu_layers=body.n_gpu_layers, chat_format=body.chat_format)
+                           n_gpu_layers=body.n_gpu_layers, chat_format=body.chat_format,
+                           mmproj=body.mmproj, capabilities=body.capabilities)
         except ModelError as e:
             raise HTTPException(400, str(e))
         entry = dict(entry)
@@ -1349,11 +1368,19 @@ def create_app() -> FastAPI:
                     continue
                 pr = m.get("pricing", {}) or {}
                 is_free = (pr.get("prompt") in ("0", 0, "0.0") and pr.get("completion") in ("0", 0, "0.0"))
+                # architecture.modality (e.g. "text->text", "text+image->text")
+                # is OpenRouter's own declared capability listing -- surfaced
+                # here so a caller (desktop app model picker, or
+                # assign_cloud_model below) can tell whether a cloud model
+                # takes image input without us having any local file to sniff.
+                modality = ((m.get("architecture") or {}).get("modality") or "")
                 out.append({"id": mid, "name": m.get("name", mid),
                             "context": m.get("context_length"),
                             "prompt_price": pr.get("prompt"),
                             "completion_price": pr.get("completion"),
-                            "is_free": is_free})
+                            "is_free": is_free,
+                            "modality": modality,
+                            "vision": "image" in modality.lower()})
             out.sort(key=lambda x: (0 if x.get("is_free") else 1, x["id"]))
             return {"source": "openrouter", "results": out[:limit]}
         if source == "ollama":
@@ -1380,6 +1407,25 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"No profile '{name}'")
         prefix = "openrouter:" if body.source == "openrouter" else "ollama-cloud:"
         p.model = prefix + body.model
+        capabilities = body.capabilities
+        if not capabilities and body.source == "openrouter":
+            # Best-effort auto-populate from OpenRouter's own model listing
+            # (architecture.modality) -- see cloud_search above for the same
+            # extraction. Never fatal: an unreachable/slow OpenRouter here
+            # just means the character keeps model_capabilities blank (=
+            # text-only assumed), the same as it always used to be.
+            try:
+                import httpx as _httpx
+                r = _httpx.get("https://openrouter.ai/api/v1/models", timeout=8)
+                for m in r.json().get("data", []):
+                    if m.get("id") == body.model:
+                        modality = ((m.get("architecture") or {}).get("modality") or "")
+                        if "image" in modality.lower():
+                            capabilities = "vision"
+                        break
+            except Exception:
+                pass
+        p.model_capabilities = capabilities
         pm._save(p)  # noqa: SLF001
         return _profile_view(p)
 

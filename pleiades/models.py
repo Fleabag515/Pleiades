@@ -56,10 +56,50 @@ class Model:
     display_name: str = ""
     host: str = "127.0.0.1"
     port: int = 0             # assigned on add()
+    # Vision support (docs/specs/2026-07-23-vision-routing-design.md). Path to
+    # a sibling multimodal-projector GGUF, auto-detected at add()/fetch time
+    # via hardware.find_mmproj_sibling() (blank = none found / not applicable).
+    # Only ever consumed by the native llama-server launch path (launch.py) --
+    # the llama_cpp.server python fallback and PLEIADES_ENGINE=pleiades_native
+    # don't implement multimodal serving, so this field is a no-op there.
+    mmproj: str = ""
+    # Manual capability override, comma-separated (e.g. "vision"). For a local
+    # GGUF this is normally redundant with `mmproj` (presence of the sidecar
+    # already implies vision) -- it exists mainly for cloud models
+    # (openrouter:/ollama-cloud: prefixed profile.model strings), which have
+    # no local file to sniff and no entry in this registry at all; see
+    # Profile.model_capabilities for where the cloud-model equivalent lives.
+    capabilities: str = ""
+
+    @property
+    def vision(self) -> bool:
+        """True if this model can accept image input.
+
+        True when a multimodal-projector sidecar is associated (mmproj set)
+        OR "vision" is explicitly listed in the manual capabilities override
+        -- the latter matters if mmproj detection ever needs a manual assist
+        (e.g. the sidecar lives in a different directory than the model).
+        """
+        if self.mmproj:
+            return True
+        return "vision" in {c.strip() for c in self.capabilities.split(",") if c.strip()}
 
 
 class ModelError(RuntimeError):
     pass
+
+
+def is_vision_capable(entry: "dict | None") -> bool:
+    """Same test as Model.vision, for the plain dicts ModelManager.get()/
+    list() hand back (registry entries round-trip through JSON, not the
+    dataclass) -- e.g. engine.py resolving whether the character's assigned
+    model can take image input."""
+    if not entry:
+        return False
+    if entry.get("mmproj"):
+        return True
+    caps = entry.get("capabilities") or ""
+    return "vision" in {c.strip() for c in caps.split(",") if c.strip()}
 
 
 def _port_free(host: str, port: int) -> bool:
@@ -160,15 +200,24 @@ class ModelManager:
 
     def add(self, name: str, path: str, *, n_ctx: "int | str" = "auto",
             n_gpu_layers: "int | str" = "auto",
-            chat_format: str = "", port: int = 0) -> dict:
+            chat_format: str = "", port: int = 0,
+            mmproj: str = "", capabilities: str = "") -> dict:
         p = Path(path).expanduser()
         if not p.is_file():
             raise ModelError(f"No such model file: {p}")
         reg = self._load()
         port = port or self._free_port(reg)
+        if not mmproj:
+            # Auto-detect a sibling mmproj-*.gguf next to this model (the
+            # foundry's download pipeline used to just discard this file --
+            # see hardware.is_mmproj()'s docstring and fetch.py's
+            # fetch_model(), which now downloads it alongside the model
+            # specifically so this detection has something to find).
+            from .hardware import find_mmproj_sibling
+            mmproj = find_mmproj_sibling(str(p))
         reg[name] = asdict(Model(name=name, path=str(p), n_ctx=n_ctx,
                                  n_gpu_layers=n_gpu_layers, chat_format=chat_format,
-                                 port=port))
+                                 port=port, mmproj=mmproj, capabilities=capabilities))
         self._save(reg)
         return reg[name]
 
@@ -295,7 +344,7 @@ class ModelManager:
         plan = build_command(
             m["path"], m["host"], m["port"], name=str(m.get("name", "local")),
             n_ctx=m.get("n_ctx", "auto"), n_gpu_layers=m.get("n_gpu_layers", "auto"),
-            chat_format=m.get("chat_format", ""),
+            chat_format=m.get("chat_format", ""), mmproj=m.get("mmproj", ""),
         )
         self._last_ctx = (plan.n_ctx, plan.n_ctx_max)
         self._last_ctx_why = plan.ctx_why
