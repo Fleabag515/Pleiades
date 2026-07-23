@@ -141,6 +141,77 @@ def _hint(label: str, items: list[str]) -> str:
     return ("\n" + label + "\n  - " + "\n  - ".join(items)) if items else ""
 
 
+# ---------------------------------------------------------------------- #
+# Accessibility-tree extraction (Phase 1 of vision-grounded browser-use,
+# docs/specs/2026-07-22-vision-grounded-browser-use-design.md). Gives ANY
+# model (no vision required) a stable, semantic way to refer to an element
+# -- "click ref e7" instead of guessing a CSS selector -- covering the same
+# ground Claude in Chrome's own accessibility-tree-first design covers
+# before it ever falls back to vision. This is additive: 'selector'/'text'
+# targeting on click/type is unchanged, 'ref' is a new alternative.
+#
+# Refs are assigned by tagging the live DOM node with a data-pleiades-ref
+# attribute the first time it's seen, so a ref stays valid for that node
+# across calls as long as the node itself isn't removed/replaced -- no
+# separate selector-generation algorithm to keep in sync with the page.
+# ---------------------------------------------------------------------- #
+
+_ELEMENTS_JS = r"""
+() => {
+  const SEL = "a, button, [role=button], [role=link], [role=checkbox], " +
+    "[role=radio], [role=tab], [role=menuitem], input:not([type=hidden]), " +
+    "textarea, select, [onclick], [tabindex]:not([tabindex='-1'])";
+  const els = Array.from(document.querySelectorAll(SEL));
+  let n = 0;
+  const out = [];
+  for (const e of els) {
+    const rect = e.getBoundingClientRect();
+    const style = getComputedStyle(e);
+    const visible = rect.width > 0 && rect.height > 0 &&
+      style.visibility !== 'hidden' && style.display !== 'none';
+    if (!visible) continue;
+    let ref = e.getAttribute('data-pleiades-ref');
+    if (!ref) {
+      ref = 'e' + (++n) + '_' + Math.random().toString(36).slice(2, 6);
+      e.setAttribute('data-pleiades-ref', ref);
+    }
+    const role = e.getAttribute('role') || e.tagName.toLowerCase();
+    const label = (e.innerText || e.value || e.getAttribute('aria-label') ||
+      e.getAttribute('placeholder') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    out.push({
+      ref, role, label,
+      enabled: !e.disabled,
+      tag: e.tagName.toLowerCase(),
+    });
+  }
+  return out;
+}
+"""
+
+
+async def _panel_elements(page, limit: int = 40) -> list[dict]:
+    try:
+        items = await page.evaluate(_ELEMENTS_JS)
+    except Exception:
+        return []
+    return items[:limit]
+
+
+def _format_elements(items: list[dict]) -> str:
+    if not items:
+        return "No interactive elements found on the current page."
+    lines = ["Interactive elements on this page (use action='click'/'type' with ref=<ref>):"]
+    for it in items:
+        state = "" if it.get("enabled", True) else " [disabled]"
+        label = it.get("label") or "(no label)"
+        lines.append(f"  - ref={it['ref']}  {it.get('role', it.get('tag', '?'))}: {label!r}{state}")
+    return "\n".join(lines)
+
+
+def _ref_selector(ref: str) -> str:
+    return f'[data-pleiades-ref="{ref}"]'
+
+
 async def _panel_click(page, target: str) -> str:
     try:
         try:
@@ -219,15 +290,25 @@ def _run_panel(ctx: ToolContext, action: str, **kw) -> str:
     try:
         if action == "read":
             return browser_view.run_sync(_panel_read(page, kw.get("selector")))
+        if action == "elements":
+            items = browser_view.run_sync(_panel_elements(page))
+            return _format_elements(items)
         if action == "click":
-            target = kw.get("selector") or kw.get("text")
+            # 'ref' (from the 'elements' action) is the most specific target --
+            # prefer it over selector/text when given. Resolves to the same
+            # _panel_click() used for selector/text, so the existing
+            # hint-on-failure behavior is unchanged either way.
+            ref = kw.get("ref")
+            target = _ref_selector(ref) if ref else (kw.get("selector") or kw.get("text"))
             if not target:
-                return "[browser error] 'click' needs a 'selector' or 'text'."
+                return "[browser error] 'click' needs a 'ref', 'selector', or 'text'."
             return browser_view.run_sync(_panel_click(page, target))
         if action == "type":
-            selector, text = kw.get("selector"), kw.get("text")
+            ref = kw.get("ref")
+            selector = _ref_selector(ref) if ref else kw.get("selector")
+            text = kw.get("text")
             if not selector or text is None:
-                return "[browser error] 'type' needs 'selector' and 'text'."
+                return "[browser error] 'type' needs ('ref' or 'selector') and 'text'."
             return browser_view.run_sync(_panel_type(page, selector, text, bool(kw.get("submit"))))
         if action == "screenshot":
             out_path = os.path.join(ctx.profile.browser_dir, "panel_screenshot.png")
@@ -237,7 +318,7 @@ def _run_panel(ctx: ToolContext, action: str, **kw) -> str:
         return f"[browser error] {action} failed: {e}"
 
     return format_invalid_choice(
-        "browser", "action", action, ["goto", "click", "type", "read", "screenshot"]
+        "browser", "action", action, ["goto", "click", "type", "read", "screenshot", "elements"]
     )
 
 
@@ -249,30 +330,38 @@ class BrowserTool(Tool):
         "It starts hidden (no OS window pops up) the first time you use it. "
         "Actions: 'goto' (open a url — ALWAYS call this first, it starts the "
         "session if one isn't running yet, or navigates the existing page if one "
-        "is); 'click' (selector: a CSS selector, OR text: visible link/button text "
-        "— give one of the two); 'type' (selector + text to fill a field, plus "
-        "optional submit=true to press Enter afterward); 'read' (optional selector "
-        "to scope it, otherwise the whole visible page text); 'screenshot' (saves a "
-        "PNG and reports its path). If a click or type target isn't found, the "
-        "error message lists what's actually clickable or fillable on the current "
-        "page so you can retry with something that exists instead of guessing "
-        "again. The browser keeps your logins between calls."
+        "is); 'elements' (lists every clickable/fillable thing on the current "
+        "page with a stable 'ref' id — call this when you're not sure what's on "
+        "the page, then click/type using that ref instead of guessing a "
+        "selector); 'click' (ref: an id from 'elements' — most reliable — OR "
+        "selector: a CSS selector, OR text: visible link/button text); 'type' "
+        "(ref or selector, plus text to fill a field, plus optional submit=true "
+        "to press Enter afterward); 'read' (optional selector to scope it, "
+        "otherwise the whole visible page text); 'screenshot' (saves a PNG and "
+        "reports its path). If a click or type target isn't found, the error "
+        "message lists what's actually clickable or fillable on the current page "
+        "so you can retry with something that exists instead of guessing again. "
+        "The browser keeps your logins between calls."
     )
     parameters = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["goto", "click", "type", "read", "screenshot"],
+                "enum": ["goto", "click", "type", "read", "screenshot", "elements"],
             },
             "url": {"type": "string", "description": "URL for 'goto'."},
+            "ref": {
+                "type": "string",
+                "description": "Element ref from the 'elements' action. For 'click'/'type' — the most reliable way to target something, prefer this over selector/text when you've called 'elements'.",
+            },
             "selector": {
                 "type": "string",
                 "description": "CSS selector. For 'click', visible text also works via the 'text' field instead.",
             },
             "text": {
                 "type": "string",
-                "description": "For 'click': visible text to click by (alternative to 'selector'). For 'type': the text to type into the field.",
+                "description": "For 'click': visible text to click by (alternative to 'selector'/'ref'). For 'type': the text to type into the field.",
             },
             "submit": {"type": "boolean", "description": "For 'type': press Enter after typing.", "default": False},
         },
