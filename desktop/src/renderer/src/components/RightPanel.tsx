@@ -560,10 +560,14 @@ function ScheduledTasksSection({
 // window pops up), it's the SAME session the model's own `browser` tool
 // drives in chat (see pleiades/tools/browser.py + pleiades/webui/
 // browser_view.py), and it offers two explicit, human-triggered escape
-// hatches this component wires up: "Open separately" (switches the running
-// session to a real headed OS window in place) and "Expand" (a larger
-// in-app view, requesting a bigger server-side viewport via resize() rather
-// than just upscaling a blurry small image).
+// hatches this component wires up: "Pop out" (switches the running session
+// to a real headed OS window in place -- backend endpoint/function names
+// stayed `open-separate`/`browserViewOpenSeparate`, only the visible label
+// changed) and "Expand" (a larger in-app modal, requesting a bigger
+// server-side viewport via resize() rather than just upscaling a blurry
+// small image; see controlsRow()/the aspect-ratio wrapper below for a
+// bugfix pass on that modal -- it used to drop all controls and letterbox
+// with black bars).
 // --------------------------------------------------------------------------
 
 /** Map a pointer/keyboard-capable client rect to the backend's fixed
@@ -821,6 +825,57 @@ function BrowserViewSection({
     </div>
   )
 
+  // Shared control row -- rendered identically in the compact panel body
+  // and inside the popped-out/expanded modal below. Previously the modal
+  // only rendered a URL label plus a lone close (x) button around the
+  // frame, so the interact toggle, the pop-out button, and Stop -- all
+  // defined only in the compact JSX further down -- were unreachable once
+  // expanded (the modal's opaque backdrop covers the compact view, and
+  // clicking it just collapses the modal again). `inModal` only changes
+  // the expand/collapse button's label; every control is the exact same
+  // state/handler in both places, so toggling interaction (or anything
+  // else) works identically whether popped out or not.
+  const controlsRow = (inModal: boolean): React.JSX.Element => (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button
+        onClick={() => setInteractive((v) => !v)}
+        className={`rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+          interactive ? 'bg-accent text-white' : 'bg-bg-300 text-ink-dim hover:text-ink'
+        }`}
+        title="Forward clicks/keys from this view into the real page"
+      >
+        {interactive ? 'Interaction: ON' : 'Enter interaction mode'}
+      </button>
+      <button
+        onClick={toggleExpand}
+        disabled={!running}
+        className="rounded-lg bg-bg-300 px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-bg-400 hover:text-ink disabled:opacity-40"
+        title={
+          inModal
+            ? 'Close this pop-out and return to the small view'
+            : 'Open a larger view within the app'
+        }
+      >
+        {inModal ? 'Close pop-out' : 'Expand'}
+      </button>
+      <button
+        onClick={openSeparate}
+        disabled={busy || !running || !!status?.headed}
+        className="rounded-lg bg-bg-300 px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-bg-400 hover:text-ink disabled:opacity-40"
+        title="Switch this session to a real OS window (same session, same login state)"
+      >
+        {status?.headed ? 'Popped out: on-screen' : 'Pop out'}
+      </button>
+      <button
+        onClick={stop}
+        disabled={busy}
+        className="ml-auto rounded-lg px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-rose-500/20 hover:text-rose-300"
+      >
+        Stop session
+      </button>
+    </div>
+  )
+
   return (
     <div>
       {!running && !starting && (
@@ -828,7 +883,7 @@ function BrowserViewSection({
           <p className="text-xs text-ink-faint">
             Live, embeddable browser session for {character || 'this character'} — the same session
             the model&rsquo;s own browser tool drives in chat. Hidden by default (headless); use
-            &ldquo;Open separately&rdquo; below to pop a real window once it&rsquo;s running.
+            &ldquo;Pop out&rdquo; below to pop a real window once it&rsquo;s running.
           </p>
           <button
             onClick={start}
@@ -861,40 +916,7 @@ function BrowserViewSection({
 
           {frameView(imgRef, false)}
 
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              onClick={() => setInteractive((v) => !v)}
-              className={`rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
-                interactive ? 'bg-accent text-white' : 'bg-bg-300 text-ink-dim hover:text-ink'
-              }`}
-              title="Forward clicks/keys from this view into the real page"
-            >
-              {interactive ? 'Interaction: ON' : 'Enter interaction mode'}
-            </button>
-            <button
-              onClick={toggleExpand}
-              disabled={!running}
-              className="rounded-lg bg-bg-300 px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-bg-400 hover:text-ink disabled:opacity-40"
-              title="Open a larger view within the app"
-            >
-              Expand
-            </button>
-            <button
-              onClick={openSeparate}
-              disabled={busy || !running || !!status?.headed}
-              className="rounded-lg bg-bg-300 px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-bg-400 hover:text-ink disabled:opacity-40"
-              title="Switch this session to a real OS window (same session, same login state)"
-            >
-              {status?.headed ? 'Open window: on-screen' : 'Open separately'}
-            </button>
-            <button
-              onClick={stop}
-              disabled={busy}
-              className="ml-auto rounded-lg px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-rose-500/20 hover:text-rose-300"
-            >
-              Stop session
-            </button>
-          </div>
+          {controlsRow(false)}
           {interactive && (
             <p className="text-[10px] text-ink-faint">
               Click the view to focus it, then your clicks/scroll/keys go to the real page.
@@ -916,7 +938,7 @@ function BrowserViewSection({
           onClick={() => toggleExpand()}
         >
           <div
-            className="flex h-full max-h-[90vh] w-full max-w-5xl flex-col gap-2 rounded-2xl bg-bg-100 p-4 shadow-2xl"
+            className="flex h-full max-h-[90vh] w-full max-w-5xl flex-col gap-3 rounded-2xl bg-bg-100 p-4 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex flex-none items-center justify-between">
@@ -924,11 +946,34 @@ function BrowserViewSection({
               <button
                 onClick={() => toggleExpand()}
                 className="rounded-lg px-2 py-1 text-ink-dim transition hover:bg-bg-surface-hover hover:text-ink"
+                aria-label="Close pop-out"
               >
                 &#10005;
               </button>
             </div>
-            <div className="min-h-0 flex-1">{frameView(expandedImgRef, true)}</div>
+            {/* Wrapped in a box constrained to the actual live frame's
+                aspect ratio (viewport.width/height -- the same values the
+                resize() call above requested from the backend), instead of
+                being stretched to fill whatever shape this modal happens
+                to be. That mismatch (this box forced to h-full/w-full of
+                an unrelated max-w-5xl/90vh container, vs. e.g. a 1600x1000
+                frame) is what produced the reported black letterboxing
+                bars: object-contain was correctly preserving the frame's
+                own aspect ratio, but inside a box of a *different* ratio,
+                so the unfilled space showed the container's bg-black/40
+                through. Constraining this wrapper to the same ratio first
+                means the frame fills it edge-to-edge in the common case,
+                and only letterboxes (unavoidably) if the modal truly has
+                no room for that shape at the current window size. */}
+            <div className="flex min-h-0 flex-1 items-center justify-center">
+              <div
+                style={{ aspectRatio: `${viewport.width} / ${viewport.height}` }}
+                className="max-h-full max-w-full"
+              >
+                {frameView(expandedImgRef, true)}
+              </div>
+            </div>
+            {controlsRow(true)}
           </div>
         </div>
       )}
