@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { listProfiles } from '../lib/api'
+import { useChatSession, useChatStoreActions } from '../lib/chatStore'
 import type { Profile } from '../lib/types'
 import ChatView from './ChatView'
 import CreateCharacterOverlay from './CreateCharacterOverlay'
@@ -21,6 +22,20 @@ interface ShellProps {
  * itself now has a left-nav Characters/Hardware/Models layout, with Models
  * owning its own Models/Download/Ollama Cloud/OpenRouter internal tabs —
  * see SettingsPanel and ModelsSection).
+ *
+ * Owner feedback round 4: the right-panel toggle that used to float at
+ * bottom-4 right-4 has moved up into TopCharacterBar (top right of the chat
+ * header). Its old bottom-right spot is now a "New chat" bubble instead —
+ * same size/position/styling as the Settings cogwheel it mirrors, so the
+ * bottom row still reads as a matched pair. That bubble sits *outside* the
+ * `[chat column][RightPanel]` flex row (it's a sibling, absolutely
+ * positioned over the whole Shell), so it doesn't get reflowed for free the
+ * way ChatView's chat column does when RightPanel's width animates — it's
+ * pushed left "by hand" with its own `transition-transform duration-300
+ * ease-in-out` + `-translate-x-96` keyed off the same `rightPanelOpen`
+ * boolean, matching RightPanel's own `transition-[width] duration-300
+ * ease-in-out` timing/easing exactly (see RightPanel.tsx) so the two motions
+ * read as one push rather than two independently-timed animations.
  */
 function Shell({ base }: ShellProps): React.JSX.Element {
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -29,6 +44,8 @@ function Shell({ base }: ShellProps): React.JSX.Element {
   const [createOpen, setCreateOpen] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { startNewChat } = useChatStoreActions()
+  const activeSession = useChatSession(activeCharacter)
 
   const refreshProfiles = useCallback(async () => {
     try {
@@ -52,6 +69,8 @@ function Shell({ base }: ShellProps): React.JSX.Element {
         activeCharacter={activeCharacter}
         onSelectCharacter={setActiveCharacter}
         onOpenCreate={() => setCreateOpen(true)}
+        rightPanelOpen={rightPanelOpen}
+        onToggleRightPanel={() => setRightPanelOpen((v) => !v)}
       />
 
       {error && (
@@ -73,17 +92,37 @@ function Shell({ base }: ShellProps): React.JSX.Element {
         <span aria-hidden>&#9881;</span>
       </button>
 
-      {/* Owner feedback round 2: this used to float at bottom-24 right-4 as
-        a 9x9 button, "weirdly placed" per the owner -- now it's level with
-        (same bottom-4 row as) the Settings cogwheel and the same 11x11
-        size, just mirrored to the right edge. */}
+      {/* Owner feedback round 4: the right-panel toggle that used to live
+        here moved up into TopCharacterBar's top-right corner. This bubble
+        takes over its old bottom-right spot instead: a "New chat" shortcut,
+        same size/shape as the Settings cogwheel it mirrors. It's pushed left
+        by exactly RightPanel's open width (`w-96` / 24rem, so `-translate-x-96`)
+        whenever the panel is open, animating with the identical
+        duration-300/ease-in-out timing RightPanel uses for its own
+        `transition-[width]` (see RightPanel.tsx) -- as if this bubble were
+        one more element of the chat pane getting shoved over by the panel
+        sliding in, and it slides back on close the same way. Disabled while
+        the active character has no name yet or a turn is mid-stream, same
+        guard Composer's inline "New chat" control uses. */}
       <button
-        onClick={() => setRightPanelOpen((v) => !v)}
-        title={rightPanelOpen ? 'Close panel' : 'Progress, history, browser & scheduled tasks'}
-        aria-label="Toggle right panel"
-        className="absolute bottom-4 right-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-border bg-bg-200 text-lg text-ink-dim shadow-lg transition hover:bg-bg-300 hover:text-ink"
+        onClick={() => {
+          if (!activeCharacter || activeSession.streaming) return
+          if (
+            window.confirm(
+              `Start a new chat with ${activeCharacter}? This conversation moves to History — nothing is deleted.`
+            )
+          ) {
+            startNewChat(base, activeCharacter)
+          }
+        }}
+        disabled={!activeCharacter || activeSession.streaming}
+        title="Start a new chat — this conversation moves to History"
+        aria-label="Start a new chat"
+        className={`absolute bottom-4 right-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-border bg-bg-200 text-lg text-ink-dim shadow-lg transition-transform duration-300 ease-in-out hover:bg-bg-300 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 ${
+          rightPanelOpen ? '-translate-x-96' : 'translate-x-0'
+        }`}
       >
-        <span aria-hidden>&#9776;</span>
+        <span aria-hidden>&#10133;</span>
       </button>
 
       {settingsOpen && <SettingsPanel base={base} onClose={() => setSettingsOpen(false)} />}
