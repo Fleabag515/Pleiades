@@ -577,6 +577,89 @@ def create_app() -> FastAPI:
             }
         return d
 
+    @app.get("/api/profiles/{name}/tools")
+    def get_profile_tools(name: str) -> dict:
+        """The character's tool belt: what's available, whether calls need
+        approval or are blocked right now, and (where real data exists)
+        when each tool was last actually used.
+
+        Availability here is not a separate, invented notion of "enabled" --
+        it's read straight off the same two gates the engine itself uses:
+          - which tools EXIST in the belt at all: build_default_belt() only
+            adds EmailTool when the profile has_email, and BrowserTool when
+            the [browser] extra (camoufox) is importable -- a tool this
+            character hasn't configured, or that isn't installed, simply
+            isn't in the list.
+          - whether a listed tool can run RIGHT NOW: exec_policy (this
+            profile's override, else the process-wide default) -- "deny"
+            blocks it, "ask" means every call needs approval, "allow" means
+            it runs immediately. Tool.safe (read-only tools) always bypasses
+            this gate, exactly like ToolBelt.dispatch does.
+
+        `last_used`/`use_count` come from chats.tool_usage(), which mines
+        real completed tool calls out of this character's persisted chat
+        transcripts -- see that function's docstring for why `last_used` is
+        left null for calls made before per-call timestamps existed, rather
+        than guessed from a chat file's mtime.
+        """
+        try:
+            p = pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+
+        from .. import chats as _chats
+        from ..tools import ToolContext, build_default_belt
+
+        with pm.open_vault(name) as vault:
+            ctx = ToolContext(profile=p, vault=vault, settings=settings)
+            belt = build_default_belt(ctx)
+
+        policy = getattr(p, "exec_policy", None) or settings.exec_policy
+        usage = _chats.tool_usage(name)
+
+        tools = []
+        for tool_name in belt.names():
+            tool = belt.get(tool_name)
+            if tool.safe or policy == "allow":
+                status = "available"
+            elif policy == "deny":
+                status = "blocked"
+            else:  # "ask"
+                status = "needs_approval"
+            u = usage.get(tool_name, {"count": 0, "last_used": None})
+            tools.append({
+                "name": tool.name,
+                "description": tool.description,
+                "safe": tool.safe,
+                "status": status,
+                "use_count": u["count"],
+                "last_used": u["last_used"],
+            })
+
+        # How many MORE tools this character can reach on demand through the
+        # harness tool-search bridge (find_tools/list_catalog/call_tool --
+        # see engine.py's _bridge_harness_tools and harness/toolsearch.py).
+        # Those tools aren't enumerated here: they're a much larger, more
+        # volatile registry (files/shell/git/web/memory/subagents/MCP...)
+        # not scoped per-character the way the belt is, and the whole point
+        # of tool-search is that their schemas are loaded lazily rather than
+        # always resident -- a real count is useful context, a fake per-tool
+        # breakdown here would not be.
+        bridge_count = 0
+        try:
+            from ..harness.tools import registry as _harness_registry
+            bridge_count = len([t for t in _harness_registry.all()
+                                if "search" not in t.tags])
+        except Exception:
+            bridge_count = 0
+
+        return {
+            "character": name,
+            "exec_policy": policy,
+            "tools": tools,
+            "bridge_count": bridge_count,
+        }
+
     @app.put("/api/profiles/{name}")
     def update_profile(name: str, body: ProfileUpdate) -> dict:
         try:
@@ -1501,9 +1584,17 @@ def create_app() -> FastAPI:
                             items.append({"t": "text", "text": text_acc})
                             text_acc = ""
                         if evt["type"] == "tool_call":
+                            # "ts" is the real wall-clock moment this call was
+                            # made -- the only honest source for a per-tool
+                            # "last used" display (see chats.tool_usage and
+                            # the Tools right-panel section). The chat
+                            # file's own "updated" field is NOT a
+                            # substitute: it's overwritten by every later
+                            # turn in the same chat, so it can't tell you
+                            # when an EARLIER turn's tool call happened.
                             items.append({"t": "tool", "name": evt["name"],
                                           "args": evt["args"], "output": None,
-                                          "ok": None})
+                                          "ok": None, "ts": time.time()})
                         else:
                             for it in reversed(items):
                                 if it["t"] == "tool" and it["output"] is None:

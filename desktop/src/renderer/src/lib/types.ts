@@ -312,6 +312,24 @@ export interface ScheduledTask {
   last_job_id: string
 }
 
+// ---- Right panel: character tool belt -----------------------------------
+
+export interface ToolInfo {
+  name: string
+  description: string
+  safe: boolean
+  status: 'available' | 'needs_approval' | 'blocked'
+  use_count: number
+  last_used: number | null
+}
+
+export interface ProfileTools {
+  character: string
+  exec_policy: string
+  tools: ToolInfo[]
+  bridge_count: number
+}
+
 export interface BrowserViewStatus {
   character: string
   status: 'stopped' | 'starting' | 'running' | 'error'

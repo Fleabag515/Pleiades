@@ -89,3 +89,72 @@ def test_webui_has_chat_session_routes():
     paths = {r.path for r in create_app().routes}
     assert {"/api/chats", "/api/chats/{chat_id}",
             "/api/chats/{chat_id}/message"} <= paths
+
+
+def test_webui_has_profile_tools_route():
+    __import__("pytest").importorskip("fastapi")
+    from pleiades.webui import create_app
+
+    paths = {r.path for r in create_app().routes}
+    assert "/api/profiles/{name}/tools" in paths
+
+
+def test_toolbelt_get_returns_tool_or_none():
+    belt = ToolBelt([EchoTool()])
+    assert belt.get("echo") is not None
+    assert belt.get("echo").name == "echo"
+    assert belt.get("nope") is None
+
+
+def test_profile_tools_endpoint_reflects_exec_policy_and_usage():
+    """Full round trip: create a profile, hit GET .../tools, and check that
+    status honestly reflects exec_policy (deny -> blocked, ask -> needs
+    approval, allow -> available) and that use_count/last_used come from
+    real chats.tool_usage() data, not placeholders."""
+    pytest = __import__("pytest")
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from pleiades import chats
+    from pleiades.webui import create_app
+
+    app = create_app()
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    resp = client.post("/api/profiles", json={"name": "tools-test-char"})
+    assert resp.status_code == 200
+
+    resp = client.put("/api/profiles/tools-test-char",
+                      json={"exec_policy": "deny"})
+    assert resp.status_code == 200
+
+    resp = client.get("/api/profiles/tools-test-char/tools")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exec_policy"] == "deny"
+    by_name = {t["name"]: t for t in body["tools"]}
+    # SearchTool.safe=True -> always available, deny gate never applies to it.
+    assert by_name["search"]["safe"] is True
+    assert by_name["search"]["status"] == "available"
+    # VaultTool is not safe -> exec_policy=deny actually blocks it.
+    assert by_name["vault"]["safe"] is False
+    assert by_name["vault"]["status"] == "blocked"
+    assert by_name["search"]["use_count"] == 0
+    assert by_name["search"]["last_used"] is None
+
+    # Now record a real completed call for this character and confirm the
+    # endpoint picks it up -- not fabricated, mined from chats.tool_usage().
+    c = chats.create("tools-test-char")
+    chats.append_turn(c["id"], "go", [
+        {"t": "tool", "name": "search", "args": "{}", "output": "...",
+         "ok": True, "ts": 4242.0},
+    ], {"tokens": 1, "seconds": 0.1, "tps": 1.0})
+
+    resp = client.get("/api/profiles/tools-test-char/tools")
+    body = resp.json()
+    by_name = {t["name"]: t for t in body["tools"]}
+    assert by_name["search"]["use_count"] == 1
+    assert by_name["search"]["last_used"] == 4242.0
+
+    chats.delete(c["id"])
+    client.delete("/api/profiles/tools-test-char")

@@ -21,6 +21,72 @@ def test_chat_crud_roundtrip():
     assert not any(x["id"] == c["id"] for x in chats.list_chats())
 
 
+def test_tool_usage_counts_completed_calls_and_scopes_by_character():
+    # Unique-per-test character names -- PLEIADES_HOME/chats is a shared temp
+    # dir for the whole test session (see conftest.py), so reusing "zoe"
+    # across tool_usage tests would leak counts between them.
+    c1 = chats.create("zoe-tu-count")
+    chats.append_turn(c1["id"], "search something", [
+        {"t": "tool", "name": "search", "args": "{}", "output": "...",
+         "ok": True, "ts": 1000.0},
+    ], {"tokens": 1, "seconds": 0.1, "tps": 1.0})
+    c2 = chats.create("zoe-tu-count")
+    chats.append_turn(c2["id"], "search again", [
+        {"t": "tool", "name": "search", "args": "{}", "output": "...",
+         "ok": True, "ts": 2000.0},
+    ], {"tokens": 1, "seconds": 0.1, "tps": 1.0})
+    c3 = chats.create("mark-tu-count")
+    chats.append_turn(c3["id"], "vault get", [
+        {"t": "tool", "name": "vault", "args": "{}", "output": "...",
+         "ok": True, "ts": 3000.0},
+    ], {"tokens": 1, "seconds": 0.1, "tps": 1.0})
+
+    zoe_usage = chats.tool_usage("zoe-tu-count")
+    assert zoe_usage["search"]["count"] == 2
+    assert zoe_usage["search"]["last_used"] == 2000.0
+    assert "vault" not in zoe_usage  # scoped to zoe, not mark's tool use
+
+    mark_usage = chats.tool_usage("mark-tu-count")
+    assert mark_usage["vault"]["count"] == 1
+
+    everyone = chats.tool_usage()
+    assert everyone["search"]["count"] >= 2
+    assert everyone["vault"]["count"] >= 1
+
+    chats.delete(c1["id"])
+    chats.delete(c2["id"])
+    chats.delete(c3["id"])
+
+
+def test_tool_usage_leaves_last_used_null_without_a_real_timestamp():
+    """Historical transcripts written before per-call "ts" existed still
+    count toward use_count, but must never get a fabricated last_used."""
+    c = chats.create("zoe-tu-nots")
+    chats.append_turn(c["id"], "old school call", [
+        {"t": "tool", "name": "hardware", "args": "{}", "output": "...",
+         "ok": True},  # no "ts" -- pre-tracking shape
+    ], {"tokens": 1, "seconds": 0.1, "tps": 1.0})
+
+    usage = chats.tool_usage("zoe-tu-nots")
+    assert usage["hardware"]["count"] == 1
+    assert usage["hardware"]["last_used"] is None
+
+    chats.delete(c["id"])
+
+
+def test_tool_usage_ignores_pending_and_non_tool_items():
+    c = chats.create("zoe-tu-pending")
+    chats.append_turn(c["id"], "in flight", [
+        {"t": "text", "text": "hi"},
+        {"t": "tool", "name": "search", "args": "{}", "output": None,
+         "ok": None, "ts": 5000.0},  # never completed -- must not count
+    ], {"tokens": 1, "seconds": 0.1, "tps": 1.0})
+
+    assert chats.tool_usage("zoe-tu-pending") == {}
+
+    chats.delete(c["id"])
+
+
 def test_chat_bad_id_rejected():
     import pytest
 

@@ -10,6 +10,7 @@ import {
   createScheduledTask,
   deleteScheduledTask,
   getChat,
+  getProfileTools,
   getWorkJob,
   listChats,
   listScheduledTasks,
@@ -21,7 +22,9 @@ import type {
   BrowserViewStatus,
   ChatDetail,
   ChatSummary,
+  ProfileTools,
   ScheduledTask,
+  ToolInfo,
   WorkEvent,
   WorkJobDetail,
   WorkJobSummary
@@ -56,6 +59,7 @@ interface RightPanelProps {
  */
 function RightPanel({ base, character, open }: RightPanelProps): React.JSX.Element {
   const [progressOpen, setProgressOpen] = useState(true)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const [scheduledOpen, setScheduledOpen] = useState(false)
@@ -75,6 +79,15 @@ function RightPanel({ base, character, open }: RightPanelProps): React.JSX.Eleme
             onToggle={() => setProgressOpen((v) => !v)}
           >
             <ProgressSection base={base} character={character} active={open && progressOpen} />
+          </CollapsibleBlock>
+
+          <CollapsibleBlock
+            icon={<span aria-hidden>&#9881;</span>}
+            label="Tools"
+            open={toolsOpen}
+            onToggle={() => setToolsOpen((v) => !v)}
+          >
+            <ToolsSection base={base} character={character} active={open && toolsOpen} />
           </CollapsibleBlock>
 
           <CollapsibleBlock
@@ -278,7 +291,140 @@ function ProgressSection({
 }
 
 // --------------------------------------------------------------------------
+// Tools — the character's actual tool belt (GET /api/profiles/{name}/tools).
+//
+// Everything here is real, live data off the same code paths the engine
+// itself uses to decide what a character can do:
+//   - the tool list + one-line descriptions come straight from each Tool's
+//     own .description (the exact text sent to the model in its function-
+//     calling schema) via build_default_belt() -- a tool this character
+//     hasn't configured (no email set up) or that isn't installed (no
+//     camoufox/[browser] extra) is simply absent, not shown "disabled".
+//   - "status" is the real exec_policy gate: safe/read-only tools always
+//     show available; everything else reflects this character's actual
+//     allow/ask/deny setting (see profiles.Profile.exec_policy, set from
+//     the composer's Approve/Ask dropdown or Settings).
+//   - "used Nx / last used ..." is mined from this character's own
+//     persisted chat transcripts (chats.tool_usage()) — real completed
+//     tool calls, real timestamps. Calls made before per-call timestamps
+//     existed still count toward N but are labelled "before tracking
+//     started" instead of showing a guessed time.
+//   - the "+N more via tool-search" footnote is a real count of the
+//     harness's on-demand tool registry (files/shell/git/web/memory/
+//     subagents/MCP...) that chat can reach through find_tools/call_tool
+//     without those schemas being resident every turn -- see engine.py's
+//     _bridge_harness_tools. Not broken out per-tool here on purpose: it's
+//     a much larger, more volatile registry than the belt, and the whole
+//     point of tool-search is lazy loading rather than a static list.
+// --------------------------------------------------------------------------
+
+function toolStatusMeta(status: ToolInfo['status']): { label: string; className: string } {
+  if (status === 'blocked') return { label: 'blocked', className: 'text-rose-300' }
+  if (status === 'needs_approval') return { label: 'needs approval', className: 'text-amber-300' }
+  return { label: 'available', className: 'text-emerald-300' }
+}
+
+function execPolicyBlurb(policy: string): string {
+  if (policy === 'deny') return 'Non-read-only tools are blocked (exec policy: deny).'
+  if (policy === 'ask') return 'Non-read-only tools ask for approval before running (exec policy: ask).'
+  return 'Tools run automatically without asking (exec policy: allow).'
+}
+
+function toolUsageLine(t: ToolInfo): string {
+  if (t.use_count === 0) return 'Not used yet'
+  if (t.last_used) return `Used ${t.use_count}× · last ${relativeTime(t.last_used)}`
+  return `Used ${t.use_count}× (before tracking started)`
+}
+
+function ToolsSection({
+  base,
+  character,
+  active
+}: {
+  base: string
+  character: string
+  active: boolean
+}): React.JSX.Element {
+  const [data, setData] = useState<ProfileTools | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async (): Promise<void> => {
+    if (!character) return
+    try {
+      setData(await getProfileTools(base, character))
+      setError(null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }, [base, character])
+
+  useEffect(() => {
+    if (!active) return
+    refresh()
+    const id = setInterval(refresh, 8000)
+    return () => clearInterval(id)
+  }, [active, refresh])
+
+  if (error) {
+    return <div className="text-xs text-rose-300">{error}</div>
+  }
+  if (!data) {
+    return (
+      <p className="text-xs text-ink-faint">
+        Loading {character || 'this character'}&rsquo;s tool belt&hellip;
+      </p>
+    )
+  }
+
+  // Most-recently-used first; never-used tools sort to the bottom together.
+  const sorted = [...data.tools].sort((a, b) => (b.last_used ?? 0) - (a.last_used ?? 0))
+
+  return (
+    <div>
+      <p className="mb-2 text-[11px] text-ink-faint">{execPolicyBlurb(data.exec_policy)}</p>
+      {sorted.length === 0 ? (
+        <p className="text-xs text-ink-faint">
+          No tools configured for {character || 'this character'} yet.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {sorted.map((t) => {
+            const meta = toolStatusMeta(t.status)
+            return (
+              <li key={t.name} className="rounded-lg bg-bg-300/50 px-2.5 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="truncate text-xs font-medium text-ink">{t.name}</span>
+                  <span
+                    className={`flex-none text-[10px] font-medium uppercase ${meta.className}`}
+                  >
+                    {meta.label}
+                  </span>
+                </div>
+                <p className="mt-0.5 line-clamp-2 text-[11px] text-ink-faint">{t.description}</p>
+                <div className="mt-1 flex items-center gap-1.5 text-[10px] text-ink-faint">
+                  {t.safe && (
+                    <span className="flex-none rounded bg-bg-200 px-1 py-0.5">read-only</span>
+                  )}
+                  <span className="truncate">{toolUsageLine(t)}</span>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {data.bridge_count > 0 && (
+        <p className="mt-2 text-[10px] text-ink-faint">
+          +{data.bridge_count} more reachable on demand via tool-search (files, shell, git, web,
+          memory, subagents, &hellip;) — loaded only when a turn actually needs one.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
 // History — folded into the panel per owner brief item 2 (previously a
+
 // separate modal, HistoryOverlay, triggered by its own icon under Composer).
 // Same data/behavior as before: a read-only list of a character's past
 // chats plus a read-only transcript viewer. Selecting one never makes it

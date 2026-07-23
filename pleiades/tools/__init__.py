@@ -105,6 +105,12 @@ class ToolBelt:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def get(self, name: str) -> Optional[Tool]:
+        """Look up a single tool by name (introspection -- e.g. the webui's
+        GET /api/profiles/{name}/tools endpoint), without callers reaching
+        into the private _tools dict directly."""
+        return self._tools.get(name)
+
     def openai_schema(self) -> list[dict]:
         return [t.schema() for t in self._tools.values()]
 

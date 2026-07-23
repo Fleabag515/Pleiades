@@ -13,6 +13,7 @@ import type {
   PendingApproval,
   Profile,
   ProfileDetail,
+  ProfileTools,
   QuantOptionsResponse,
   ScheduledTask,
   StreamEvent,
@@ -424,6 +425,12 @@ export async function assignCloudModel(
       body: JSON.stringify({ source, model })
     })
   )
+}
+
+// ---- Right panel: character tool belt --------------------------------------
+
+export async function getProfileTools(base: string, name: string): Promise<ProfileTools> {
+  return asJson(await fetch(`${base}/api/profiles/${encodeURIComponent(name)}/tools`))
 }
 
 // ---- Right panel: work/progress jobs -------------------------------------

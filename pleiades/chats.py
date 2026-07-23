@@ -77,6 +77,48 @@ def list_chats() -> list[dict]:
     return sorted(out, key=lambda c: -c["updated"])
 
 
+def tool_usage(character: str | None = None) -> dict[str, dict]:
+    """Real per-tool usage stats mined from persisted chat transcripts.
+
+    Scans every chat file (optionally scoped to one character) and tallies
+    completed tool calls ({"t": "tool", ..., "ok": true/false}) by tool
+    name, returning {tool_name: {"count": int, "last_used": float|None}}.
+
+    `last_used` is only ever a real wall-clock time recorded at the moment
+    the tool was actually invoked (server.py's streaming loop stamps each
+    tool item with "ts" as it's created -- see the comment there). Chats
+    written before that stamp existed have no "ts" on their tool items;
+    those calls still count toward `count` but never move `last_used`,
+    because the only other timestamp available -- the chat file's
+    `updated` field -- reflects whenever the chat was LAST saved, not when
+    that specific historical tool call happened, and reporting it as
+    "last used" would be reporting a guess as a fact. A tool that has
+    `count > 0` but `last_used == None` was used before tracking existed;
+    the UI should say so rather than inventing a time.
+    """
+    stats: dict[str, dict] = {}
+    for f in chats_dir().glob("*.json"):
+        try:
+            c = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if character is not None and c.get("character") != character:
+            continue
+        for m in c.get("messages", []):
+            if m.get("role") != "assistant":
+                continue
+            for item in m.get("items", []):
+                if item.get("t") != "tool" or item.get("ok") is None:
+                    continue  # still in flight / malformed -- not a completed call
+                name = item.get("name") or "?"
+                s = stats.setdefault(name, {"count": 0, "last_used": None})
+                s["count"] += 1
+                ts = item.get("ts")
+                if isinstance(ts, (int, float)) and (s["last_used"] is None or ts > s["last_used"]):
+                    s["last_used"] = ts
+    return stats
+
+
 def recent_messages(chat: dict, max_turns: int = 8) -> list[dict]:
     """Flatten the last `max_turns` user/assistant turns into plain
     {"role","content"} messages, for resending to Anamnesis alongside the
