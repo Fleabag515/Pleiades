@@ -127,6 +127,49 @@ _REFLECTION = (
 )
 
 
+def _synthetic_tool_round(name: str, content: str, call_id: str) -> list[dict]:
+    """A fabricated assistant tool_calls message + its role:"tool" result —
+    used to splice a machine-generated notice (the self-reflection check
+    above, a background-task-completion notice) into `messages` WITHOUT a
+    role:"user" entry.
+
+    Why not role:"user": Anamnesis's proxy (proxy.js) persists "the new user
+    turn" by reversing the messages array and taking the first role=='user'
+    entry it finds. A role:"user" injection is indistinguishable from real
+    user speech to that scan and gets written into the character's
+    long-term memory as if the user had actually said it — confirmed live by
+    reading proxy.js's dedup logic (see fix/anamnesis-reflection-injection
+    branch notes). role:"tool" messages are invisible to that scan (it
+    filters on role=='user' only) and are never persisted or extracted by
+    Anamnesis at all — history.js only ever inserts 'user'/'assistant' rows,
+    and the extractor only ever reads rows already inserted that way — so a
+    synthetic tool round is safe from both the dedup bug and any secondary
+    leak through the extraction pipeline.
+
+    The model never actually emitted this tool_calls entry; it's a
+    fabricated round the engine constructs so the notice arrives through a
+    channel the model already knows how to read (a tool result) instead of
+    as fake user speech. engine.py only ever speaks the OpenAI wire format
+    (see _client_for), so this shape is unconditional here — contrast with
+    harness/agent.py's twin copy of this helper, which is backend-aware
+    because that loop also supports the Anthropic backend.
+    """
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": call_id, "content": content},
+    ]
+
+
 # Persona-agnostic operating contract injected into the chat path when the caller
 # supplies no system prompt of its own. Anamnesis injects the character's persona
 # (voice) separately; this only governs *how the character operates its tools* so a
@@ -546,7 +589,8 @@ class Engine:
         last_text = ""
         while True:
             if interval and round_i and round_i % interval == 0:
-                messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
+                messages.extend(_synthetic_tool_round(
+                    "system_reflection", _REFLECTION.format(n=round_i), f"reflect_{round_i}"))
             if round_i >= ceiling:
                 # Absolute safety net: the self-check above gets ~ceiling/interval
                 # chances to resolve a loop/blocker first; this only fires if it never did.
@@ -635,6 +679,21 @@ class Engine:
         "user" message between an assistant's tool_calls message and its
         results would corrupt the transcript for chat templates that expect
         that pairing to be contiguous.
+
+        This queue is role:"user" deliberately and only ever carries genuine
+        user-authored text today — its one caller (webui/server.py's
+        chats_interject endpoint) is only ever reached by a human via the
+        desktop app's Composer, never by anything automated (confirmed: no
+        background/scheduled/async mechanism in this repo posts to
+        /interject or touches chat_inboxes as of this writing). That's the
+        correct shape for real user speech — Anamnesis SHOULD persist it as
+        a real user turn. If a future feature ever delivers a
+        machine-generated notice (e.g. "your background tool call
+        finished") through this same pending_injections channel, it must
+        NOT be appended as role:"user" — route it through
+        _synthetic_tool_round() instead, same as the self-check above, or
+        it will reproduce the exact Anamnesis memory-pollution bug that
+        mechanism was built to avoid (see fix/anamnesis-reflection-injection).
         """
         if isinstance(profile, str):
             profile = self.manager.get(profile)
@@ -672,7 +731,8 @@ class Engine:
                     yield {"type": "user_injected", "text": _inj}
                 pending_injections = []
                 if interval and round_i and round_i % interval == 0:
-                    messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
+                    messages.extend(_synthetic_tool_round(
+                        "system_reflection", _REFLECTION.format(n=round_i), f"reflect_{round_i}"))
                     yield {"type": "reasoning", "text": "[self-check] evaluating progress and checking for loops…"}
                 if round_i >= ceiling:
                     # Absolute safety net: the self-check above gets ~ceiling/interval

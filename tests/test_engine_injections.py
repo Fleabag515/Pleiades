@@ -1,7 +1,22 @@
-"""Mid-turn user-message injection: Engine.stream_events' poll_injections
-param only ever splices a queued message in at a SAFE round/tool boundary,
-never mid-stream and never between an assistant's tool_calls message and its
-tool results (see engine.py's stream_events docstring)."""
+"""Engine message-array injections: two different mechanisms splice
+machine-generated (or mid-task user) content into the `messages` array
+mid-turn, and both have to be shaped carefully:
+
+  * poll_injections (tested first below): genuine mid-turn USER messages
+    only ever splice in at a SAFE round/tool boundary, never mid-stream and
+    never between an assistant's tool_calls message and its tool results
+    (see engine.py's stream_events docstring). These stay role:"user" --
+    they really are user speech, and Anamnesis should persist them as such.
+
+  * the periodic self-reflection check (tested below that): this is
+    machine-generated, not user speech, so it must NOT be role:"user" --
+    see engine.py's _synthetic_tool_round docstring for why (Anamnesis's
+    proxy.js persists "the new user turn" by reversing `messages` and
+    taking the first role=='user' entry; a role:"user" self-check becomes
+    indistinguishable from real user speech once a turn runs past
+    eval_interval rounds, and gets written into the character's long-term
+    memory as if the user had said it). These tests are the regression
+    guard for that bug (fix/anamnesis-reflection-injection)."""
 
 from pleiades import config
 from pleiades.engine import Engine
@@ -171,3 +186,128 @@ def test_no_poll_injections_is_a_no_op(monkeypatch):
     eng = Engine(settings=config.Settings.load(), manager=object(), anamnesis=object())
     events = list(eng.stream_events(Profile(name="inject-test"), "hello"))
     assert not any(e["type"] == "user_injected" for e in events)
+
+
+# --------------------------------------------------------------------------- #
+# Self-reflection check: must be a synthetic tool round, never role:"user".
+# --------------------------------------------------------------------------- #
+
+def test_synthetic_tool_round_shape():
+    """Direct unit test of the helper both _loop and stream_events use --
+    this is the whole fix in one function, so pin its exact shape."""
+    from pleiades.engine import _synthetic_tool_round
+
+    msgs = _synthetic_tool_round("system_reflection", "do a self-check", "reflect_3")
+    assert len(msgs) == 2
+
+    call_msg, result_msg = msgs
+    assert call_msg["role"] == "assistant"
+    assert call_msg["content"] == ""
+    assert call_msg["tool_calls"] == [
+        {"id": "reflect_3", "type": "function",
+         "function": {"name": "system_reflection", "arguments": "{}"}},
+    ]
+    assert result_msg == {"role": "tool", "tool_call_id": "reflect_3",
+                          "content": "do a self-check"}
+    # The entire point of the fix: no role:"user" anywhere in this pair.
+    assert all(m["role"] != "user" for m in msgs)
+
+
+def test_reflection_check_is_synthetic_tool_round_in_stream_events(monkeypatch):
+    """Regression test for the Anamnesis memory-pollution bug: the periodic
+    self-check used to be appended as {"role": "user", ...}, which -- once a
+    turn ran past eval_interval rounds -- became the LAST role=='user'
+    message in the request, and Anamnesis's proxy.js persisted it as if the
+    user had said it. It must now arrive as a fabricated assistant
+    tool_calls message + its role:"tool" result instead."""
+    from pleiades import engine as engine_mod
+
+    ctx = ToolContext(profile=Profile(name="inject-test"), vault=None,
+                      settings=config.Settings(eval_interval=1))
+    belt = ToolBelt([_NoopTool()])
+
+    def fake_client_for(self, profile):
+        return object(), ctx, belt
+
+    monkeypatch.setattr(engine_mod.Engine, "_client_for", fake_client_for)
+    monkeypatch.setattr(engine_mod.Engine, "_model_for", lambda self, profile: "test-model")
+
+    # Round 1: assistant calls `noop`, forcing a round 2 -- eval_interval=1
+    # means the self-check must fire at the top of round 2, ahead of the
+    # next request.
+    msg1 = _FakeMsg(content="", tool_calls=[_FakeToolCall("call_1", "noop", "{}")])
+    msg2 = _FakeMsg(content="All done.", tool_calls=None)
+    responses = [_FakeResp(msg1), _FakeResp(msg2)]
+    captured_messages = []
+
+    def fake_chat_create(self, client, profile, **kwargs):
+        if kwargs.get("stream"):
+            raise RuntimeError("no streaming in this test double")
+        captured_messages.append(list(kwargs["messages"]))
+        idx = len(captured_messages) - 1
+        return responses[idx], client
+
+    monkeypatch.setattr(engine_mod.Engine, "_chat_create", fake_chat_create)
+
+    eng = Engine(settings=config.Settings(eval_interval=1), manager=object(), anamnesis=object())
+    list(eng.stream_events(Profile(name="inject-test"), "do the thing"))
+
+    assert len(captured_messages) == 2
+    round2 = captured_messages[1]
+    # [system, user, assistant(real tool_calls), tool(real result),
+    #  assistant(synthetic system_reflection tool_calls), tool(reflection text)]
+    assert len(round2) == 6
+    assert round2[4]["role"] == "assistant"
+    assert round2[4]["tool_calls"][0]["function"]["name"] == "system_reflection"
+    assert round2[5]["role"] == "tool"
+    assert round2[5]["tool_call_id"] == round2[4]["tool_calls"][0]["id"]
+    assert "[Self-check after" in round2[5]["content"]
+    # The crux of the whole fix: the ONLY role:"user" message anywhere in
+    # the request is the genuine original user message -- the self-check
+    # must never add a second one.
+    user_msgs = [m for m in round2 if m["role"] == "user"]
+    assert len(user_msgs) == 1
+    assert user_msgs[0]["content"] == "do the thing"
+
+
+def test_reflection_check_is_synthetic_tool_round_in_loop(monkeypatch):
+    """Same regression, but for Engine._loop (the older non-streaming path,
+    still reachable via Engine.run) -- it has its own independent call site
+    for the same fix."""
+    from pleiades import engine as engine_mod
+
+    ctx = ToolContext(profile=Profile(name="inject-test"), vault=None,
+                      settings=config.Settings(eval_interval=1))
+    belt = ToolBelt([_NoopTool()])
+
+    def fake_client_for(self, profile):
+        return object(), ctx, belt
+
+    monkeypatch.setattr(engine_mod.Engine, "_client_for", fake_client_for)
+    monkeypatch.setattr(engine_mod.Engine, "_model_for", lambda self, profile: "test-model")
+
+    msg1 = _FakeMsg(content="", tool_calls=[_FakeToolCall("call_1", "noop", "{}")])
+    msg2 = _FakeMsg(content="All done.", tool_calls=None)
+    responses = [_FakeResp(msg1), _FakeResp(msg2)]
+    captured_messages = []
+
+    def fake_chat_create(self, client, profile, **kwargs):
+        captured_messages.append(list(kwargs["messages"]))
+        idx = len(captured_messages) - 1
+        return responses[idx], client
+
+    monkeypatch.setattr(engine_mod.Engine, "_chat_create", fake_chat_create)
+
+    eng = Engine(settings=config.Settings(eval_interval=1), manager=object(), anamnesis=object())
+    result = eng.run(Profile(name="inject-test"), "do the thing")
+
+    assert result == "All done."
+    assert len(captured_messages) == 2
+    round2 = captured_messages[1]
+    assert len(round2) == 6
+    assert round2[4]["role"] == "assistant"
+    assert round2[4]["tool_calls"][0]["function"]["name"] == "system_reflection"
+    assert round2[5]["role"] == "tool"
+    user_msgs = [m for m in round2 if m["role"] == "user"]
+    assert len(user_msgs) == 1
+    assert user_msgs[0]["content"] == "do the thing"
