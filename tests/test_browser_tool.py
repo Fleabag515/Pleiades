@@ -237,3 +237,71 @@ def test_panel_screenshot_bytes_returns_none_on_failure():
 def test_with_vision_fallback_passthrough_when_no_caption():
     assert bt._with_vision_fallback("original text", None) == "original text"
     assert bt._with_vision_fallback("original text", "") == "original text"
+
+
+# ─── Discord-class fix: composer visibility + false-success verification ─────
+# (reported bug: model typed a Discord message into the SEARCH bar, pressed
+# Enter, and told the user "sent" when nothing was. Root cause was two-fold:
+# the message composer -- a role=textbox/contenteditable Slate div -- was
+# invisible to element extraction, and nothing verified a submit landed.)
+
+
+def test_format_elements_marks_editable_fields():
+    items = [
+        {"ref": "e1", "role": "button", "label": "Send", "enabled": True, "editable": False},
+        {"ref": "e2", "role": "textbox", "label": "Message #general", "enabled": True, "editable": True},
+    ]
+    out = bt._format_elements(items)
+    assert "text field — you can type here" in out
+    # single editable field -> no disambiguation note
+    assert "more than one place you can type" not in out
+
+
+def test_format_elements_warns_when_multiple_text_fields_exist():
+    items = [
+        {"ref": "e1", "role": "input", "label": "Search", "enabled": True, "editable": True},
+        {"ref": "e2", "role": "textbox", "label": "Message #general", "enabled": True, "editable": True},
+    ]
+    out = bt._format_elements(items)
+    assert "more than one place you can type" in out
+    # both candidate fields are named so the model can pick by label
+    assert "Search" in out and "Message #general" in out
+    assert "NOT the one labelled 'Search'" in out
+
+
+def test_submit_outcome_navigation_counts_as_submitted():
+    out = bt._submit_outcome("https://a.test/x", "https://a.test/y", None)
+    assert "navigated" in out
+    assert "submitted" in out
+
+
+def test_submit_outcome_text_still_in_field_warns_not_sent():
+    verify = {"targetFound": True, "inTarget": True, "elsewhere": False}
+    out = bt._submit_outcome("https://a.test/x", "https://a.test/x", verify)
+    assert "STILL sitting in that field" in out
+    assert "did NOT" in out
+    assert "search box" in out  # names the exact reported failure mode
+
+
+def test_submit_outcome_field_cleared_and_text_elsewhere_reads_as_sent():
+    verify = {"targetFound": True, "inTarget": False, "elsewhere": True}
+    out = bt._submit_outcome("https://a.test/x", "https://a.test/x", verify)
+    assert "cleared" in out
+    assert "sent" in out or "submitted" in out
+
+
+def test_submit_outcome_no_verify_info_is_neutral():
+    out = bt._submit_outcome("https://a.test/x", "https://a.test/x", None)
+    assert out == " and pressed Enter."
+
+
+def test_verify_typed_returns_none_without_selector():
+    assert asyncio.run(bt._verify_typed(FakePage(), None, "hi")) is None
+
+
+def test_verify_typed_returns_none_on_evaluate_failure():
+    class BrokenPage(FakePage):
+        async def evaluate(self, _js, _arg=None):
+            raise Exception("page gone")
+
+    assert asyncio.run(bt._verify_typed(BrokenPage(), "#x", "hi")) is None

@@ -297,3 +297,74 @@ slice:
 - Extending the hook to the Camoufox/harness backend (Discord, `pleiades
   work`) — mirrors Phase 1's own scoping decision to prove this on the
   panel backend first.
+
+## Addendum, 2026-07-23 — Phase 1 didn't help the reported Discord task; two concrete gaps found and fixed
+
+Fleagle reported that after Phase 1 shipped, the model *still* couldn't send a
+Discord message: it looped, eventually typed the message into the **search
+bar**, pressed Enter, and confidently told him it was sent — when nothing
+was. "Same thing he did before these updates." Investigated against real
+source and reproduced against the live production code (not assumed). Two
+concrete, additive bugs — both now fixed in `pleiades/tools/browser.py`:
+
+1. **The message composer was invisible to `elements`.** Discord's compose
+   box is a Slate editor: `<div role="textbox" contenteditable="true"
+   aria-label="Message #channel">` — no `tabindex`, not an `<input>`.
+   Phase 1's `_ELEMENTS_JS` selector listed `input/textarea/select` and a few
+   ARIA roles but **omitted `[role=textbox]`, `[role=searchbox]`,
+   `[role=combobox]`, and `[contenteditable]`**. Verified by running the real
+   `_ELEMENTS_JS` (extracted from source) via Playwright against a synthetic
+   page mirroring Discord's structure: the composer did **not** appear in the
+   element list at all, while the search `<input>` did. So when the model
+   called `elements` to find where to type, the search box was the *only*
+   text field it could see — it typed there because the right field was never
+   offered. The retry-hint helper (`_panel_input_fields`) had the identical
+   omission. Fix: added those roles + `contenteditable` to both selectors, and
+   the extractor now emits an `editable` flag plus `aria`/`placeholder`
+   separately. Re-verified: the composer now appears, labelled
+   `'Message #general'`, marked as a text field. This was a real Phase-1 gap,
+   not a fundamental limit of the accessibility-tree approach — the tree
+   *does* represent Discord's composer; Phase 1 just wasn't querying for it.
+
+2. **Nothing verified a submit actually landed — the false-success bug (worse
+   than #1).** `type(..., submit=true)` returned `"Filled ... and pressed
+   Enter"` on any successful DOM fill, with **zero** check that the text went
+   anywhere. The paste technically "succeeded" (something got typed
+   somewhere), so the tool reported success and the model relayed "sent" to
+   the user. Fix: after a submit, the tool now checks the most discriminating,
+   low-false-positive signal for a send/submit action — **did the field
+   clear?** A real composer (and most submit inputs) empties when its contents
+   are actually submitted; a search box you pressed Enter in keeps its text and
+   sends nothing. If the text is still sitting in the field, the result now
+   says so bluntly and tells the model it likely did NOT send and to verify
+   (via `read`/`elements`) before claiming success. Verified live against two
+   Playwright pages (a search box that keeps its text vs. a composer that
+   clears and appends to a timeline): the search case yields the "STILL sitting
+   in that field — did NOT go through" warning, the composer case yields
+   "field cleared … consistent with sent." URL-change is also treated as a
+   submit signal for non-SPA sites.
+
+Also strengthened: `_format_elements` now flags when **more than one** text
+field exists and tells the model to pick the ref whose label matches its goal
+("a message to SEND goes in 'Message …', NOT 'Search'"), and the tool
+description carries the same guidance. This is guidance, not enforcement, but
+it targets the exact confusion.
+
+**Honest confidence.** Gap #1 is the direct mechanical cause of "typed into
+the search bar" and I'm highly confident the fix removes it — the composer is
+now actually offered as a labelled, editable target (reproduced before/after).
+Gap #2's verification is high-confidence at catching the specific false-success
+pattern reported (typed-into-search-then-claimed-sent), because that failure
+leaves the text sitting in the field, which the check detects. Residual
+uncertainty: (a) whether the model *chooses* the composer ref over the search
+ref once both are visible — that now rests on the labels + the new
+disambiguation guidance, which a small local model may still get wrong
+sometimes; and (b) whether Playwright's `fill()` reliably drives Discord's
+Slate editor in every case (it dispatches input events and generally works for
+contenteditable, but Slate can be finicky). Neither of those needs Phase 2's
+vision tier — they're within the accessibility-tree approach. So: this is a
+real fix to two real Phase-1 bugs, expected to resolve the reported behavior,
+**not** a case where Phase 1 is fundamentally insufficient and vision is
+required. If the model still mis-selects between two clearly-labelled fields
+after this, that's a model-capability/prompting problem to address next, not a
+missing-vision problem.

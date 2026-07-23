@@ -124,12 +124,15 @@ async def _panel_clickables(page, limit: int = 25) -> list[str]:
 async def _panel_input_fields(page, limit: int = 20) -> list[str]:
     try:
         items = await page.eval_on_selector_all(
-            "input:not([type=hidden]), textarea, select",
+            "input:not([type=hidden]), textarea, select, [role=textbox], "
+            "[role=searchbox], [role=combobox], "
+            "[contenteditable=''], [contenteditable='true'], "
+            "[contenteditable='plaintext-only']",
             "els => els.map(e => {"
             " const id = e.id ? '#'+e.id : '';"
             " const nm = e.name ? e.tagName.toLowerCase()+'[name=\\\"'+e.name+'\\\"]' : '';"
             " const sel = id || nm || e.tagName.toLowerCase();"
-            " const hint = e.placeholder || e.getAttribute('aria-label') || e.type || '';"
+            " const hint = e.placeholder || e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || e.getAttribute('data-text') || e.type || '';"
             " return hint ? sel+'  — '+hint : sel; })",
         )
     except Exception:
@@ -159,8 +162,11 @@ def _hint(label: str, items: list[str]) -> str:
 _ELEMENTS_JS = r"""
 () => {
   const SEL = "a, button, [role=button], [role=link], [role=checkbox], " +
-    "[role=radio], [role=tab], [role=menuitem], input:not([type=hidden]), " +
-    "textarea, select, [onclick], [tabindex]:not([tabindex='-1'])";
+    "[role=radio], [role=tab], [role=menuitem], [role=textbox], " +
+    "[role=searchbox], [role=combobox], input:not([type=hidden]), " +
+    "textarea, select, [contenteditable=''], [contenteditable='true'], " +
+    "[contenteditable='plaintext-only'], [onclick], " +
+    "[tabindex]:not([tabindex='-1'])";
   const els = Array.from(document.querySelectorAll(SEL));
   let n = 0;
   const out = [];
@@ -176,12 +182,30 @@ _ELEMENTS_JS = r"""
       e.setAttribute('data-pleiades-ref', ref);
     }
     const role = e.getAttribute('role') || e.tagName.toLowerCase();
-    const label = (e.innerText || e.value || e.getAttribute('aria-label') ||
-      e.getAttribute('placeholder') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    const tag = e.tagName.toLowerCase();
+    const aria = e.getAttribute('aria-label') || '';
+    const placeholder = e.getAttribute('placeholder') ||
+      e.getAttribute('data-placeholder') || e.getAttribute('data-text') || '';
+    const label = (e.innerText || e.value || aria || placeholder || '')
+      .trim().replace(/\s+/g, ' ').slice(0, 80);
+    // "editable" = something you can type text INTO (an input/textarea, a
+    // contenteditable surface like Discord's Slate message box, or an
+    // ARIA text/search/combobox). Surfaced so the model can tell a place it
+    // can TYPE from a place it can only CLICK, and pick the RIGHT one when
+    // several exist (a message composer vs. a search bar look alike here).
+    const ce = e.getAttribute('contenteditable');
+    const editableCE = ce === '' || ce === 'true' || ce === 'plaintext-only';
+    const textInput = tag === 'textarea' ||
+      (tag === 'input' && !['button','submit','checkbox','radio','range',
+        'color','file','image','reset'].includes((e.getAttribute('type')||'text')
+        .toLowerCase()));
+    const editableRole = ['textbox','searchbox','combobox'].includes(role);
     out.push({
       ref, role, label,
       enabled: !e.disabled,
-      tag: e.tagName.toLowerCase(),
+      tag,
+      editable: !!(editableCE || textInput || editableRole),
+      aria, placeholder,
     });
   }
   return out;
@@ -203,8 +227,28 @@ def _format_elements(items: list[dict]) -> str:
     lines = ["Interactive elements on this page (use action='click'/'type' with ref=<ref>):"]
     for it in items:
         state = "" if it.get("enabled", True) else " [disabled]"
+        kind = " [text field — you can type here]" if it.get("editable") else ""
         label = it.get("label") or "(no label)"
-        lines.append(f"  - ref={it['ref']}  {it.get('role', it.get('tag', '?'))}: {label!r}{state}")
+        lines.append(
+            f"  - ref={it['ref']}  {it.get('role', it.get('tag', '?'))}: "
+            f"{label!r}{kind}{state}"
+        )
+    editable = [it for it in items if it.get("editable")]
+    if len(editable) > 1:
+        opts = ", ".join(
+            f"ref={it['ref']} ({it.get('label') or it.get('role') or '?'})"
+            for it in editable
+        )
+        lines.append(
+            "NOTE: this page has more than one place you can type: "
+            + opts
+            + ". These can look alike (e.g. a message/compose box vs. a search "
+            "bar). Before you type, pick the ref whose label matches your actual "
+            "goal — a message you want to SEND goes in the field labelled like "
+            "'Message ...'/the composer, NOT the one labelled 'Search'. If none "
+            "of the labels matches your goal, do NOT just type into the closest "
+            "one — read the page again or say you couldn't find the right field."
+        )
     return "\n".join(lines)
 
 
@@ -228,28 +272,105 @@ async def _panel_click(page, target: str) -> str:
     return f"Clicked {target!r} — now at {page.url}"
 
 
+# After a type(..., submit=true) we check what ACTUALLY happened before the
+# model is allowed to report success. The reported failure mode was: the model
+# typed a Discord message into the search bar, pressed Enter, and confidently
+# told the user "sent" -- when nothing was sent at all. The single most
+# discriminating, low-false-positive signal for a "send a message / submit"
+# action is: did the field CLEAR? A real message composer (and most submit
+# inputs) empties when its contents are actually submitted; a search box you
+# pressed Enter in keeps its text and sends nothing. We report the observed
+# state factually and, when the text is still sitting in the field, tell the
+# model in no uncertain terms to VERIFY before claiming success.
+_VERIFY_TYPED_JS = r"""
+(args) => {
+  const { selector, text } = args;
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const t = norm(text);
+  const el = selector ? document.querySelector(selector) : null;
+  const tag = el ? el.tagName.toLowerCase() : '';
+  const elText = el
+    ? norm((tag === 'input' || tag === 'textarea')
+        ? (el.value || '')
+        : (el.innerText || el.textContent || el.value || ''))
+    : '';
+  const inTarget = t.length > 0 && elText.indexOf(t) !== -1;
+  let elsewhere = false;
+  if (t.length > 0 && document.body) {
+    const body = norm(document.body.innerText || '');
+    const inBody = body.split(t).length - 1;
+    const inTgt = elText.split(t).length - 1;
+    elsewhere = inBody > inTgt;   // the text shows up somewhere OTHER than the field
+  }
+  return { targetFound: !!el, inTarget, elsewhere };
+}
+"""
+
+
+async def _verify_typed(page, selector: str, text: str) -> "dict | None":
+    if not selector:
+        return None
+    try:
+        return await page.evaluate(_VERIFY_TYPED_JS, {"selector": selector, "text": text})
+    except Exception:
+        return None
+
+
+def _submit_outcome(before_url: str, after_url: str, verify: "dict | None") -> str:
+    if before_url != after_url:
+        return (f" and pressed Enter — the page navigated to {after_url} "
+                "(something was submitted).")
+    if verify is None:
+        return " and pressed Enter."
+    if verify.get("inTarget"):
+        return (
+            " and pressed Enter, but the text is STILL sitting in that field — "
+            "pressing Enter did not clear or send it, so it very likely did NOT "
+            "go through. This is exactly what happens when you type into a search "
+            "box or the wrong field instead of a real message/compose box. DO NOT "
+            "tell the user it was sent. Verify first: call 'read' or 'elements' "
+            "and confirm the text actually appears where you intended (e.g. as a "
+            "new message in the conversation), and that the field you used was "
+            "labelled like your goal (a composer, not 'Search'). If it isn't "
+            "there, it did not send — find the right field and try again."
+        )
+    if verify.get("elsewhere"):
+        return (" and pressed Enter — the field cleared and the text now appears "
+                "elsewhere on the page, consistent with it having been sent/"
+                "submitted. (Still worth a quick 'read' to confirm.)")
+    return (" and pressed Enter — the field cleared (consistent with the text "
+            "being submitted). Confirm with 'read' if this was a message you "
+            "needed to actually send.")
+
+
 async def _panel_type(page, selector: str, text: str, submit: bool) -> str:
+    used_selector = selector
     try:
         await page.fill(selector, text, timeout=8000)
     except Exception as css_exc:
         try:
             await page.get_by_label(selector, exact=False).first.fill(text, timeout=8000)
+            used_selector = None  # filled via label match, no stable selector to re-check
         except Exception:
             try:
                 await page.get_by_placeholder(selector, exact=False).first.fill(text, timeout=8000)
+                used_selector = None
             except Exception:
                 hint = _hint(
                     "Input fields on this page (use one of these selectors):",
                     await _panel_input_fields(page),
                 )
                 return f"[browser error] could not fill {selector!r}: {css_exc}{hint}"
-    if submit:
-        try:
-            await page.keyboard.press("Enter")
-            await page.wait_for_load_state("domcontentloaded", timeout=15000)
-        except Exception:
-            pass
-    return f"Filled {selector!r}" + (" and pressed Enter" if submit else "") + f" — now at {page.url}"
+    if not submit:
+        return f"Filled {selector!r} — now at {page.url}"
+    before_url = page.url
+    try:
+        await page.keyboard.press("Enter")
+        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+    except Exception:
+        pass
+    verify = await _verify_typed(page, used_selector, text)
+    return f"Filled {selector!r}" + _submit_outcome(before_url, page.url, verify) + f" Now at {page.url}"
 
 
 async def _panel_screenshot(page, out_path: str) -> str:
@@ -383,7 +504,13 @@ class BrowserTool(Tool):
         "'click' (ref: an id from 'elements' \u2014 most reliable \u2014 OR "
         "selector: a CSS selector, OR text: visible link/button text); 'type' "
         "(ref or selector, plus text to fill a field, plus optional submit=true "
-        "to press Enter afterward); 'read' (optional selector to scope it, "
+        "to press Enter afterward. When several text fields exist -- e.g. a "
+        "message/compose box AND a search bar, which look alike -- pick the ref "
+        "whose label matches your goal: a message to SEND belongs in the field "
+        "labelled like 'Message ...', never the one labelled 'Search'. After "
+        "submit=true the result tells you whether the text actually left the "
+        "field; if it says the text is still sitting in the field it did NOT "
+        "send, so verify before telling the user it worked); 'read' (optional selector to scope it, "
         "otherwise the whole visible page text); 'screenshot' (saves a PNG and "
         "reports its path). If a click or type target isn't found, the error "
         "message lists what's actually clickable or fillable on the current page "
