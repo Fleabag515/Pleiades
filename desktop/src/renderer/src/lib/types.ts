@@ -23,6 +23,11 @@ export interface Profile {
   // real string for any profile loaded through the API, but the type stays
   // nullable to match what the backend can technically return.
   exec_policy: 'allow' | 'ask' | 'deny' | null
+  // Agents panel toggle + model pick (see pleiades/profiles.py
+  // Profile.agents_enabled/agents_model). Default false/"" for every
+  // character unless explicitly turned on.
+  agents_enabled: boolean
+  agents_model: string
 }
 
 export interface ChatSummary {
@@ -310,6 +315,31 @@ export interface ScheduledTask {
   last_run: number
   next_run: number
   last_job_id: string
+}
+
+// ---- Right panel: Agents (ephemeral background sub-agents, pleiades/agents.py) --
+
+export interface AgentSummary {
+  id: string
+  task: string
+  character: string
+  model: string
+  status: 'queued' | 'running' | 'done' | 'error' | 'stopped'
+  result: string
+  error: string
+  started: number
+  finished: number | null
+  steps: number
+}
+
+// Same event shape as WorkEvent (kind/ts/name/ok/output/text) -- the backend
+// deliberately mirrors work_jobs' event schema so eventLine()-style rendering
+// works unchanged for both.
+export type AgentEvent = WorkEvent
+
+export interface AgentDetail extends AgentSummary {
+  events: AgentEvent[]
+  event_count: number
 }
 
 export interface BrowserViewStatus {
