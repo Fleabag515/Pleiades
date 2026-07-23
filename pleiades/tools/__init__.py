@@ -156,14 +156,27 @@ class ToolBelt:
         # fall through and run the tool rather than crash.
         #
         # Per-character override: ctx.profile.exec_policy (set via
-        # POST /api/profiles/{name}, or the composer's Approve/Ask dropdown)
-        # takes priority over the process-wide ctx.settings.exec_policy when
-        # present, so one character can be "ask" while another is "allow"
-        # under the same running backend. None on the profile means "not
-        # configured for this character" -> fall back to the global setting.
+        # POST /api/profiles/{name}, or the composer's Always Ask/Preset/Skip
+        # Approvals dropdown) takes priority over the process-wide
+        # ctx.settings.exec_policy when present, so one character can be "ask"
+        # while another is "allow" under the same running backend. None on
+        # the profile means "not configured for this character" -> fall back
+        # to the global setting.
         if not tool.safe:
             policy = (getattr(getattr(ctx, "profile", None), "exec_policy", None)
                       or getattr(getattr(ctx, "settings", None), "exec_policy", None))
+            # "preset" is NOT a blanket answer: it means "ask per-tool,
+            # consulting ctx.profile.tool_policies for THIS tool" (set via
+            # POST /api/profiles/{name}/tools/{tool_name}/policy, the
+            # sidebar's per-tool ask/allow toggle). A tool with no entry
+            # there defaults to "allow" -- same least-friction default as
+            # exec_policy="allow" for a whole character. Resolve it down to
+            # a plain "ask"/"allow" here so every branch below (deny check,
+            # approval flow) stays exactly as it was for the non-preset case
+            # -- this substitution is the ONLY thing "preset" changes.
+            if policy == "preset":
+                tool_policies = getattr(getattr(ctx, "profile", None), "tool_policies", None) or {}
+                policy = tool_policies.get(name, "allow")
             if policy == "deny":
                 return f"[error] tool '{name}' blocked by exec_policy=deny"
             if policy == "ask":

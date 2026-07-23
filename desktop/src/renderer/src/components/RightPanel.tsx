@@ -22,6 +22,7 @@ import {
   listWorkJobs,
   runScheduledTaskNow,
   setAgentsSettings,
+  setToolPolicy,
   stopAgent,
   updateScheduledTask
 } from '../lib/api'
@@ -388,8 +389,16 @@ function ProgressSection({
 //     camoufox/[browser] extra) is simply absent, not shown "disabled".
 //   - "status" is the real exec_policy gate: safe/read-only tools always
 //     show available; everything else reflects this character's actual
-//     allow/ask/deny setting (see profiles.Profile.exec_policy, set from
-//     the composer's Approve/Ask dropdown or Settings).
+//     allow/ask/deny/preset setting (see profiles.Profile.exec_policy, set
+//     from the composer's Always Ask/Preset/Skip Approvals dropdown or
+//     Settings). Under "preset", status instead follows THIS tool's own
+//     ask/allow override (profiles.Profile.tool_policies, default "allow")
+//     -- set with the per-tool toggle below, via POST
+//     /api/profiles/{name}/tools/{tool}/policy. The toggle renders for
+//     every tool, including safe/read-only ones, but is disabled for them
+//     (they're never gated regardless of exec_policy) with a tooltip
+//     explaining why, rather than hiding it and making the list's shape
+//     inconsistent tool-to-tool.
 //   - "used Nx / last used ..." is mined from this character's own
 //     persisted chat transcripts (chats.tool_usage()) — real completed
 //     tool calls, real timestamps. Calls made before per-call timestamps
@@ -413,7 +422,75 @@ function toolStatusMeta(status: ToolInfo['status']): { label: string; className:
 function execPolicyBlurb(policy: string): string {
   if (policy === 'deny') return 'Non-read-only tools are blocked (exec policy: deny).'
   if (policy === 'ask') return 'Non-read-only tools ask for approval before running (exec policy: ask).'
+  if (policy === 'preset') return "Each tool below follows its own Ask/Allow setting (exec policy: preset)."
   return 'Tools run automatically without asking (exec policy: allow).'
+}
+
+/** Per-tool Ask/Allow toggle -- only meaningfully affects gating while the
+ * character's exec_policy is "preset" (see ToolBelt.dispatch's gate), but
+ * renders (inert, greyed by the caller when not in preset) regardless so
+ * a character can be pre-configured before switching into preset mode.
+ * Disabled outright for safe/read-only tools, which bypass exec_policy
+ * entirely -- shown, not hidden, so the row shape stays consistent, with a
+ * tooltip explaining why it's a no-op. */
+function ToolPolicyToggle({
+  base,
+  character,
+  tool,
+  onChanged
+}: {
+  base: string
+  character: string
+  tool: ToolInfo
+  onChanged: () => void
+}): React.JSX.Element {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const choose = async (value: 'ask' | 'allow'): Promise<void> => {
+    if (tool.safe || saving || tool.tool_policy === value) return
+    setSaving(true)
+    setError(null)
+    try {
+      await setToolPolicy(base, character, tool.name, value)
+      onChanged()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="flex flex-none items-center gap-1"
+      title={
+        tool.safe
+          ? 'Read-only tools always run immediately -- this setting has no effect on them.'
+          : "This tool's approval when the character's Approvals dropdown is set to Preset."
+      }
+    >
+      <div className="flex overflow-hidden rounded-md border border-border/80">
+        {(['ask', 'allow'] as const).map((value) => (
+          <button
+            key={value}
+            disabled={tool.safe || saving}
+            onClick={() => choose(value)}
+            className={`px-1.5 py-0.5 text-[10px] font-medium transition ${
+              tool.safe
+                ? 'cursor-not-allowed text-ink-faint/40'
+                : tool.tool_policy === value
+                  ? 'bg-bg-300 text-ink-bright'
+                  : 'text-ink-faint hover:bg-bg-300/60 hover:text-ink-dim'
+            }`}
+          >
+            {value === 'ask' ? 'Ask' : 'Allow'}
+          </button>
+        ))}
+      </div>
+      {error && <span className="text-rose-300">!</span>}
+    </div>
+  )
 }
 
 function toolUsageLine(t: ToolInfo): string {
@@ -465,9 +542,16 @@ function ToolsSection({
   // Most-recently-used first; never-used tools sort to the bottom together.
   const sorted = [...data.tools].sort((a, b) => (b.last_used ?? 0) - (a.last_used ?? 0))
 
+  const isPreset = data.exec_policy === 'preset'
+
   return (
     <div>
       <p className="mb-2 text-[11px] text-ink-faint">{execPolicyBlurb(data.exec_policy)}</p>
+      {!isPreset && (
+        <p className="mb-2 text-[10px] italic text-ink-faint/70">
+          The Ask/Allow toggles below only take effect when Approvals is set to Preset.
+        </p>
+      )}
       {sorted.length === 0 ? (
         <p className="text-xs text-ink-faint">
           No tools configured for {character || 'this character'} yet.
@@ -487,11 +571,16 @@ function ToolsSection({
                   </span>
                 </div>
                 <p className="mt-0.5 line-clamp-2 text-[11px] text-ink-faint">{t.description}</p>
-                <div className="mt-1 flex items-center gap-1.5 text-[10px] text-ink-faint">
-                  {t.safe && (
-                    <span className="flex-none rounded bg-bg-200 px-1 py-0.5">read-only</span>
-                  )}
-                  <span className="truncate">{toolUsageLine(t)}</span>
+                <div className="mt-1 flex items-center justify-between gap-1.5 text-[10px] text-ink-faint">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    {t.safe && (
+                      <span className="flex-none rounded bg-bg-200 px-1 py-0.5">read-only</span>
+                    )}
+                    <span className="truncate">{toolUsageLine(t)}</span>
+                  </div>
+                  <div className={`flex-none transition-opacity ${isPreset ? '' : 'opacity-40'}`}>
+                    <ToolPolicyToggle base={base} character={character} tool={t} onChanged={refresh} />
+                  </div>
                 </div>
               </li>
             )

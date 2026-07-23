@@ -16,13 +16,23 @@ export interface Profile {
   persona_source: string
   model: string
   has_email: boolean
-  // Per-character tool-call approval override (composer's Approve/Ask
-  // dropdown; see pleiades/profiles.py Profile.exec_policy). null means
-  // "not configured" -- ProfileManager migrates any profile.json missing
-  // this key to "allow" on first read, so in practice this is always a
-  // real string for any profile loaded through the API, but the type stays
-  // nullable to match what the backend can technically return.
-  exec_policy: 'allow' | 'ask' | 'deny' | null
+  // Per-character tool-call approval override (composer's Always Ask/
+  // Preset/Skip Approvals dropdown; see pleiades/profiles.py
+  // Profile.exec_policy). null means "not configured" -- ProfileManager
+  // migrates any profile.json missing this key to "allow" on first read, so
+  // in practice this is always a real string for any profile loaded through
+  // the API, but the type stays nullable to match what the backend can
+  // technically return. "preset" defers each tool call to tool_policies
+  // below instead of one blanket answer; "deny" stays reachable only by
+  // hand-editing profile.json / calling the API directly, never offered in
+  // the composer dropdown.
+  exec_policy: 'allow' | 'ask' | 'deny' | 'preset' | null
+  // Per-tool ask/allow override, consulted only while exec_policy=="preset"
+  // (see pleiades/profiles.py Profile.tool_policies). A tool absent from
+  // this map defaults to "allow". Set via the sidebar's per-tool toggle
+  // (RightPanel.tsx's ToolsSection) -- POST
+  // /api/profiles/{name}/tools/{tool}/policy.
+  tool_policies: Record<string, string>
   // Agents panel toggle + model pick (see pleiades/profiles.py
   // Profile.agents_enabled/agents_model). Default false/"" for every
   // character unless explicitly turned on.
@@ -363,6 +373,11 @@ export interface ToolInfo {
   description: string
   safe: boolean
   status: 'available' | 'needs_approval' | 'blocked'
+  // This tool's per-tool ask/allow override under exec_policy=="preset"
+  // (see pleiades/profiles.py Profile.tool_policies) -- "allow" if unset.
+  // Only meaningfully affects `status` above while the character's
+  // exec_policy is actually "preset"; otherwise it's just stored state.
+  tool_policy: 'ask' | 'allow'
   use_count: number
   last_used: number | null
 }
