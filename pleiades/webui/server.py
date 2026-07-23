@@ -81,14 +81,25 @@ class ProfileUpdate(BaseModel):
     discord_require_mention: Optional[bool] = None
     discord_respond_to_bots: Optional[bool] = None
     discord_allowed_channels: Optional[str] = None
-    # Per-character tool-call approval override (composer's Approve/Ask
-    # dropdown). None/omitted leaves it untouched; "allow"/"ask"/"deny" sets
-    # it. See profiles.Profile.exec_policy and ToolBelt.dispatch's gate.
+    # Per-character tool-call approval override (composer's Always Ask/
+    # Preset/Skip Approvals dropdown). None/omitted leaves it untouched;
+    # "allow"/"ask"/"deny"/"preset" sets it. See profiles.Profile.exec_policy
+    # and ToolBelt.dispatch's gate. "preset" defers each tool call to
+    # profiles.Profile.tool_policies (see ToolPolicyUpdate/set_tool_policy
+    # below for how those per-tool entries get set).
     exec_policy: Optional[str] = None
     # Agents panel toggle + model pick (see profiles.Profile.agents_enabled/
     # agents_model, pleiades/agents.py). None/omitted leaves untouched.
     agents_enabled: Optional[bool] = None
     agents_model: Optional[str] = None
+
+
+class ToolPolicyUpdate(BaseModel):
+    # "ask"/"allow" sets this tool's override for THIS character, consulted
+    # only while exec_policy=="preset" (see profiles.Profile.tool_policies
+    # and ToolBelt.dispatch's gate in pleiades/tools/__init__.py). None/null
+    # clears the override, reverting the tool to the default "allow".
+    policy: Optional[str] = None
 
 
 class EmailConfig(BaseModel):
@@ -635,8 +646,10 @@ def create_app() -> FastAPI:
           - whether a listed tool can run RIGHT NOW: exec_policy (this
             profile's override, else the process-wide default) -- "deny"
             blocks it, "ask" means every call needs approval, "allow" means
-            it runs immediately. Tool.safe (read-only tools) always bypasses
-            this gate, exactly like ToolBelt.dispatch does.
+            it runs immediately, and "preset" defers to THIS tool's own
+            entry in profile.tool_policies (default "allow" if unset).
+            Tool.safe (read-only tools) always bypasses this gate, exactly
+            like ToolBelt.dispatch does.
 
         `last_used`/`use_count` come from chats.tool_usage(), which mines
         real completed tool calls out of this character's persisted chat
@@ -662,7 +675,15 @@ def create_app() -> FastAPI:
         tools = []
         for tool_name in belt.names():
             tool = belt.get(tool_name)
-            if tool.safe or policy == "allow":
+            # Per-tool override; only consulted (below) when policy=="preset",
+            # but always reported so the sidebar can render the right toggle
+            # state even before the character is switched into preset mode.
+            tool_policy = p.tool_policies.get(tool_name, "allow")
+            if tool.safe:
+                status = "available"
+            elif policy == "preset":
+                status = "needs_approval" if tool_policy == "ask" else "available"
+            elif policy == "allow":
                 status = "available"
             elif policy == "deny":
                 status = "blocked"
@@ -674,6 +695,7 @@ def create_app() -> FastAPI:
                 "description": tool.description,
                 "safe": tool.safe,
                 "status": status,
+                "tool_policy": tool_policy,
                 "use_count": u["count"],
                 "last_used": u["last_used"],
             })
@@ -702,14 +724,51 @@ def create_app() -> FastAPI:
             "bridge_count": bridge_count,
         }
 
+    @app.post("/api/profiles/{name}/tools/{tool_name}/policy")
+    def set_tool_policy(name: str, tool_name: str, body: ToolPolicyUpdate) -> dict:
+        """Set (or clear) THIS character's per-tool ask/allow override --
+        the sidebar's per-tool toggle in RightPanel.tsx's ToolsSection.
+
+        Only takes effect on tool-call gating while exec_policy=="preset"
+        (see ToolBelt.dispatch); harmless to set at any other time, it just
+        sits unused in profile.tool_policies until the character is switched
+        into preset mode. `policy: null` (or omitted) clears the override,
+        reverting the tool to the implicit "allow" default.
+        """
+        try:
+            p = pm.get(name)
+        except FileNotFoundError:
+            raise HTTPException(404, f"No profile '{name}'")
+        if body.policy is not None and body.policy not in ("ask", "allow"):
+            raise HTTPException(400, "policy must be one of: ask, allow (or omit/null to clear)")
+
+        from ..tools import ToolContext, build_default_belt
+
+        with pm.open_vault(name) as vault:
+            ctx = ToolContext(profile=p, vault=vault, settings=settings)
+            belt = build_default_belt(ctx)
+        if tool_name not in belt:
+            raise HTTPException(404, f"No tool '{tool_name}' in {name}'s tool belt")
+
+        if body.policy is None:
+            p.tool_policies.pop(tool_name, None)
+        else:
+            p.tool_policies[tool_name] = body.policy
+        pm._save(p)  # noqa: SLF001
+        return {
+            "character": name,
+            "tool": tool_name,
+            "policy": p.tool_policies.get(tool_name, "allow"),
+        }
+
     @app.put("/api/profiles/{name}")
     def update_profile(name: str, body: ProfileUpdate) -> dict:
         try:
             p = pm.get(name)
         except FileNotFoundError:
             raise HTTPException(404, f"No profile '{name}'")
-        if body.exec_policy is not None and body.exec_policy not in ("allow", "ask", "deny"):
-            raise HTTPException(400, "exec_policy must be one of: allow, ask, deny")
+        if body.exec_policy is not None and body.exec_policy not in ("allow", "ask", "deny", "preset"):
+            raise HTTPException(400, "exec_policy must be one of: allow, ask, deny, preset")
         for f in ("email_address", "imap_host", "imap_port", "smtp_host",
                   "smtp_port", "persona_source", "discord_enabled",
                   "discord_require_mention", "discord_respond_to_bots",

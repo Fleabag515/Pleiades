@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from pleiades.tools import Tool, ToolBelt
 
 
@@ -158,3 +160,116 @@ def test_profile_tools_endpoint_reflects_exec_policy_and_usage():
 
     chats.delete(c["id"])
     client.delete("/api/profiles/tools-test-char")
+
+
+# --------------------------------------------------------------------------- #
+# exec_policy="preset" (per-tool ask/allow override) -- see
+# profiles.Profile.tool_policies and ToolBelt.dispatch's gate in
+# pleiades/tools/__init__.py.
+# --------------------------------------------------------------------------- #
+
+def _ctx(exec_policy=None, tool_policies=None):
+    """Minimal stand-in for a ToolContext: dispatch's gate only ever reads
+    ctx.profile (and ctx.settings as a fallback it never reaches here, since
+    every case below sets an explicit profile.exec_policy)."""
+    profile = SimpleNamespace(exec_policy=exec_policy, tool_policies=tool_policies or {})
+    return SimpleNamespace(profile=profile, settings=None)
+
+
+def test_dispatch_preset_defaults_to_allow_for_tool_with_no_override():
+    """No approve callback, no tty -- if preset's per-tool fallback weren't
+    "allow", this would come back as an explicit needs-approval error
+    instead of actually running the tool."""
+    belt = ToolBelt([EchoTool()])
+    ctx = _ctx(exec_policy="preset")
+    assert belt.dispatch("echo", {"text": "hi"}, ctx=ctx) == "echo: hi"
+
+
+def test_dispatch_preset_per_tool_ask_override_requires_approval():
+    belt = ToolBelt([EchoTool()])
+    ctx = _ctx(exec_policy="preset", tool_policies={"echo": "ask"})
+
+    # No approve callback, no tty -> explicit error, same shape as the
+    # existing blanket exec_policy="ask" non-interactive error.
+    out = belt.dispatch("echo", {"text": "hi"}, ctx=ctx)
+    assert "needs approval" in out
+
+    assert belt.dispatch("echo", {"text": "hi"}, ctx=ctx, approve=lambda t, a: True) == "echo: hi"
+    assert belt.dispatch("echo", {"text": "hi"}, ctx=ctx, approve=lambda t, a: False) == "[cancelled] echo"
+
+
+def test_dispatch_preset_per_tool_allow_override_runs_immediately():
+    belt = ToolBelt([EchoTool()])
+    ctx = _ctx(exec_policy="preset", tool_policies={"echo": "allow"})
+    assert belt.dispatch("echo", {"text": "hi"}, ctx=ctx) == "echo: hi"
+
+
+def test_dispatch_blanket_allow_ask_deny_unchanged_by_preset_addition():
+    """Regression: preset is purely additive -- the three pre-existing
+    blanket exec_policy values must behave exactly as before."""
+    belt = ToolBelt([EchoTool()])
+    assert belt.dispatch("echo", {"text": "hi"}, ctx=_ctx(exec_policy="allow")) == "echo: hi"
+    assert belt.dispatch(
+        "echo", {"text": "hi"}, ctx=_ctx(exec_policy="deny")
+    ) == "[error] tool 'echo' blocked by exec_policy=deny"
+    out = belt.dispatch("echo", {"text": "hi"}, ctx=_ctx(exec_policy="ask"))
+    assert "needs approval" in out
+    assert belt.dispatch("echo", {"text": "hi"}, ctx=_ctx(exec_policy="ask"), approve=lambda t, a: True) == "echo: hi"
+
+
+def test_set_tool_policy_endpoint_persists_and_reflected_in_tools_list():
+    """Full round trip: switch a character into preset, set/clear a
+    per-tool override via the new endpoint, and confirm GET .../tools
+    reflects both the stored tool_policy and the resulting status."""
+    pytest = __import__("pytest")
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from pleiades.webui import create_app
+
+    app = create_app()
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    resp = client.post("/api/profiles", json={"name": "preset-test-char"})
+    assert resp.status_code == 200
+
+    resp = client.put("/api/profiles/preset-test-char", json={"exec_policy": "preset"})
+    assert resp.status_code == 200
+    assert resp.json()["exec_policy"] == "preset"
+
+    # No override yet -> vault (unsafe) defaults to "allow"/"available".
+    resp = client.get("/api/profiles/preset-test-char/tools")
+    by_name = {t["name"]: t for t in resp.json()["tools"]}
+    assert by_name["vault"]["tool_policy"] == "allow"
+    assert by_name["vault"]["status"] == "available"
+
+    resp = client.post("/api/profiles/preset-test-char/tools/vault/policy",
+                        json={"policy": "ask"})
+    assert resp.status_code == 200
+    assert resp.json()["policy"] == "ask"
+
+    resp = client.get("/api/profiles/preset-test-char/tools")
+    by_name = {t["name"]: t for t in resp.json()["tools"]}
+    assert by_name["vault"]["tool_policy"] == "ask"
+    assert by_name["vault"]["status"] == "needs_approval"
+    # Safe tools are never gated, preset or otherwise.
+    assert by_name["search"]["status"] == "available"
+
+    # Clearing (policy: null) reverts to the "allow" default.
+    resp = client.post("/api/profiles/preset-test-char/tools/vault/policy",
+                        json={"policy": None})
+    assert resp.status_code == 200
+    assert resp.json()["policy"] == "allow"
+    resp = client.get("/api/profiles/preset-test-char/tools")
+    by_name = {t["name"]: t for t in resp.json()["tools"]}
+    assert by_name["vault"]["tool_policy"] == "allow"
+
+    resp = client.post("/api/profiles/preset-test-char/tools/not-a-real-tool/policy",
+                        json={"policy": "ask"})
+    assert resp.status_code == 404
+
+    resp = client.post("/api/profiles/preset-test-char/tools/vault/policy",
+                        json={"policy": "sometimes"})
+    assert resp.status_code == 400
+
+    client.delete("/api/profiles/preset-test-char")

@@ -65,17 +65,19 @@ function statusDotClass(m: ModelEntry): string {
   return 'bg-ink-faint'
 }
 
-/** Composer's Approve/Ask control label. `null`/`"allow"` both read as
- * "Approve" -- new and migrated characters default to "allow" (see
+/** Composer's approval-tier control label. `null`/`"allow"` both read as
+ * "Skip Approvals" -- new and migrated characters default to "allow" (see
  * pleiades/profiles.py), so a bare `null` should look identical to an
- * explicit "allow" here, never fall back to some third label. An explicit
+ * explicit "allow" here, never fall back to some fourth label. An explicit
  * "deny" (only reachable by hand-editing profile.json / the API, not from
- * this dropdown, which only ever writes allow/ask) still shows plainly
- * rather than silently rendering as one of the two offered choices. */
-function policyLabel(execPolicy: 'allow' | 'ask' | 'deny' | null): string {
-  if (execPolicy === 'ask') return 'Ask'
+ * this dropdown, which only ever writes allow/ask/preset) still shows
+ * plainly rather than silently rendering as one of the three offered
+ * choices. */
+function policyLabel(execPolicy: 'allow' | 'ask' | 'deny' | 'preset' | null): string {
+  if (execPolicy === 'ask') return 'Always Ask'
+  if (execPolicy === 'preset') return 'Preset'
   if (execPolicy === 'deny') return 'Deny'
-  return 'Approve'
+  return 'Skip Approvals'
 }
 
 /**
@@ -315,7 +317,7 @@ function Composer({
     }
   }
 
-  const choosePolicy = async (value: 'allow' | 'ask'): Promise<void> => {
+  const choosePolicy = async (value: 'allow' | 'ask' | 'preset'): Promise<void> => {
     setPolicySaving(true)
     setPolicyError(null)
     try {
@@ -504,7 +506,7 @@ function Composer({
                 <div ref={policyRef} className="relative flex-none">
                   <button
                     onClick={() => setPolicyOpen((v) => !v)}
-                    title="Tool-call approval for this character: Approve runs tools immediately, Ask prompts every time"
+                    title="Tool-call approval for this character: Always Ask prompts every time, Preset follows each tool's own setting in the right panel, Skip Approvals runs tools immediately"
                     className="flex items-center gap-1 rounded-md px-1.5 py-1.5 text-xs text-ink-faint transition hover:text-ink-dim"
                   >
                     <span className="max-w-[140px] truncate">{policyLabel(profile.exec_policy)}</span>
@@ -516,11 +518,12 @@ function Composer({
                   {policyOpen && (
                     <div className="absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-xl border border-border bg-bg-100 p-3 shadow-2xl">
                       <p className="mb-2 text-[11px] text-ink-faint">
-                        Tool-call approval for <span className="text-ink-dim">{character}</span> — Approve runs
-                        every tool call immediately; Ask prompts you first, every time.
+                        Tool-call approval for <span className="text-ink-dim">{character}</span> — Always Ask
+                        prompts you first, every time; Preset follows each tool&rsquo;s own ask/allow setting in
+                        the Tools panel; Skip Approvals runs every tool call immediately.
                       </p>
                       <div className="flex flex-col gap-0.5">
-                        {(['allow', 'ask'] as const).map((value) => (
+                        {(['ask', 'preset', 'allow'] as const).map((value) => (
                           <button
                             key={value}
                             onClick={() => choosePolicy(value)}
@@ -531,7 +534,7 @@ function Composer({
                                 : 'text-ink-dim hover:bg-bg-300/60 hover:text-ink'
                             }`}
                           >
-                            {value === 'allow' ? 'Approve' : 'Ask'}
+                            {value === 'ask' ? 'Always Ask' : value === 'preset' ? 'Preset' : 'Skip Approvals'}
                           </button>
                         ))}
                       </div>

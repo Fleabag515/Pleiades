@@ -10,7 +10,7 @@ character, never per tool" is enforced.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 from . import config
@@ -35,14 +35,27 @@ class Profile:
     model: str = ""  # name of the assigned model (see pleiades.models); blank = default engine
     # Per-character tool-call approval override. None = inherit the process-wide
     # config.Settings.exec_policy (~/.pleiades or .env PLEIADES_EXEC_POLICY);
-    # "allow"/"ask"/"deny" here takes priority for THIS character only (see
-    # ToolBelt.dispatch in pleiades/tools/__init__.py, which consults
+    # "allow"/"ask"/"deny"/"preset" here takes priority for THIS character only
+    # (see ToolBelt.dispatch in pleiades/tools/__init__.py, which consults
     # ctx.profile.exec_policy before falling back to ctx.settings.exec_policy).
+    # "preset" (composer dropdown's new third choice) means: consult
+    # tool_policies (below) per tool instead of one blanket answer for every
+    # tool call. "deny" stays reachable only by hand-editing profile.json /
+    # calling the API directly -- not offered in the composer dropdown.
     # ProfileManager._load() migrates any profile.json saved before this field
     # existed to "allow" (see _load docstring) -- that's a one-time, additive
     # fill-in for the missing key, never a silent overwrite of a value someone
     # already set explicitly.
     exec_policy: Optional[str] = None
+    # Per-tool override consulted ONLY when exec_policy == "preset" (see
+    # ToolBelt.dispatch's gate in pleiades/tools/__init__.py): maps a tool's
+    # name (e.g. "browser") to "ask" or "allow". A tool with NO entry here
+    # defaults to "allow" -- least friction, matching how exec_policy="allow"
+    # already behaves as the default for new characters. Ignored entirely when
+    # exec_policy is "allow"/"ask"/"deny" (those remain blanket, unchanged).
+    # Set via POST /api/profiles/{name}/tools/{tool_name}/policy (the sidebar's
+    # per-tool ask/allow toggle in RightPanel.tsx's ToolsSection).
+    tool_policies: dict[str, str] = field(default_factory=dict)
     # Chat-belt spawn_agents tool + the toolsearch bridge's dispatch_subagent/
     # dispatch_subagents_parallel back door (see Engine._bridge_harness_tools)
     # are both gated on this, per-character, default OFF -- a new capability

@@ -361,16 +361,19 @@ export async function assignModel(
   )
 }
 
-/** Sets a character's tool-call approval override (composer's Approve/Ask
- * dropdown). Extends the existing PUT /api/profiles/{name} endpoint rather
- * than adding a new route -- same pattern as every other per-character
- * field (email, discord, persona_source). Takes effect on the character's
- * very next tool call, no restart needed: the engine re-reads the profile
- * from disk on each approval check (see server.py's _chat_approve_cb). */
+/** Sets a character's tool-call approval override (composer's Always Ask/
+ * Preset/Skip Approvals dropdown). Extends the existing PUT
+ * /api/profiles/{name} endpoint rather than adding a new route -- same
+ * pattern as every other per-character field (email, discord,
+ * persona_source). Takes effect on the character's very next tool call, no
+ * restart needed: the engine re-reads the profile from disk on each
+ * approval check (see server.py's _chat_approve_cb). "preset" defers each
+ * tool call to that tool's own override (see setToolPolicy below); "deny"
+ * is intentionally not offered here, it stays a hand-edit-only value. */
 export async function setExecPolicy(
   base: string,
   name: string,
-  execPolicy: 'allow' | 'ask'
+  execPolicy: 'allow' | 'ask' | 'preset'
 ): Promise<ProfileDetail> {
   return asJson(
     await fetch(`${base}/api/profiles/${encodeURIComponent(name)}`, {
@@ -378,6 +381,30 @@ export async function setExecPolicy(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ exec_policy: execPolicy })
     })
+  )
+}
+
+/** Sets (or clears) a single tool's ask/allow override for this character --
+ * the sidebar's per-tool toggle (RightPanel.tsx's ToolsSection). Only
+ * affects gating while the character's exec_policy is "preset" (see
+ * pleiades/profiles.py Profile.tool_policies and ToolBelt.dispatch's gate);
+ * harmless to set at any other time. `policy: null` clears the override,
+ * reverting the tool to the implicit "allow" default. */
+export async function setToolPolicy(
+  base: string,
+  name: string,
+  toolName: string,
+  policy: 'ask' | 'allow' | null
+): Promise<{ character: string; tool: string; policy: string }> {
+  return asJson(
+    await fetch(
+      `${base}/api/profiles/${encodeURIComponent(name)}/tools/${encodeURIComponent(toolName)}/policy`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policy })
+      }
+    )
   )
 }
 
