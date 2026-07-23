@@ -54,8 +54,11 @@ def test_model_defaults_to_not_audio_capable(tmp_path):
 
 
 def test_no_note_when_fallback_not_configured(monkeypatch):
+    # Since the 2026-07-25 default-enabled fix, "not configured" now means
+    # explicitly disabled, not merely unset -- unset is the new default-on
+    # state (see test_audio_transcribe.test_enabled_by_default).
     monkeypatch.delenv("PLEIADES_AUDIO_FALLBACK_URL", raising=False)
-    monkeypatch.delenv("PLEIADES_AUDIO_FALLBACK_ENABLED", raising=False)
+    monkeypatch.setenv("PLEIADES_AUDIO_FALLBACK_ENABLED", "0")
     profile = Profile(name="char1", model="")
     assert Engine._audio_fallback_note(profile, "/tmp/whatever.wav") is None
 

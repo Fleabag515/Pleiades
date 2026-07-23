@@ -36,13 +36,38 @@ the riskiest part of this ask -- so it's deferred, not built, this round.
 engine.py's fallback note says plainly that only a transcript is available,
 not a music/sound description.
 
-Env-gated, following PLEIADES_VISION_FALLBACK_URL's naming convention:
-  PLEIADES_AUDIO_FALLBACK_ENABLED   "1"/"true"/"yes"/"on" to allow this
-                                    module to install/manage its own
-                                    whisper-server on demand. Off by
-                                    default -- like vision_caption.py,
-                                    absence must be a complete no-op: no
-                                    download, no process, no network call.
+Env-gated, following PLEIADES_VISION_FALLBACK_URL's naming convention, but
+with the opposite default polarity on purpose (2026-07-25 fix -- see below):
+  PLEIADES_AUDIO_FALLBACK_ENABLED   "1"/"true"/"yes"/"on" (or unset/blank)
+                                    to allow this module to install/manage
+                                    its own whisper-server on demand. ON
+                                    BY DEFAULT: unlike vision_caption.py
+                                    (which has nothing sensible to default
+                                    to -- it only ever points at an
+                                    externally-run server nothing here
+                                    provisions), this module's whole job
+                                    is to self-provision end to end
+                                    (install binary, download model,
+                                    start server) the first time it is
+                                    actually needed, so "enabled" can
+                                    safely be the default: absence of any
+                                    real audio attachment still means a
+                                    complete no-op (no download, no
+                                    process, no network call) -- only
+                                    is_configured() flips, not whether
+                                    anything actually runs. Set this to a
+                                    falsy value ("0"/"false"/"no"/"off")
+                                    to explicitly opt OUT (e.g. a
+                                    disk/network-constrained machine that
+                                    never wants whisper.cpp installed).
+                                    Fixed 2026-07-25: this previously
+                                    defaulted OFF, which meant a fully
+                                    built and live-verified transcription
+                                    pipeline silently never ran on any
+                                    real chat turn because nothing in
+                                    install.sh/.env.example ever set it --
+                                    see git log for the incident this
+                                    traces back to.
   PLEIADES_AUDIO_FALLBACK_URL       point at an ALREADY-running
                                     whisper-server instead (skips
                                     install/lifecycle entirely -- same
@@ -97,8 +122,19 @@ def _truthy(v: str) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _falsy(v: str) -> bool:
+    return v.strip().lower() in ("0", "false", "no", "off")
+
+
 def _enabled() -> bool:
-    return _truthy(os.environ.get("PLEIADES_AUDIO_FALLBACK_ENABLED", ""))
+    """On by default (fixed 2026-07-25 -- see module docstring): the
+    fallback self-provisions its own binary/model/server on first real
+    use, so there is nothing unsafe about defaulting to "enabled". Only an
+    explicit falsy value opts out; blank/unset/anything else is treated
+    as enabled so a stray typo in this env var fails safe (transcription
+    still runs) rather than failing silent (transcription silently never
+    runs, which is exactly the bug this default flip fixes)."""
+    return not _falsy(os.environ.get("PLEIADES_AUDIO_FALLBACK_ENABLED", ""))
 
 
 def _url_override() -> str:
@@ -107,10 +143,12 @@ def _url_override() -> str:
 
 def is_configured() -> bool:
     """True when the audio fallback is usable: either pointed at an
-    already-running server, or explicitly enabled to manage its own.
-    Mirrors vision_caption.is_configured() -- when this is False, every
-    other function below is a strict no-op (no network call, no process
-    spawned, no download)."""
+    already-running server, or (the default) allowed to manage its own.
+    When this is False, every other function below is a strict no-op (no
+    network call, no process spawned, no download) -- but note that even
+    when True, nothing actually happens until transcribe() is called with
+    a real audio path; "configured" means "allowed to self-provision on
+    demand", not "already running"."""
     return bool(_url_override()) or _enabled()
 
 

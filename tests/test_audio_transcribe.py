@@ -1,10 +1,14 @@
 """Tests for the whisper.cpp speech-fallback transcriber (audio-fallback
-council review, 2026-07-23). Unconfigured (neither
-PLEIADES_AUDIO_FALLBACK_ENABLED nor PLEIADES_AUDIO_FALLBACK_URL set) must be
-a complete no-op -- no network call, no process spawned, no download --
-exactly like vision_caption's no-op-when-unconfigured contract, since this
-is an optional fallback layered under engine.py's audio-capable check, not
-something any caller can assume is present.
+council review, 2026-07-23; default-enabled fix 2026-07-25).
+
+is_configured() is True BY DEFAULT (neither env var set) since the
+2026-07-25 fix -- the fallback self-provisions its own binary/model/server
+on first real use, so there is nothing unsafe about defaulting to enabled;
+what previously required an explicit opt-in now requires an explicit
+opt-out (PLEIADES_AUDIO_FALLBACK_ENABLED set to a falsy value). Regardless
+of is_configured(), no network call/process/download may ever happen for
+a nonexistent audio path or when explicitly disabled -- that no-op
+contract is still fully enforced and tested below.
 """
 
 from __future__ import annotations
@@ -40,15 +44,21 @@ def _clear_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_disabled_by_default_is_a_complete_noop(monkeypatch, tmp_path):
+def test_enabled_by_default(monkeypatch):
     _clear_env(monkeypatch)
+    assert at.is_configured() is True
+
+
+def test_explicitly_disabled_is_a_complete_noop(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("PLEIADES_AUDIO_FALLBACK_ENABLED", "0")
     assert at.is_configured() is False
 
     audio = tmp_path / "clip.wav"
     audio.write_bytes(b"fake-wav-bytes")
 
     def _boom(*a, **kw):
-        raise AssertionError("must not attempt a network call when unconfigured")
+        raise AssertionError("must not attempt a network call when disabled")
 
     monkeypatch.setattr(at.urllib.request, "urlopen", _boom)
 
@@ -57,6 +67,7 @@ def test_disabled_by_default_is_a_complete_noop(monkeypatch, tmp_path):
 
 def test_is_configured_reflects_url_override(monkeypatch):
     _clear_env(monkeypatch)
+    monkeypatch.setenv("PLEIADES_AUDIO_FALLBACK_ENABLED", "0")
     assert at.is_configured() is False
 
     monkeypatch.setenv("PLEIADES_AUDIO_FALLBACK_URL", "http://127.0.0.1:8791")
@@ -73,6 +84,12 @@ def test_is_configured_reflects_enabled_flag(monkeypatch):
 
     monkeypatch.setenv("PLEIADES_AUDIO_FALLBACK_ENABLED", "0")
     assert at.is_configured() is False
+
+    monkeypatch.setenv("PLEIADES_AUDIO_FALLBACK_ENABLED", "false")
+    assert at.is_configured() is False
+
+    monkeypatch.setenv("PLEIADES_AUDIO_FALLBACK_ENABLED", "")
+    assert at.is_configured() is True
 
 
 def test_missing_audio_file_returns_none_without_network_call(monkeypatch, tmp_path):
