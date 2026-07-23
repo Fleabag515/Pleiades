@@ -159,6 +159,75 @@ def test_upload_endpoint_404s_for_unknown_chat():
 
 
 # --------------------------------------------------------------------------- #
+# Serving endpoint: GET /api/chats/{id}/attachments/{filename} -- streams a
+# previously-uploaded attachment's raw bytes back (added so the desktop UI
+# can render a real <img>/<audio> against persisted attachments -- see
+# MessageBubble.tsx's AttachmentChip + lib/api.ts's attachmentUrl).
+# --------------------------------------------------------------------------- #
+
+def test_get_attachment_endpoint_streams_the_real_bytes_back():
+    chat = _make_chat("attach-get-char")
+    c = _client()
+    upload = c.post(
+        f"/api/chats/{chat['id']}/attachments",
+        files={"file": ("photo.png", b"\x89PNGrealbytes", "image/png")},
+    )
+    assert upload.status_code == 200
+    filename = upload.json()["filename"]
+
+    resp = c.get(f"/api/chats/{chat['id']}/attachments/{filename}")
+    assert resp.status_code == 200
+    assert resp.content == b"\x89PNGrealbytes"
+    assert resp.headers["content-type"] == "image/png"
+
+
+def test_get_attachment_endpoint_404s_for_unknown_chat():
+    c = _client()
+    resp = c.get("/api/chats/nonexistent12/attachments/photo.png")
+    assert resp.status_code == 404
+
+
+def test_get_attachment_endpoint_404s_for_missing_file():
+    chat = _make_chat("attach-get-missing-char")
+    c = _client()
+    resp = c.get(f"/api/chats/{chat['id']}/attachments/does-not-exist.png")
+    assert resp.status_code == 404
+
+
+def test_get_attachment_endpoint_rejects_path_traversal_filename():
+    """Mirrors the upload endpoint's own traversal test: a hand-crafted
+    `../../etc/passwd`-style filename must 404, not escape this chat's
+    cache dir and read an arbitrary file off disk."""
+    chat = _make_chat("attach-get-traversal-char")
+    c = _client()
+    c.post(
+        f"/api/chats/{chat['id']}/attachments",
+        files={"file": ("real.txt", b"hello", "text/plain")},
+    )
+
+    resp = c.get(f"/api/chats/{chat['id']}/attachments/..%2f..%2f..%2fetc%2fpasswd")
+    assert resp.status_code == 404
+
+    # A same-named file that legitimately exists elsewhere on disk (e.g. a
+    # sibling chat's cache) must never leak through a traversal attempt
+    # either -- attachment_path() re-sanitizes and compares, it doesn't
+    # trust the incoming filename at all.
+    other_chat = _make_chat("attach-get-traversal-other-char")
+    attachments.save_attachment(other_chat["character"], other_chat["id"], "secret.txt", b"not yours")
+    resp2 = c.get(f"/api/chats/{chat['id']}/attachments/../{other_chat['id']}/secret.txt")
+    assert resp2.status_code == 404
+
+
+def test_attachment_path_helper_rejects_traversal_and_missing_files():
+    chat = _make_chat("attach-path-helper-char")
+    saved = attachments.save_attachment(chat["character"], chat["id"], "real.txt", b"hi")
+
+    assert attachments.attachment_path(chat["character"], chat["id"], saved["id"]) == Path(saved["path"])
+    assert attachments.attachment_path(chat["character"], chat["id"], "../../etc/passwd") is None
+    assert attachments.attachment_path(chat["character"], chat["id"], "does-not-exist.txt") is None
+
+
+# --------------------------------------------------------------------------- #
 # Delete-cascade: DELETE /api/chats/{id} removes that chat's cache dir
 # --------------------------------------------------------------------------- #
 

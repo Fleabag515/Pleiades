@@ -142,6 +142,26 @@ def resolve_attachments(character: str, chat_id: str, ids: list[str]) -> list[di
     return out
 
 
+def attachment_path(character: str, chat_id: str, filename: str) -> Path | None:
+    """Resolve one attachment's filename back to its real on-disk path, for
+    serving the raw bytes back over HTTP (see webui/server.py's
+    `chats_attachment_get`, used by the desktop UI to render a persisted
+    attachment chip's thumbnail/`<audio>` player against a real URL).
+
+    Same traversal guard as `resolve_attachments`: a filename that doesn't
+    round-trip through `sanitize_filename` unchanged (a hand-crafted
+    `../../etc/passwd`-style id), or that doesn't exist on disk, resolves to
+    None rather than raising -- the route turns that into a plain 404.
+    """
+    safe = sanitize_filename(filename)
+    if safe != filename:
+        return None
+    path = chat_cache_dir(character, chat_id) / safe
+    if not path.is_file():
+        return None
+    return path
+
+
 def delete_chat_cache(character: str, chat_id: str) -> bool:
     """Delete this chat's entire attachment cache directory.
 

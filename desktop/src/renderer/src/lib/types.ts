@@ -73,9 +73,11 @@ export interface TurnMeta {
 // A real file the user attached to a message (see pleiades/attachments.py +
 // POST /api/chats/{id}/attachments) -- `path` is an absolute path on THIS
 // machine, injected into the turn's context so the character's file/shell
-// tools can act on it directly (see engine.py's `_attachments_note`). Not
-// rendered anywhere yet (MessageBubble.tsx doesn't show a chip for these) --
-// this type just describes what's already persisted, for a later pass.
+// tools can act on it directly (see engine.py's `_attachments_note`).
+// MessageBubble.tsx renders a chip for each of these on the user message
+// they're attached to -- `name` doubles as the id GET
+// /api/chats/{id}/attachments/{name} (lib/api.ts's `attachmentUrl`) needs to
+// stream the real bytes back for an image thumbnail/`<audio>` player.
 export interface MessageAttachment {
   name: string
   path: string

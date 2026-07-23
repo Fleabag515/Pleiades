@@ -122,6 +122,19 @@ export interface UploadedAttachment {
  * dir, so uploading the same filename into two different chats (or racing
  * a background scheduled-task job) never collides.
  */
+/**
+ * URL to fetch one previously-uploaded attachment's raw bytes back (see
+ * GET /api/chats/{chat_id}/attachments/{filename} on the backend --
+ * pleiades/webui/server.py's `chats_attachment_get`). Used directly as an
+ * `<img src=...>`/`<audio src=...>` target by MessageBubble's persisted
+ * attachment chips -- the upload response's `path` is a path on THIS
+ * machine, not something the renderer process can load over HTTP, so this
+ * is the only way to actually display a persisted attachment.
+ */
+export function attachmentUrl(base: string, chatId: string, filename: string): string {
+  return `${base}/api/chats/${chatId}/attachments/${encodeURIComponent(filename)}`
+}
+
 export async function uploadAttachment(
   base: string,
   chatId: string,

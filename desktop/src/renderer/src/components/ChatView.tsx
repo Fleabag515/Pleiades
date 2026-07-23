@@ -91,7 +91,7 @@ function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX
           )}
 
           {session.history.map((m, i) => (
-            <MessageBubble key={i} message={m} base={base} character={character} />
+            <MessageBubble key={i} message={m} base={base} character={character} chatId={session.chatId} />
           ))}
 
           {session.draft && (
@@ -99,6 +99,7 @@ function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX
               message={{ role: 'assistant', items: session.draft.items, meta: session.draft.meta }}
               base={base}
               character={character}
+              chatId={session.chatId}
               streaming
             />
           )}
