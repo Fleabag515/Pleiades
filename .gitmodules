@@ -1,14 +1,13 @@
 [submodule "third_party/llama.cpp"]
 	path = third_party/llama.cpp
-	url = https://github.com/Fleabag515/llama.cpp
-	# Fork of ggerganov/llama.cpp, branch statewise-v1 -- carries exactly one
-	# extra commit on top of the previous upstream pin (gguf-v0.19.0-36-
-	# gb46812de7): the Statewise v1 static MoE expert cache port (see
-	# docs/specs/2026-07-21-native-inference-engine-design.md, Phase 7).
-	# Repointed here (2026-07-23) specifically because that commit does not
-	# exist on upstream ggerganov/llama.cpp -- a plain submodule pin at it
-	# would be unreachable/unclonable for anyone but this machine. To pick
-	# up new upstream llama.cpp changes in the future, rebase this fork's
-	# statewise-v1 branch onto the new upstream commit and re-push, rather
-	# than repointing back to upstream directly (that would silently drop
-	# the Statewise cache).
+	url = https://github.com/ggerganov/llama.cpp
+	# Plain upstream pin (chore/llamacpp-rebase, 2026-07-23): repointed from the
+	# Fleabag515/llama.cpp fork (statewise-v1) back to canonical upstream at
+	# release tag b10103 (c588c4f47683e73ad2d69f50480bec6cc85fd0f7). This is the
+	# Phase 0 "honest upstream catch-up" of the 3-phase perf roadmap: it drops the
+	# fork's single Statewise-v1 MoE-cache commit (17a6fbc72) on purpose. Phase 1
+	# (not yet started) will rebuild a generalized, cross-architecture MoE expert-
+	# offload mechanism fresh against THIS new base -- not by re-porting the old
+	# 278-line patch. The Fleabag515/llama.cpp fork stays dormant (not deleted)
+	# until Phase 1 needs a branch off this new pin. See
+	# docs/specs/2026-07-21-native-inference-engine-design.md (rebase section).

@@ -88,13 +88,24 @@ void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe
     }
     path_ = path;
 
-    // statewise expert cache: opt-in, applied now that tensors are fully loaded. Fails hard
-    // (throws) if the profile can't be applied -- a silently-disabled cache would mask a
-    // misconfiguration and quietly forfeit the decode speedup the caller asked for.
+    // statewise expert cache: TEMPORARILY UNAVAILABLE as of the 2026-07-23
+    // upstream rebase (chore/llamacpp-rebase). The static MoE expert-cache
+    // mechanism ("Statewise v1", commit 17a6fbc72) lived on the Fleabag515
+    // llama.cpp fork and provided llama_model_statewise_init(). That fork is
+    // now off the submodule path (repointed to plain upstream ggerganov at
+    // tag b10103), so the symbol no longer exists. Phase 1 (not yet started)
+    // will rebuild a generalized, cross-architecture MoE expert-offload
+    // mechanism against this new post-rewrite base -- not by re-porting the
+    // old patch. Until then, statewise is a no-op if unrequested and a loud,
+    // honest error if requested, rather than a silent forfeit of a speedup
+    // the caller believes they are getting. See the rebase section of
+    // docs/specs/2026-07-21-native-inference-engine-design.md.
     if (!statewise_map.empty()) {
-        if (!llama_model_statewise_init(model_, statewise_map.c_str())) {
-            throw std::runtime_error("pleiades_engine: statewise cache init failed for map: " + statewise_map);
-        }
+        throw std::runtime_error(
+            "pleiades_engine: statewise expert cache is temporarily unavailable after the "
+            "2026-07-23 upstream llama.cpp rebase (the Fleabag515 fork's llama_model_statewise_init "
+            "was intentionally dropped); Phase 1 will rebuild it generalized. Requested map: " +
+            statewise_map);
     }
 
     std::string tmpl = read_model_meta_str(model_, "tokenizer.chat_template");

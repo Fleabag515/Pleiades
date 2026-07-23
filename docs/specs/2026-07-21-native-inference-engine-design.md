@@ -689,6 +689,109 @@ this task explicitly must not push; it is the one remaining follow-up.
   uncovered layer would land on CUDA and (correctly) abort. `ModelManager`
   callers must keep the two in sync.
 
+## Rebase — upstream llama.cpp catch-up (Phase 0 of the perf roadmap) — DONE 2026-07-23
+
+Branch `chore/llamacpp-rebase` (worktree, not yet merged/pushed — Fleagle
+reviews/merges). This is **Phase 0** of the 3-phase performance roadmap the
+Fable+Opus council converged on. It is a *prerequisite*, **not itself "the
+boost"**: a clean, honest upstream catch-up so later phases build on current
+code instead of ~2.5-month-stale code.
+
+### Pin change
+
+| | old | new |
+|---|---|---|
+| remote | `github.com/Fleabag515/llama.cpp` (fork) | `github.com/ggerganov/llama.cpp` (upstream) |
+| branch/tag | `statewise-v1` | release tag **b10103** |
+| commit | `17a6fbc72` (= upstream `b46812de` / tag **b9082** + 1 Statewise patch) | `c588c4f47683e73ad2d69f50480bec6cc85fd0f7` |
+| date | 2026-05-08 base | 2026-07-23 |
+
+Real gap caught up: **`git rev-list --count b46812de..c588c4f47` = 1021 commits**
+(base `b46812de` is genuinely upstream tag `b9082`; new pin is tag `b10103`).
+Submodule repointed cleanly (`.gitmodules` URL → plain upstream, `git submodule
+absorbgitdirs`), no Fleabag515-fork-specific commits remain on the gitlink.
+
+### What broke and how it was fixed
+
+Exactly **one** compile break across the 1021-commit gap — far less than the
+API churn we budgeted for. The engine calls a stable subset of `llama.h`
+(load/`llama_model_default_params`/`tensor_buft_overrides`, the `llama_memory_t`
+seq API, `llama_batch_get_one`/`llama_decode`, the sampler chain,
+`llama_context_params` incl. `flash_attn_type`/`type_k`/`type_v`/`n_ubatch`,
+tokenize/detokenize, meta-val-str) and every one of those symbols/signatures/
+struct fields survives unchanged in b10103. Verified by grepping every
+`llama_*`/`ggml_*` symbol the engine uses against the new `include/llama.h`
+before building, not just by leaning on compiler errors.
+
+The single break: **`llama_model_statewise_init`** — a fork-only symbol from the
+dropped Statewise-v1 patch (`src/model_manager.cpp`). Per the council's explicit
+instruction, the old 278-line patch was **NOT** re-ported/rebased onto the new
+base (it touched exactly the files the upstream rewrite churned hardest —
+`llama-graph.cpp::build_moe_ffn`, `ggml-cpu.c`, `ggml-cuda` dispatch — a literal
+rebase would hit deep conflicts and risk a silently-miscompiled cache). The call
+site was replaced with an honest guard: `statewise_map == ""` (the only value any
+caller ever passes — no caller currently populates it) is a no-op; a non-empty
+map now throws a loud, documented "temporarily unavailable pending Phase 1"
+error rather than silently forfeiting a speedup. The `statewise_map` parameter is
+retained in `ModelManager::load`'s signature so Phase 1 has an interface to
+rebuild against.
+
+### Statewise v1's Ornith gain is temporarily GONE — stated plainly
+
+The **+33.8% Ornith-specific decode speedup** documented in Phase 7 above is
+**temporarily removed** by this rebase. It did not silently vanish and it was not
+preserved by hand-merging the old patch (that was explicitly rejected as unsafe).
+**Phase 1 (not yet started)** will rebuild a *generalized, cross-architecture*
+MoE expert-offload mechanism written fresh against this new post-rewrite
+`build_moe_ffn` shape — better than, and not a re-port of, Statewise v1, and for
+every MoE architecture rather than the `qwen35moe`-hardcoded Ornith path. Until
+Phase 1 lands, Ornith runs at stock upstream MoE-offload speed.
+
+The `Fleabag515/llama.cpp` fork (created earlier this session) is **dormant, not
+abandoned**: untouched, left in place to host Phase 1's future branch off this
+new pin. `patches/statewise-v1-llamacpp.patch` in the superproject still
+preserves the old patch reproducibly.
+
+### Verification bar (all personally confirmed on Minty, RTX 2080 Ti sm_75)
+
+- **Clean build from scratch** (`rm -rf engine/build`, full CUDA rebuild, CUDA
+  arch auto-resolved to `75-real`): **BUILD_EXIT=0, 0 errors, 0 warnings**.
+- **`ctest`**: **7/7 pass** (download-model, chat_template, tool_calls,
+  model_manager, context_governor, engine, prefix_cache).
+- **Python `pytest -q`** (from `~/Pleiades`, `.venv/bin/python3.12`): **462
+  passed, 1 failed** — `test_sandbox.py::test_run_sandboxed_reports_memory_kill`,
+  the exact known pre-existing environmental failure (child hits Python
+  `MemoryError`/rc=1 before the cgroup watchdog SIGKILL/rc=-9 fires; unrelated to
+  llama.cpp/engine, fails identically in isolation). Baseline unchanged.
+- **Correctness parity**: prefix-cache warm-vs-cold decode still **byte-identical**
+  on both the 0.5B and 4B models, both before and after. No semantic regression
+  in prefix-cache or ModelManager behavior against the new version.
+
+### Real before/after benchmarks on THIS hardware (measured, not assumed)
+
+`pleiades-engine-bench-prefix <model> 99` (fully GPU-offloaded, n_predict=24,
+1092-token prompt), old build (fork base) vs new build (b10103). Median of 3.
+
+| model | metric | OLD (b9082+patch) | NEW (b10103) | Δ |
+|---|---|---|---|---|
+| Qwen2.5-0.5B q2_k | warm decode | ~54 ms / ~444 t/s | ~57 ms / ~421 t/s | flat (noise) |
+| Qwen2.5-0.5B q2_k | cold prefill (1092 tok) | ~78 ms / ~14.0k t/s | ~76 ms / ~14.4k t/s | flat |
+| Ternary-Bonsai-4B Q8_0 (dense) | warm decode | ~266 ms / ~90.1 t/s | ~271 ms / ~88.5 t/s | flat (noise) |
+| Ternary-Bonsai-4B Q8_0 (dense) | cold prefill (1092 tok) | ~305 ms / ~3.58k t/s | ~307 ms / ~3.56k t/s | flat |
+
+**Honest finding: the claimed upstream throughput gains do NOT materialize on
+this sm_75 (Turing) card for these small dense models — results are flat within
+run-to-run noise.** That is expected and not a failure of the rebase: (1) the
+upstream perf work targets newer architectures (Ampere+/tensor-core kernels,
+Metal) and larger models; sm_75 also runs with **CUDA graphs disabled** ("disabling
+CUDA graphs due to GPU architecture"), which is where much of the small-model
+decode win would come from; (2) at 0.5B–4B fully offloaded, per-token kernel-launch
+overhead dominates and masks kernel-level improvements. The rebase's value here is
+**foundational** (current code to build Phases 1–2 on, plus new upstream features
+like native MTP speculative decoding now available), **not** a headline t/s bump on
+this specific GPU. A larger MoE model on Ampere+ hardware is where upstream's
+numbers would be expected to show; unmeasured here (no such hardware on Minty).
+
 ## Phase 8 — Cross-platform matrix (later milestones, per the ask)
 
 CUDA/Linux is the proving ground (Phases 1-6). Once cut over:
