@@ -28,6 +28,7 @@ def test_builtins_register_expected_tools():
         "remember", "recall", "set_section",
         "find_tools", "call_tool",
         "dispatch_subagent",
+        "wait",
     ):
         assert expected in names, f"missing harness tool: {expected}"
     assert len(names) >= 50  # full belt
