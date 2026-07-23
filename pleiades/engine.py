@@ -527,13 +527,19 @@ class Engine:
         return ans in ("y", "yes")
 
     # -- main entry point --------------------------------------------------- #
-    def run(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None) -> str:
+    def run(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None,
+           audio_path: Optional[str] = None) -> str:
+        """`audio_path`: an optional local filesystem path to an audio
+        attachment for this turn (see _audio_fallback_note -- the general
+        upload/attachment-cache mechanism is being built separately on
+        feature/attach-cache; this is the documented interface it hands
+        off to: a real local path to a file this call already has)."""
         if isinstance(profile, str):
             profile = self.manager.get(profile)
 
         client, ctx, belt = self._client_for(profile)
         try:
-            return self._loop(client, ctx, belt, profile, user_message, system)
+            return self._loop(client, ctx, belt, profile, user_message, system, audio_path=audio_path)
         finally:
             ctx.close()
 
@@ -585,8 +591,74 @@ class Engine:
             f"workspace directory above; pass paths exactly as written for this OS."
         )
 
-    def _loop(self, client, ctx: ToolContext, belt: ToolBelt, profile: Profile, user_message: str, system: Optional[str]) -> str:
-        messages = self._base_messages(user_message, system, self._environment_note(profile))
+    @staticmethod
+    def _model_audio_capable(profile: Profile) -> bool:
+        """Can the model currently assigned to this character take audio
+        input directly? Always False today -- per the 2026-07-23 audio-
+        fallback council review, NO model registrable in pleiades/models.py
+        has this, and cloud brains (openrouter:/ollama-cloud:) have no
+        capability registry here either. Structured as a real attribute
+        check (Model.audio_capable, default False -- see models.py) rather
+        than a hardcoded "always fallback" so this becomes forward-
+        compatible the moment a real audio-capable model gets registered:
+        flip that one field, no changes needed here.
+        """
+        model_name = getattr(profile, "model", "") or ""
+        if not model_name or model_name.startswith(("openrouter:", "ollama-cloud:")):
+            return False
+        from .models import ModelManager
+        m = ModelManager().get(model_name)
+        return bool(m and m.get("audio_capable", False))
+
+    @staticmethod
+    def _audio_fallback_note(profile: Profile, audio_path: Optional[str]) -> Optional[str]:
+        """When a turn carries an audio attachment and the assigned model
+        can't take audio input directly (see _model_audio_capable -- true
+        for every model on this machine today), run it through the local
+        whisper.cpp fallback (pleiades/tools/audio_transcribe.py) and hand
+        the character a text note instead of the raw audio.
+
+        This is deliberately fallback-only: no real audio-capable-model
+        passthrough is attempted (see audio_transcribe.py's module
+        docstring for the full council-review rationale). It is also
+        transcription-only -- whisper.cpp is speech-to-text, not a music/
+        sound describer, and this project doesn't yet ship anything for
+        that (see the same docstring for why); the note says so plainly
+        so the character doesn't overclaim what it was told.
+
+        Returns None (no note added) when there's no attachment, the
+        assigned model IS audio-capable, the fallback isn't configured, or
+        transcription fails for any reason -- identical shape to
+        `_environment_note`, just optional.
+        """
+        if not audio_path:
+            return None
+        if Engine._model_audio_capable(profile):
+            return None
+        from .tools import audio_transcribe
+        if not audio_transcribe.is_configured():
+            return None
+        transcript = audio_transcribe.transcribe(audio_path)
+        if not transcript:
+            return None
+        return (
+            "The user attached an audio file. The character assigned to this "
+            "conversation cannot take audio input directly, so it was run "
+            "through a local speech-to-text fallback (whisper.cpp) instead -- "
+            "this is a transcript of any speech in the audio ONLY, not a "
+            "description of music, sound effects, or non-speech audio (that "
+            "capability isn't implemented). Treat the text below as what was "
+            "said in the recording, not something the user typed:\n"
+            f"{transcript}"
+        )
+
+    def _loop(self, client, ctx: ToolContext, belt: ToolBelt, profile: Profile, user_message: str, system: Optional[str],
+             *, audio_path: Optional[str] = None) -> str:
+        env_note = self._environment_note(profile)
+        audio_note = self._audio_fallback_note(profile, audio_path)
+        if audio_note:
+            env_note = f"{env_note}\n\n{audio_note}"
+        messages = self._base_messages(user_message, system, env_note)
 
         tools = belt.openai_schema()
 
@@ -650,7 +722,8 @@ class Engine:
                       *, system: Optional[str] = None,
                       history: Optional[list[dict]] = None,
                       should_stop: Optional[Callable[[], bool]] = None,
-                      poll_injections: Optional[Callable[[], list[str]]] = None):
+                      poll_injections: Optional[Callable[[], list[str]]] = None,
+                      audio_path: Optional[str] = None):
         """The full turn as a stream of structured events.
 
         Yields dicts, in order:
@@ -708,9 +781,11 @@ class Engine:
         n_tokens = 0
         t_first = t_last = None
         try:
-            messages = self._base_messages(user_message, system,
-                                           self._environment_note(profile),
-                                           history)
+            env_note = self._environment_note(profile)
+            audio_note = self._audio_fallback_note(profile, audio_path)
+            if audio_note:
+                env_note = f"{env_note}\n\n{audio_note}"
+            messages = self._base_messages(user_message, system, env_note, history)
             tools = belt.openai_schema()
             import time as _time
 
@@ -862,8 +937,9 @@ class Engine:
             ctx.close()
 
     def stream(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None,
-              history: Optional[list[dict]] = None):
+              history: Optional[list[dict]] = None, audio_path: Optional[str] = None):
         """Text-only view of stream_events (CLI REPL / Discord)."""
-        for evt in self.stream_events(profile, user_message, system=system, history=history):
+        for evt in self.stream_events(profile, user_message, system=system, history=history,
+                                      audio_path=audio_path):
             if evt["type"] == "token":
                 yield evt["text"]

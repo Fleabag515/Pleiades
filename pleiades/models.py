@@ -54,6 +54,16 @@ class Model:
     # list) — never touched by launch/registry-key logic, which always keys
     # off `name`. Blank means "show `name` as-is" (existing behavior).
     display_name: str = ""
+    # Forward-compatible capability flag: True means this model can take audio
+    # input directly (a real --mmproj-style audio encoder, or a native engine
+    # that supports it) and engine.py should NOT run it through the
+    # transcription fallback (pleiades/tools/audio_transcribe.py). Defaults to
+    # False for every model because, as of this writing (2026-07-23 audio-
+    # fallback council review), no model registrable here actually has this --
+    # nothing sets it True yet. It exists so the day one does, engine.py's
+    # `if not model.audio_capable` check needs no changes, just a registry
+    # entry with this flipped on.
+    audio_capable: bool = False
     host: str = "127.0.0.1"
     port: int = 0             # assigned on add()
 
