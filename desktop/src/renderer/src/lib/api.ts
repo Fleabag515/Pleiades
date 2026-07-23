@@ -1,4 +1,6 @@
 import type {
+  AgentDetail,
+  AgentSummary,
   ApiStatus,
   BrowserViewStatus,
   ChatDetail,
@@ -502,6 +504,35 @@ export async function deleteScheduledTask(base: string, id: string): Promise<voi
  * its schedule (POST /api/scheduled-tasks/{id}/run, see server.py). */
 export async function runScheduledTaskNow(base: string, id: string): Promise<ScheduledTask> {
   return asJson(await fetch(`${base}/api/scheduled-tasks/${id}/run`, { method: 'POST' }))
+}
+
+// ---- Right panel: Agents (ephemeral background sub-agents) ----------------
+
+export async function listAgents(base: string): Promise<AgentSummary[]> {
+  const data = await asJson<{ agents: AgentSummary[] }>(await fetch(`${base}/api/agents`))
+  return data.agents
+}
+
+export async function getAgent(base: string, id: string, since = 0): Promise<AgentDetail> {
+  return asJson(await fetch(`${base}/api/agents/${id}?since=${since}`))
+}
+
+export async function stopAgent(base: string, id: string): Promise<void> {
+  await fetch(`${base}/api/agents/${id}/stop`, { method: 'POST' })
+}
+
+export async function setAgentsSettings(
+  base: string,
+  character: string,
+  patch: { enabled?: boolean; model?: string }
+): Promise<ProfileDetail> {
+  return asJson(
+    await fetch(`${base}/api/agents/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ character, ...patch })
+    })
+  )
 }
 
 // ---- Right panel: browser-use embed (Playwright/Chromium, see browser_view.py) ----

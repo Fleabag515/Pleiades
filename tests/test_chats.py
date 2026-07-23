@@ -159,6 +159,49 @@ def test_recent_messages_flattens_and_caps():
     chats.delete(c["id"])
 
 
+def test_recent_messages_reconstructs_interleaved_user_injected():
+    """A user_injected item (see chats.py's schema docstring) splits ONE
+    persisted assistant turn back into the role sequence the live model
+    actually saw: assistant-work-before, the interjection as its own
+    user-role message, assistant-work-after."""
+    c = chats.create("zoe")
+    chats.append_turn(c["id"], "draft the report", [
+        {"t": "text", "text": "Starting on the report now."},
+        {"t": "tool", "name": "read_file", "args": "{}", "output": "...", "ok": True},
+        {"t": "user_injected", "text": "actually make it shorter"},
+        {"t": "text", "text": "Got it, trimming it down."},
+    ], {"tokens": 2, "seconds": 0.1, "tps": 20.0})
+    loaded = chats.load(c["id"])
+
+    hist = chats.recent_messages(loaded)
+    assert hist[0] == {"role": "user", "content": "draft the report"}
+    assert hist[1]["role"] == "assistant"
+    assert "Starting on the report now." in hist[1]["content"]
+    assert "[used tool read_file]" in hist[1]["content"]
+    assert hist[2] == {"role": "user",
+                       "content": "[message from the user, mid-task] actually make it shorter"}
+    assert hist[3] == {"role": "assistant", "content": "Got it, trimming it down."}
+    chats.delete(c["id"])
+
+
+def test_recent_messages_user_injected_at_start_or_end_of_turn():
+    """No assistant work before/after the interjection -> no empty
+    role:assistant entries should be emitted around it."""
+    c = chats.create("zoe")
+    chats.append_turn(c["id"], "hi", [
+        {"t": "user_injected", "text": "wait, different question"},
+        {"t": "text", "text": "Sure, answering that instead."},
+    ], {"tokens": 1, "seconds": 0.1, "tps": 10.0})
+    loaded = chats.load(c["id"])
+    hist = chats.recent_messages(loaded)
+    assert hist == [
+        {"role": "user", "content": "hi"},
+        {"role": "user", "content": "[message from the user, mid-task] wait, different question"},
+        {"role": "assistant", "content": "Sure, answering that instead."},
+    ]
+    chats.delete(c["id"])
+
+
 def test_base_messages_inserts_history_before_new_message():
     history = [
         {"role": "user", "content": "message person X"},

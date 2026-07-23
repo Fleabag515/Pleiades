@@ -238,4 +238,12 @@ def build_default_belt(ctx: ToolContext) -> ToolBelt:
     except ImportError:
         pass
 
+    # spawn_agents is opt-in per character (default off) -- see
+    # profiles.Profile.agents_enabled and pleiades/agents.py for the
+    # ephemeral/depth-capped/concurrency-capped background-agent design.
+    if getattr(ctx.profile, "agents_enabled", False):
+        from .agents_tool import AgentsTool
+
+        belt.add(AgentsTool())
+
     return belt

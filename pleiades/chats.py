@@ -10,7 +10,19 @@ Message shape:
         {"t": "text", "text": "..."},                       # may contain <think> tags
         {"t": "tool", "name": "...", "args": "...",
          "output": "...", "ok": true},
+        {"t": "user_injected", "text": "..."},               # see below
      ], "meta": {"tokens": 123, "seconds": 4.2, "tps": 29.3}}
+
+A `user_injected` item is a message the user sent WHILE this assistant turn
+was still running (see webui/server.py's chats_interject endpoint and
+engine.py's Engine.stream_events poll_injections param) — the model kept
+working on the ORIGINAL user_text above, was interrupted between rounds/tool
+calls with this extra message, and kept going with it woven in, all inside
+one turn. It lives inside the assistant message's own `items` list (not as a
+second top-level {"role":"user"} entry) because append_turn only ever
+persists ONE user_text per turn; `recent_messages` below splits the
+assistant's `items` back into separate role:user/assistant entries around
+each `user_injected` item when reconstructing history for a future turn.
 """
 
 from __future__ import annotations
@@ -153,15 +165,38 @@ def recent_messages(chat: dict, max_turns: int = 8) -> list[dict]:
             if content:
                 out.append({"role": "user", "content": content})
         elif role == "assistant":
-            parts = []
+            # A user_injected item splits this ONE persisted assistant turn
+            # back into the two-or-more-role sequence the model actually saw
+            # live (assistant partial work, then the interjection landing as
+            # its own user-role message, then whatever the assistant did
+            # after it) -- see the user_injected note in this module's
+            # docstring. Flush whatever assistant text/tool summary has
+            # accumulated SO FAR whenever one is hit, emit it as its own
+            # user-role entry with the same "[message from the user,
+            # mid-task]" marker Engine.stream_events actually prepended (so a
+            # future turn's resent history matches word-for-word what the
+            # live turn contained), then keep accumulating anything the
+            # assistant said/did after it into a fresh piece.
+            parts: list[str] = []
+
+            def _flush_assistant_parts() -> None:
+                nonlocal parts
+                content = "\n".join(parts).strip()
+                if content:
+                    out.append({"role": "assistant", "content": content})
+                parts = []
+
             for item in m.get("items", []):
-                if item.get("t") == "text" and item.get("text"):
+                t = item.get("t")
+                if t == "text" and item.get("text"):
                     parts.append(item["text"])
-                elif item.get("t") == "tool":
+                elif t == "tool":
                     parts.append(f"[used tool {item.get('name', '?')}]")
-            content = "\n".join(parts).strip()
-            if content:
-                out.append({"role": "assistant", "content": content})
+                elif t == "user_injected" and item.get("text"):
+                    _flush_assistant_parts()
+                    out.append({"role": "user",
+                               "content": f"[message from the user, mid-task] {item['text']}"})
+            _flush_assistant_parts()
     return out
 
 

@@ -9,20 +9,30 @@ import {
   browserViewWsUrl,
   createScheduledTask,
   deleteScheduledTask,
+  getAgent,
   getChat,
+  getProfile,
   getProfileTools,
   getWorkJob,
   getWorkTasks,
+  listAgents,
   listChats,
+  listModels,
   listScheduledTasks,
   listWorkJobs,
   runScheduledTaskNow,
+  setAgentsSettings,
+  stopAgent,
   updateScheduledTask
 } from '../lib/api'
 import type {
+  AgentEvent,
+  AgentSummary,
   BrowserViewStatus,
   ChatDetail,
   ChatSummary,
+  ModelEntry,
+  ProfileDetail,
   ProfileTools,
   ScheduledTask,
   ToolInfo,
@@ -32,7 +42,7 @@ import type {
   WorkTask
 } from '../lib/types'
 import { checkCron } from '../lib/cron'
-import { relativeTime } from '../lib/format'
+import { modelDisplayName, relativeTime } from '../lib/format'
 import MessageBubble from './MessageBubble'
 
 interface RightPanelProps {
@@ -65,6 +75,7 @@ function RightPanel({ base, character, open }: RightPanelProps): React.JSX.Eleme
   const [historyOpen, setHistoryOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const [scheduledOpen, setScheduledOpen] = useState(false)
+  const [agentsOpen, setAgentsOpen] = useState(false)
 
   return (
     <div
@@ -121,6 +132,15 @@ function RightPanel({ base, character, open }: RightPanelProps): React.JSX.Eleme
               character={character}
               active={open && scheduledOpen}
             />
+          </CollapsibleBlock>
+
+          <CollapsibleBlock
+            icon={<span aria-hidden>&#9737;</span>}
+            label="Agents"
+            open={agentsOpen}
+            onToggle={() => setAgentsOpen((v) => !v)}
+          >
+            <AgentsSection base={base} character={character} active={open && agentsOpen} />
           </CollapsibleBlock>
         </div>
       </div>
@@ -801,6 +821,232 @@ function ScheduledTasksSection({
         >
           + Schedule a task
         </button>
+      )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Agents — ephemeral background sub-agents spawned via the model's own
+// spawn_agents chat-belt tool (pleiades/agents.py + pleiades/tools/
+// agents_tool.py). Unlike Scheduled tasks, agents aren't created from this
+// panel -- the model spawns them; this panel is the toggle + model picker
+// (gates both the chat tool and the toolsearch bridge's dispatch_subagent
+// back door -- see Engine._bridge_harness_tools) plus live observability
+// (task/status/history + a status light) and a stop button, polling
+// GET /api/agents exactly like Progress polls GET /api/work.
+// --------------------------------------------------------------------------
+
+/** green = an in-flight tool_call with no result yet; red = the agent errored
+ * out, OR any tool_result in its history had ok:false -- sticky, since once
+ * something has gone wrong for this agent that stays the more important
+ * signal even if it keeps working afterward; yellow = everything else
+ * (thinking/planning between calls, queued, done clean). */
+function agentLightClass(agent: AgentSummary, events: AgentEvent[]): string {
+  if (agent.status === 'error') return 'bg-rose-400'
+  if (events.some((e) => e.kind === 'tool_result' && e.ok === false)) return 'bg-rose-400'
+  const last = events[events.length - 1]
+  if (agent.status === 'running' && last?.kind === 'tool_call') return 'bg-emerald-400'
+  return 'bg-amber-400'
+}
+
+function AgentsSection({
+  base,
+  character,
+  active
+}: {
+  base: string
+  character: string
+  active: boolean
+}): React.JSX.Element {
+  const [profile, setProfile] = useState<ProfileDetail | null>(null)
+  const [models, setModels] = useState<ModelEntry[]>([])
+  const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [details, setDetails] = useState<Record<string, AgentEvent[]>>({})
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!active || !character) return
+    let cancelled = false
+    getProfile(base, character)
+      .then((p) => !cancelled && setProfile(p))
+      .catch((e) => !cancelled && setError((e as Error).message))
+    listModels(base)
+      .then((m) => !cancelled && setModels(m))
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [base, character, active])
+
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+
+    const refresh = async (): Promise<void> => {
+      try {
+        const all = await listAgents(base)
+        if (cancelled) return
+        const mine = all.filter((a) => a.character === character)
+        setAgents(mine)
+        setError(null)
+        const live = mine.filter((a) => a.status === 'running' || a.status === 'queued').slice(0, 6)
+        const fetched = await Promise.all(live.map((a) => getAgent(base, a.id).catch(() => null)))
+        if (cancelled) return
+        setDetails((prev) => {
+          const next = { ...prev }
+          fetched.forEach((d, i) => {
+            if (d) next[live[i].id] = d.events
+          })
+          return next
+        })
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message)
+      }
+    }
+
+    refresh()
+    const id = setInterval(refresh, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [base, character, active])
+
+  const toggleEnabled = async (): Promise<void> => {
+    if (!character) return
+    setBusy(true)
+    try {
+      setProfile(await setAgentsSettings(base, character, { enabled: !profile?.agents_enabled }))
+      setError(null)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const changeModel = async (model: string): Promise<void> => {
+    if (!character) return
+    try {
+      setProfile(await setAgentsSettings(base, character, { model }))
+      setError(null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const stop = async (id: string): Promise<void> => {
+    try {
+      await stopAgent(base, id)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const enabled = !!profile?.agents_enabled
+
+  return (
+    <div>
+      {error && <div className="mb-2 text-xs text-rose-300">{error}</div>}
+
+      <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-bg-300/40 px-2.5 py-2">
+        <div className="min-w-0">
+          <div className="text-xs text-ink">Background agents</div>
+          <div className="truncate text-[10px] text-ink-faint">
+            Let {character || 'this character'} delegate tasks to ephemeral background agents.
+          </div>
+        </div>
+        <button
+          onClick={toggleEnabled}
+          disabled={busy || !character}
+          className={`flex-none rounded-full px-2.5 py-1 text-[10px] font-medium uppercase transition ${
+            enabled ? 'bg-accent/20 text-accent' : 'bg-bg-400/40 text-ink-faint'
+          } disabled:opacity-40`}
+        >
+          {enabled ? 'On' : 'Off'}
+        </button>
+      </div>
+
+      {enabled && (
+        <div className="mb-2 flex items-center gap-1.5">
+          <span className="flex-none text-[10px] text-ink-faint">Model</span>
+          <select
+            value={profile?.agents_model || ''}
+            onChange={(e) => changeModel(e.target.value)}
+            className="min-w-0 flex-1 rounded-lg bg-bg-surface px-2 py-1 text-xs text-ink outline-none"
+          >
+            <option value="">Auto (currently running model)</option>
+            {models.map((m) => (
+              <option key={m.name} value={m.name}>
+                {modelDisplayName(m)}
+                {m.running ? '' : ' (stopped)'}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {agents.length === 0 ? (
+        <p className="text-xs text-ink-faint">
+          {enabled
+            ? `No agents spawned yet for ${character || 'this character'}.`
+            : `Agents are off for ${character || 'this character'}.`}
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {agents.slice(0, 8).map((a) => {
+            const events = details[a.id] || []
+            const stoppable = a.status === 'running' || a.status === 'queued'
+            return (
+              <li key={a.id} className="rounded-lg bg-bg-300/50 px-2.5 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex min-w-0 items-start gap-1.5">
+                    <span
+                      className={`mt-1 h-1.5 w-1.5 flex-none rounded-full ${agentLightClass(a, events)}`}
+                      aria-hidden
+                      title={a.status}
+                    />
+                    <span className="truncate text-xs text-ink">{a.task}</span>
+                  </div>
+                  <div className="flex flex-none items-center gap-1.5">
+                    <span className="text-[10px] uppercase text-ink-faint">{a.status}</span>
+                    {stoppable && (
+                      <button
+                        onClick={() => stop(a.id)}
+                        className="text-ink-faint transition hover:text-rose-300"
+                        aria-label="Stop agent"
+                        title="Stop this agent"
+                      >
+                        &#9632;
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-0.5 text-[10px] text-ink-faint">
+                  {relativeTime(a.started)}
+                  {a.model ? ` · ${a.model}` : ''}
+                </div>
+                {events.length > 0 && (
+                  <ul className="mt-1.5 flex flex-col gap-0.5 border-t border-border pt-1.5">
+                    {events.slice(-3).map((e, i) => (
+                      <li key={i} className="truncate text-[10px] text-ink-faint">
+                        {eventLine(e)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {a.status === 'done' && a.result && (
+                  <div className="mt-1.5 truncate text-[10px] text-ink-dim">{a.result}</div>
+                )}
+                {a.status === 'error' && a.error && (
+                  <div className="mt-1.5 truncate text-[10px] text-rose-300">{a.error}</div>
+                )}
+              </li>
+            )
+          })}
+        </ul>
       )}
     </div>
   )

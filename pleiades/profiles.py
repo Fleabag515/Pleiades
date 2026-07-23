@@ -43,6 +43,17 @@ class Profile:
     # fill-in for the missing key, never a silent overwrite of a value someone
     # already set explicitly.
     exec_policy: Optional[str] = None
+    # Chat-belt spawn_agents tool + the toolsearch bridge's dispatch_subagent/
+    # dispatch_subagents_parallel back door (see Engine._bridge_harness_tools)
+    # are both gated on this, per-character, default OFF -- a new capability
+    # opts in explicitly rather than exec_policy's "approve everything by
+    # default" precedent. See pleiades/agents.py for what "enabled" actually
+    # allows (ephemeral, depth-capped, safe-tools-only background agents).
+    agents_enabled: bool = False
+    # Which model spawned agents should run on; blank = whichever model is
+    # currently running (see agents.AgentManager._resolve_model). Set from
+    # the desktop app's Agents panel model picker.
+    agents_model: str = ""
 
     @property
     def browser_dir(self) -> str:
