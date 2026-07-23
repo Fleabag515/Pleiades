@@ -71,8 +71,17 @@ add_library(pleiades_engine STATIC
   src/context_governor.cpp
   src/engine.cpp
   src/chat_template.cpp
+  src/tool_call_parser.cpp
 )
 target_include_directories(pleiades_engine PUBLIC include)
+# nlohmann/json.hpp is vendored inside the llama.cpp submodule (see the
+# pleiades_httplib/pleiades-engine-server comment below for the full
+# rationale on why it's used directly rather than turning on
+# LLAMA_BUILD_COMMON) -- chat_template.cpp/tool_call_parser.cpp need it too
+# now (Phase 5 tool-calling: rendering/parsing the `tools`/`tool_calls`
+# JSON), so it's PUBLIC on pleiades_engine itself rather than only on the
+# server binary.
+target_include_directories(pleiades_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp/vendor)
 target_link_libraries(pleiades_engine PUBLIC llama)
 
 add_executable(pleiades-engine-cli src/cli_main.cpp)

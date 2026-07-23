@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace pleiades_engine {
 
@@ -21,6 +22,26 @@ std::string ffn_exps_block_regex(int layer_idx) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "blk\\.%d%s", layer_idx, kFfnExpsRegex);
     return std::string(buf);
+}
+
+// Reads a string metadata key off `model` via llama_model_meta_val_str(),
+// returning "" if the key is absent. That function returns -1 for a
+// missing key, or otherwise the snprintf-would-be length of the value
+// REGARDLESS of buf_size (standard snprintf semantics) -- see
+// third_party/llama.cpp/src/llama-model.cpp's implementation. So: probe
+// once with a throwaway buffer to learn the real length, then allocate
+// exactly that and call again. tokenizer.chat_template in particular can
+// be several KB (8204 bytes for the Qwythos GGUF checked while building
+// this), so a single fixed-size stack buffer isn't safe here.
+std::string read_model_meta_str(const llama_model* model, const char* key) {
+    char probe[1];
+    int32_t n = llama_model_meta_val_str(model, key, probe, sizeof(probe));
+    if (n < 0) {
+        return {};
+    }
+    std::vector<char> buf(static_cast<size_t>(n) + 1);
+    llama_model_meta_val_str(model, key, buf.data(), buf.size());
+    return std::string(buf.data(), static_cast<size_t>(n));
 }
 
 }  // namespace
@@ -65,6 +86,10 @@ void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe
         throw std::runtime_error("pleiades_engine: failed to load model: " + path);
     }
     path_ = path;
+
+    std::string tmpl = read_model_meta_str(model_, "tokenizer.chat_template");
+    tool_dialect_ = detect_tool_dialect(tmpl);
+    open_thinking_ = detect_open_thinking(tmpl);
 }
 
 void ModelManager::unload() {
@@ -73,6 +98,8 @@ void ModelManager::unload() {
         model_ = nullptr;
     }
     path_.clear();
+    tool_dialect_ = ToolDialect::NONE;
+    open_thinking_ = false;
     moe_override_patterns_.clear();
     moe_overrides_.clear();
 }
