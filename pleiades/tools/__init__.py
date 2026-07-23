@@ -217,4 +217,19 @@ def build_default_belt(ctx: ToolContext) -> ToolBelt:
     except ImportError:
         pass
 
+    # Tor-routed browser is a separate, explicit-action tool (see
+    # tools/tor_browser.py for why it's not folded into BrowserTool) --
+    # same optional-dependency gate as the regular browser tool. Whether
+    # the `tor` daemon itself is actually installed/running is a runtime
+    # check (tor_socks_reachable()) surfaced as a clear tool-call error,
+    # not a reason to hide the tool from the belt entirely.
+    try:
+        import camoufox  # noqa: F401
+
+        from .tor_browser import TorBrowserTool
+
+        belt.add(TorBrowserTool())
+    except ImportError:
+        pass
+
     return belt

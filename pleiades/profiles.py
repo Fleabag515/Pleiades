@@ -49,6 +49,10 @@ class Profile:
         return str(config.browser_dir(self.name))
 
     @property
+    def tor_browser_dir(self) -> str:
+        return str(config.tor_browser_dir(self.name))
+
+    @property
     def has_email(self) -> bool:
         return bool(self.email_address and self.imap_host and self.smtp_host)
 
@@ -139,6 +143,7 @@ class ProfileManager:
         )
         self._save(profile)
         config.browser_dir(name).mkdir(parents=True, exist_ok=True)
+        config.tor_browser_dir(name).mkdir(parents=True, exist_ok=True)
 
         # 3. Vault + reserved secrets.
         with self.open_vault(name) as vault:
@@ -189,6 +194,7 @@ class ProfileManager:
         profile = Profile(name=name, exec_policy="allow")
         self._save(profile)
         config.browser_dir(name).mkdir(parents=True, exist_ok=True)
+        config.tor_browser_dir(name).mkdir(parents=True, exist_ok=True)
         with self.open_vault(name):  # create the empty encrypted vault
             pass
         return profile

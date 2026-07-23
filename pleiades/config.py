@@ -91,6 +91,16 @@ def browser_dir(name: str) -> Path:
     return profile_dir(name) / "browser"
 
 
+def tor_browser_dir(name: str) -> Path:
+    """Separate persistent profile dir for the Tor-routed browser tool
+    (pleiades/tools/tor_browser.py) -- sibling of browser_dir(), never the
+    same directory, so a character's ordinary browser profile and its
+    Tor-routed profile (different proxy, different exit IP, meant to be
+    kept separate on purpose) never share cookies/storage.
+    """
+    return profile_dir(name) / "tor_browser"
+
+
 def profile_json_path(name: str) -> Path:
     return profile_dir(name) / "profile.json"
 
