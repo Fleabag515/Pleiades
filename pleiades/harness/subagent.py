@@ -85,7 +85,16 @@ def dispatch_subagents_parallel(tasks: list) -> str:
     if not isinstance(tasks, list) or not tasks:
         return "Error: tasks must be a non-empty list of dicts with 'role' and 'task' keys."
 
+    # Task-list tools (builtins/tasks.py) scope by job id via thread-local
+    # storage, so a fan-out ThreadPoolExecutor -- new OS threads -- would
+    # otherwise lose that binding for every worker. Capture it here (the
+    # calling thread) and re-bind it inside each worker before it runs.
+    from .builtins.tasks import bind_job, current_job_id
+    _job_id = current_job_id()
+
     def _run_one(item: dict) -> str:
+        if _job_id:
+            bind_job(_job_id)
         role = item.get("role", "general")
         task = item.get("task", "")
         if not task:

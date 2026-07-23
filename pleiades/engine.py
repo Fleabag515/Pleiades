@@ -160,7 +160,10 @@ DEFAULT_OPERATING_CONTRACT = (
     "how the two of you work, preferences). If unsure whether you already know something, "
     "recall first.\n"
     "- Only ask the human a question when the task is genuinely ambiguous or needs their "
-    "approval (destructive or external actions). Otherwise, proceed."
+    "approval (destructive or external actions). Otherwise, proceed.\n"
+    "- For a real multi-step job, use create_task/update_task/list_tasks (find_tools "
+    "\"task list\" if you don't see them yet) to keep a live plan instead of only "
+    "narrating steps -- mark each in_progress, then completed, as you actually do it."
 )
 
 

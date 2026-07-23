@@ -15,6 +15,7 @@ import type {
   ProfileDetail,
   QuantOptionsResponse,
   ScheduledTask,
+  WorkTask,
   StreamEvent,
   VaultEntryMeta,
   WorkJobDetail,
@@ -435,6 +436,11 @@ export async function listWorkJobs(base: string): Promise<WorkJobSummary[]> {
 
 export async function getWorkJob(base: string, id: string, since = 0): Promise<WorkJobDetail> {
   return asJson(await fetch(`${base}/api/work/${id}?since=${since}`))
+}
+
+export async function getWorkTasks(base: string, id: string): Promise<WorkTask[]> {
+  const data = await asJson<{ tasks: WorkTask[] }>(await fetch(`${base}/api/work/${id}/tasks`))
+  return data.tasks
 }
 
 // ---- Right panel: scheduled tasks ------------------------------------------
