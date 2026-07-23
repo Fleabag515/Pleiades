@@ -28,12 +28,20 @@ import trayIconWin from '../../resources/tray-icon-16.png?asset'
 //      Needs nothing pre-installed on the target machine -- no system Python,
 //      no venv, no pip install.
 //   2. Dev-mode fallback: shells out to the developer's own ~/Pleiades/.venv
-//      checkout with `python3.12 -m pleiades.webui`, same as before. Used
+//      checkout with `python3.12 -m pleiades.webui` (POSIX) or
+//      `python.exe -m pleiades.webui` (Windows), same as before. Used
 //      automatically whenever the bundled binary isn't present, so local
 //      development against a live venv (fast iteration on the Python side)
 //      keeps working unmodified.
 const PLEIADES_ROOT = process.env.PLEIADES_ROOT ?? join(homedir(), 'Pleiades')
-const PYTHON_BIN = join(PLEIADES_ROOT, '.venv', 'bin', 'python3.12')
+// venv layout differs by platform: POSIX puts executables in bin/ (and this
+// repo's dev venv is pinned to python3.12 specifically -- see repo CLAUDE.md
+// on the python3.12/python3.13 split); Windows' `python -m venv` always
+// lays executables out under Scripts/python.exe regardless of version.
+const PYTHON_BIN =
+  process.platform === 'win32'
+    ? join(PLEIADES_ROOT, '.venv', 'Scripts', 'python.exe')
+    : join(PLEIADES_ROOT, '.venv', 'bin', 'python3.12')
 
 const BACKEND_BIN_NAME = 'pleiades-backend'
 
