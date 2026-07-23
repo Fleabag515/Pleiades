@@ -970,21 +970,34 @@ function AgentsSection({
       </div>
 
       {enabled && (
-        <div className="mb-2 flex items-center gap-1.5">
-          <span className="flex-none text-[10px] text-ink-faint">Model</span>
-          <select
-            value={profile?.agents_model || ''}
-            onChange={(e) => changeModel(e.target.value)}
-            className="min-w-0 flex-1 rounded-lg bg-bg-surface px-2 py-1 text-xs text-ink outline-none"
-          >
-            <option value="">Auto (currently running model)</option>
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>
-                {modelDisplayName(m)}
-                {m.running ? '' : ' (stopped)'}
-              </option>
-            ))}
-          </select>
+        <div className="mb-2">
+          <div className="flex items-center gap-1.5">
+            <span className="flex-none text-[10px] text-ink-faint">Model</span>
+            <select
+              value={profile?.agents_model || ''}
+              onChange={(e) => changeModel(e.target.value)}
+              className="min-w-0 flex-1 rounded-lg bg-bg-surface px-2 py-1 text-xs text-ink outline-none"
+            >
+              <option value="">Auto (currently running model)</option>
+              {models.map((m) => (
+                <option
+                  key={m.name}
+                  value={m.name}
+                  disabled={!m.running}
+                  title={m.running ? undefined : 'Start this model elsewhere first -- agents never auto-start a model'}
+                >
+                  {modelDisplayName(m)}
+                  {m.running ? '' : ' (stopped -- start it first)'}
+                </option>
+              ))}
+            </select>
+          </div>
+          {profile?.agents_model && !models.find((m) => m.name === profile.agents_model && m.running) && (
+            <div className="mt-1 text-[10px] text-amber-300">
+              &ldquo;{profile.agents_model}&rdquo; isn&apos;t running -- spawning an agent will fail until
+              you start it.
+            </div>
+          )}
         </div>
       )}
 
