@@ -232,8 +232,10 @@ def test_chats_message_passes_attachments_note_into_stream_events(monkeypatch):
 
     def fake_stream_events(self, profile, user_message, *, system=None,
                            history=None, attachments_note=None,
-                           should_stop=None, poll_injections=None):
+                           should_stop=None, poll_injections=None,
+                           attachments=None):
         captured["attachments_note"] = attachments_note
+        captured["attachments"] = attachments
         yield {"type": "token", "text": "ok"}
         yield {"type": "done", "tokens": 1, "seconds": 0.01, "tps": 1.0}
 
