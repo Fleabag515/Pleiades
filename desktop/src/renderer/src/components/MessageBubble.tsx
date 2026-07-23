@@ -1,8 +1,9 @@
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import type { AssistantItem, ChatMessageEntry, ToolItem } from '../lib/types'
-import ReasoningBlock from './ReasoningBlock'
+import ActivityBlock, { type ActivityPart } from './ActivityBlock'
+import ToolChain from './ToolChain'
 
 interface MessageBubbleProps {
   message: ChatMessageEntry
@@ -11,108 +12,35 @@ interface MessageBubbleProps {
   streaming?: boolean
 }
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s
-}
-
-/**
- * One row in a `ToolChain`'s shared detail card (owner brief item 3): a
- * label/value pair, monospace value, matching the legacy webui's `.kv`
- * rows in `showNodeDetail()` (pleiades/webui/static/next.html) rather than
- * a JSON blob.
- */
-function DetailRow({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }): React.JSX.Element {
-  return (
-    <div className="flex items-start gap-2 py-0.5">
-      <span className="w-14 flex-none text-[11px] text-ink-dim">{label}</span>
-      <span className={`min-w-0 flex-1 break-all font-mono text-[11px] ${valueClassName ?? 'text-ink'}`}>{value}</span>
-    </div>
-  )
-}
-
-/**
- * Renders one turn's tool call(s) the way the real legacy webui does it —
- * this replaced a from-scratch guess (a per-call `<details>` accordion
- * showing icon+name+tag then full args/output) after actually launching
- * `pleiades ui`, opening a chat with Claude, and watching a live tool call
- * render: pleiades/webui/static/next.html's "pipeline" pattern
- * (`buildToolNodes`/`.pipe-node`/`.pipe-detail`), NOT the older
- * `pleiades/webui/static/app.js` `toolBlock()` the previous attempt read
- * (that file is a stale fallback the server only serves when next.html is
- * missing — see server.py's `@app.get("/")`).
+/** Groups an assistant turn's items for rendering.
  *
- * What that looks like: a horizontal row of small pill-shaped chips (one
- * per tool call, monospace, just the tool name — no icon, no "done"/
- * "running" tag text), chained with a plain "→" when several calls happen
- * back to back in the same turn. State is conveyed purely by the chip's
- * border color: amber + a slow blink while running, green once it
- * succeeds, red on error; hovering (or the currently selected chip) gets
- * a cyan border. There is no per-chip expansion — clicking a chip opens a
- * *single* shared detail card below the whole row (cyan-bordered) showing
- * tool/args/output/status as short key-value rows, each value truncated
- * to 400 chars, not a scrolling `<pre>` dump.
+ * Owner brief (thinking-redesign): a reasoning burst and every tool-call
+ * run that follows it -- up to the next real text/final-answer segment or
+ * a `user_injected` interruption -- now collapse into ONE `'activity'`
+ * group instead of a `ReasoningBlock` and one-or-more separate `ToolChain`
+ * groups sitting next to each other as siblings. `parts` preserves the
+ * original in-order sequence of reasoning bursts and tool runs inside that
+ * span (a multi-hop turn can have several of each before the model's next
+ * real text), so nothing about *when* things happened is lost -- only the
+ * outer chrome around them changes (see ActivityBlock.tsx).
+ *
+ * `tools` items that appear with nothing preceding them in the current run
+ * (no open 'activity' group to fold into -- the model called a tool with
+ * no `<think>` burst at all) stay as a bare `'tools'` group, unwrapped,
+ * exactly like before: there's no thinking to anchor a collapsible summary
+ * to, so there's nothing to collapse. In practice this is rare for models
+ * that reason before every tool call, but it's a real, currently-untested
+ * path worth flagging if tool-only bursts turn out to be common in
+ * practice -- see report.
+ *
+ * `text`/`user_injected` items always close out any in-progress 'activity'
+ * (or bare 'tools') run and start a fresh group -- a plain-text segment or
+ * a live user interjection is never folded into the dim collapsed region.
  */
-function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
-  const [selected, setSelected] = useState<number | null>(null)
-  const active = selected !== null ? tools[selected] : null
-
-  return (
-    <div className="my-1.5">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {tools.map((t, i) => {
-          const pending = t.output === null
-          const err = t.ok === false
-          const isSel = selected === i
-          const stateClass = pending
-            ? 'border-amber-400 animate-tool-blink'
-            : err
-              ? 'border-rose-400'
-              : 'border-emerald-400'
-          return (
-            <div key={i} className="flex items-center gap-1.5">
-              {i > 0 && <span className="select-none text-[13px] text-ink-faint">&rarr;</span>}
-              <button
-                onClick={() => setSelected(isSel ? null : i)}
-                className={`whitespace-nowrap rounded-lg border bg-bg-100 px-3 py-1.5 font-mono text-[11.5px] text-ink transition-colors hover:border-cyan-400 hover:bg-bg-200 ${
-                  isSel ? 'border-cyan-400 bg-bg-200' : stateClass
-                }`}
-              >
-                {t.name}
-              </button>
-            </div>
-          )
-        })}
-      </div>
-
-      {active && (
-        <div className="mt-1.5 rounded-lg border border-cyan-400/70 bg-bg-surface px-3 py-2.5 text-xs">
-          <DetailRow label="tool" value={active.name} valueClassName="text-cyan-300" />
-          {active.args && <DetailRow label="args" value={truncate(active.args, 400)} />}
-          {active.output != null && <DetailRow label="output" value={truncate(active.output, 400)} />}
-          <DetailRow
-            label="status"
-            value={active.output === null ? '…' : active.ok === false ? 'error' : 'ok'}
-            valueClassName={active.output === null ? 'text-amber-400' : active.ok === false ? 'text-rose-400' : 'text-emerald-400'}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** Groups an assistant turn's items so consecutive tool calls render as one
- * `ToolChain` (matching the legacy webui, where every tool call from a turn
- * lands in a single `.pipe-nodes` row) instead of one box per call. Text
- * segments in between still break the chain, same as the source data.
- * Reasoning items are never merged into a text or tool group -- each
- * `{t:'reasoning'}` item is already one distinct burst (chatStore.tsx and
- * server.py's chats_message() both only ever flush a new one once
- * something else has happened in between), so it always gets its own
- * `ReasoningBlock`, in sequence with everything else in the turn. */
 type ItemGroup =
   | { kind: 'text'; text: string }
   | { kind: 'tools'; tools: ToolItem[] }
-  | { kind: 'reasoning'; text: string }
+  | { kind: 'activity'; parts: ActivityPart[] }
   // A message the user sent mid-turn (see chatStore.tsx's `interject` /
   // engine.py's poll_injections) -- rendered as its own distinct group, in
   // place, so it's clear this was a live interruption and not part of the
@@ -122,12 +50,23 @@ type ItemGroup =
 function groupItems(items: AssistantItem[]): ItemGroup[] {
   const groups: ItemGroup[] = []
   for (const item of items) {
-    if (item.t === 'tool') {
-      const last = groups[groups.length - 1]
-      if (last && last.kind === 'tools') last.tools.push(item)
-      else groups.push({ kind: 'tools', tools: [item] })
-    } else if (item.t === 'reasoning') {
-      groups.push({ kind: 'reasoning', text: item.text })
+    const last = groups[groups.length - 1]
+    if (item.t === 'reasoning') {
+      if (last && last.kind === 'activity') {
+        last.parts.push({ kind: 'reasoning', text: item.text })
+      } else {
+        groups.push({ kind: 'activity', parts: [{ kind: 'reasoning', text: item.text }] })
+      }
+    } else if (item.t === 'tool') {
+      if (last && last.kind === 'activity') {
+        const lastPart = last.parts[last.parts.length - 1]
+        if (lastPart && lastPart.kind === 'tools') lastPart.tools.push(item)
+        else last.parts.push({ kind: 'tools', tools: [item] })
+      } else if (last && last.kind === 'tools') {
+        last.tools.push(item)
+      } else {
+        groups.push({ kind: 'tools', tools: [item] })
+      }
     } else if (item.t === 'user_injected') {
       groups.push({ kind: 'user_injected', text: item.text })
     } else {
@@ -144,7 +83,7 @@ function groupItems(items: AssistantItem[]): ItemGroup[] {
  * CommonMark (the owner asked for bold/italic/code/lists/headings, not a
  * full GFM+extensions stack, so no tables/strikethrough/task-list overrides
  * here) gets a small, deliberately understated rule matching the rest of
- * the chat UI's visual weight (ToolChain/ReasoningBlock use the same
+ * the chat UI's visual weight (ToolChain/ActivityBlock use the same
  * ink-dim/ink-faint/border tokens).
  *
  * `code`/`pre`: react-markdown v9+ dropped the old `inline` prop (it was
@@ -169,10 +108,16 @@ const markdownComponents: Components = {
       {children}
     </a>
   ),
-  ul: ({ children }) => <ul className="my-1.5 ml-5 list-disc space-y-0.5 marker:text-ink-faint">{children}</ul>,
-  ol: ({ children }) => <ol className="my-1.5 ml-5 list-decimal space-y-0.5 marker:text-ink-faint">{children}</ol>,
+  ul: ({ children }) => (
+    <ul className="my-1.5 ml-5 list-disc space-y-0.5 marker:text-ink-faint">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="my-1.5 ml-5 list-decimal space-y-0.5 marker:text-ink-faint">{children}</ol>
+  ),
   li: ({ children }) => <li className="pl-0.5">{children}</li>,
-  h1: ({ children }) => <h1 className="mb-1.5 mt-3 text-lg font-semibold text-ink-bright first:mt-0">{children}</h1>,
+  h1: ({ children }) => (
+    <h1 className="mb-1.5 mt-3 text-lg font-semibold text-ink-bright first:mt-0">{children}</h1>
+  ),
   h2: ({ children }) => (
     <h2 className="mb-1.5 mt-3 text-base font-semibold text-ink-bright first:mt-0">{children}</h2>
   ),
@@ -180,11 +125,15 @@ const markdownComponents: Components = {
     <h3 className="mb-1 mt-2.5 text-[15px] font-semibold text-ink-bright first:mt-0">{children}</h3>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="my-1.5 border-l-2 border-border pl-3 text-ink-dim">{children}</blockquote>
+    <blockquote className="my-1.5 border-l-2 border-border pl-3 text-ink-dim">
+      {children}
+    </blockquote>
   ),
   hr: () => <hr className="my-3 border-border" />,
   pre: ({ children }) => (
-    <pre className="my-2 overflow-x-auto rounded-lg border border-border bg-bg-100 p-3 text-[13px]">{children}</pre>
+    <pre className="my-2 overflow-x-auto rounded-lg border border-border bg-bg-100 p-3 text-[13px]">
+      {children}
+    </pre>
   ),
   code: ({ className, children, ...rest }) => {
     const isBlock = /(?:^|\s)language-/.test(className ?? '')
@@ -196,7 +145,10 @@ const markdownComponents: Components = {
       )
     }
     return (
-      <code className="rounded bg-bg-300 px-1 py-0.5 font-mono text-[13px] text-ink-bright" {...rest}>
+      <code
+        className="rounded bg-bg-300 px-1 py-0.5 font-mono text-[13px] text-ink-bright"
+        {...rest}
+      >
         {children}
       </code>
     )
@@ -262,9 +214,9 @@ function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.El
         )}
         {groups.map((g, i) => {
           if (g.kind === 'tools') return <ToolChain key={i} tools={g.tools} />
-          if (g.kind === 'reasoning') {
+          if (g.kind === 'activity') {
             const isLive = Boolean(streaming) && i === groups.length - 1
-            return <ReasoningBlock key={i} text={g.text} streaming={isLive} />
+            return <ActivityBlock key={i} parts={g.parts} live={isLive} />
           }
           if (g.kind === 'user_injected') {
             return (
