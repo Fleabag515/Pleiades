@@ -12,6 +12,7 @@ import {
   getChat,
   getProfileTools,
   getWorkJob,
+  getWorkTasks,
   listChats,
   listScheduledTasks,
   listWorkJobs,
@@ -27,7 +28,8 @@ import type {
   ToolInfo,
   WorkEvent,
   WorkJobDetail,
-  WorkJobSummary
+  WorkJobSummary,
+  WorkTask
 } from '../lib/types'
 import { checkCron } from '../lib/cron'
 import { relativeTime } from '../lib/format'
@@ -190,11 +192,60 @@ function eventLine(e: WorkEvent): string {
   return (e.text || '').slice(0, 80)
 }
 
+function taskStatusColor(status: WorkTask['status']): string {
+  if (status === 'completed') return 'text-emerald-300'
+  if (status === 'in_progress') return 'text-accent'
+  return 'text-ink-faint'
+}
+
+function taskMarker(status: WorkTask['status']): string {
+  if (status === 'completed') return '\u2713'
+  if (status === 'in_progress') return '\u25cf'
+  return '\u25cb'
+}
+
 /**
- * First-pass stub, honestly labelled as such: shows whatever real job/event
- * data /api/work already has for this character. The owner is planning a
- * dedicated harness "task list" tool later that will make this richer
- * (multi-step plans, retries, etc.) — this just surfaces what exists today.
+ * The live task list a character keeps via create_task/update_task/list_tasks
+ * (pleiades/harness/builtins/tasks.py) for this job -- the real plan-tracking
+ * tool the earlier stub comment on this component used to say was still to
+ * come. Renders subject + a small status indicator per task, and the
+ * activeForm text while a task is in_progress so the human sees what's
+ * actually happening right now, not just a static label.
+ */
+function TaskList({ tasks }: { tasks: WorkTask[] }): React.JSX.Element | null {
+  if (tasks.length === 0) return null
+  return (
+    <ul className="mt-1.5 flex flex-col gap-1 border-t border-border pt-1.5">
+      {tasks.map((t) => (
+        <li key={t.id} className="flex items-start gap-1.5">
+          <span className={`mt-0.5 flex-none text-[10px] ${taskStatusColor(t.status)}`}>
+            {taskMarker(t.status)}
+          </span>
+          <div className="min-w-0 flex-1">
+            <span
+              className={`block truncate text-[11px] ${
+                t.status === 'completed' ? 'text-ink-faint line-through' : 'text-ink'
+              }`}
+            >
+              {t.subject}
+            </span>
+            {t.status === 'in_progress' && t.activeForm && (
+              <span className="block truncate text-[10px] text-accent">{t.activeForm}</span>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * Real progress/task-list panel: /api/work job data (status, approvals,
+ * recent tool events) plus each job's live task list from the harness's own
+ * task-list tool (create_task/update_task/list_tasks -- the same
+ * subject/description/status/activeForm shape Cowork's own TaskCreate/
+ * TaskUpdate tools use). This replaced an earlier stub that only showed raw
+ * job/event data with no plan-tracking of its own.
  */
 function ProgressSection({
   base,
@@ -207,6 +258,7 @@ function ProgressSection({
 }): React.JSX.Element {
   const [jobs, setJobs] = useState<WorkJobSummary[]>([])
   const [details, setDetails] = useState<Record<string, WorkJobDetail>>({})
+  const [taskLists, setTaskLists] = useState<Record<string, WorkTask[]>>({})
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -221,14 +273,22 @@ function ProgressSection({
         setJobs(mine)
         setError(null)
         const running = mine.filter((j) => j.status === 'running').slice(0, 5)
-        const fetched = await Promise.all(
-          running.map((j) => getWorkJob(base, j.id).catch(() => null))
-        )
+        const [fetchedDetails, fetchedTasks] = await Promise.all([
+          Promise.all(running.map((j) => getWorkJob(base, j.id).catch(() => null))),
+          Promise.all(running.map((j) => getWorkTasks(base, j.id).catch(() => null)))
+        ])
         if (cancelled) return
         setDetails((prev) => {
           const next = { ...prev }
-          fetched.forEach((d, i) => {
+          fetchedDetails.forEach((d, i) => {
             if (d) next[running[i].id] = d
+          })
+          return next
+        })
+        setTaskLists((prev) => {
+          const next = { ...prev }
+          fetchedTasks.forEach((t, i) => {
+            if (t) next[running[i].id] = t
           })
           return next
         })
@@ -256,6 +316,7 @@ function ProgressSection({
         <ul className="flex flex-col gap-2">
           {jobs.slice(0, 8).map((j) => {
             const detail = details[j.id]
+            const tasks = taskLists[j.id] ?? []
             return (
               <li key={j.id} className="rounded-lg bg-bg-300/50 px-2.5 py-2">
                 <div className="flex items-start justify-between gap-2">
@@ -272,14 +333,19 @@ function ProgressSection({
                     Waiting on approval: {j.pending_approval.tool}
                   </div>
                 )}
-                {detail && detail.events.length > 0 && (
-                  <ul className="mt-1.5 flex flex-col gap-0.5 border-t border-border pt-1.5">
-                    {detail.events.slice(-3).map((e, i) => (
-                      <li key={i} className="truncate text-[10px] text-ink-faint">
-                        {eventLine(e)}
-                      </li>
-                    ))}
-                  </ul>
+                {tasks.length > 0 ? (
+                  <TaskList tasks={tasks} />
+                ) : (
+                  detail &&
+                  detail.events.length > 0 && (
+                    <ul className="mt-1.5 flex flex-col gap-0.5 border-t border-border pt-1.5">
+                      {detail.events.slice(-3).map((e, i) => (
+                        <li key={i} className="truncate text-[10px] text-ink-faint">
+                          {eventLine(e)}
+                        </li>
+                      ))}
+                    </ul>
+                  )
                 )}
               </li>
             )

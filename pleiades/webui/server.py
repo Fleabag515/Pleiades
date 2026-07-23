@@ -1735,8 +1735,10 @@ def create_app() -> FastAPI:
                 from ..harness import identity as _identity      # noqa: F401
                 from ..harness.subagent import bind_context
                 from ..harness.builtins.memory import bind_memory
+                from ..harness.builtins.tasks import bind_job
                 from ..harness.anamnesis import Anamnesis as WorkingMemory
 
+                bind_job(job_id)  # scope create_task/update_task/list_tasks to this job
                 cfg = HarnessConfig.load()
                 if policy:
                     cfg.exec_policy = policy
@@ -1807,6 +1809,19 @@ def create_app() -> FastAPI:
         if not job:
             raise HTTPException(404, "No such job.")
         return _job_view(job, since)
+
+    @app.get("/api/work/{job_id}/tasks")
+    def work_tasks(job_id: str) -> dict:
+        """Live task list for a work job -- the desktop app's Progress panel
+        polls this. Backed by pleiades.harness.builtins.tasks, the same
+        create_task/update_task/list_tasks/delete_task tools a character
+        calls mid-job; 404 only if the job itself doesn't exist (a job that
+        never called create_task still returns an empty list, same as
+        work_get does for a job with no events yet)."""
+        from ..harness.builtins.tasks import get_tasks
+        if job_id not in work_jobs:
+            raise HTTPException(404, "No such job.")
+        return {"tasks": get_tasks(job_id)}
 
     @app.post("/api/work/{job_id}/approve")
     def work_approve(job_id: str, body: WorkApprove) -> dict:

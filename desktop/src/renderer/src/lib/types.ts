@@ -297,6 +297,16 @@ export interface WorkJobDetail extends WorkJobSummary {
   event_count: number
 }
 
+export interface WorkTask {
+  id: string
+  subject: string
+  description: string
+  activeForm: string
+  status: 'pending' | 'in_progress' | 'completed'
+  created: number
+  updated: number
+}
+
 export interface ScheduledTask {
   id: string
   task: string

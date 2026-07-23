@@ -433,12 +433,17 @@ def work(task: tuple[str, ...], character: str | None, tier: str | None,
     operates inside that character's workspace, memory, vault, and inbox, routing
     inference through its Anamnesis proxy.
     """
+    import uuid
+
     from .harness import Agent, Config
     from .harness import builtins as _builtins      # noqa: F401  registers tools
     from .harness import identity as _identity      # noqa: F401  registers vault/email
     from .harness.subagent import bind_context
     from .harness.builtins.memory import bind_memory
+    from .harness.builtins.tasks import bind_job
     from .harness.anamnesis import Anamnesis as WorkingMemory
+
+    bind_job(uuid.uuid4().hex[:12])  # scope create_task/update_task/list_tasks to this run
 
     if not task:
         console.print('[yellow]Give a task, e.g. pleiades work "summarize README.md"[/yellow]')
