@@ -44,3 +44,8 @@ memory/
 .pleiades/
 config.json
 models*.json
+
+# statewise worktree build dirs
+build-sw/
+engine/build-sw/
+third_party/llama.cpp/build-sw/

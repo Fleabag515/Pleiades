@@ -48,7 +48,8 @@ std::string read_model_meta_str(const llama_model* model, const char* key) {
 
 ModelManager::~ModelManager() { unload(); }
 
-void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe, bool use_mlock) {
+void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe, bool use_mlock,
+                        const std::string& statewise_map) {
     unload();
     llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = n_gpu_layers;
@@ -86,6 +87,15 @@ void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe
         throw std::runtime_error("pleiades_engine: failed to load model: " + path);
     }
     path_ = path;
+
+    // statewise expert cache: opt-in, applied now that tensors are fully loaded. Fails hard
+    // (throws) if the profile can't be applied -- a silently-disabled cache would mask a
+    // misconfiguration and quietly forfeit the decode speedup the caller asked for.
+    if (!statewise_map.empty()) {
+        if (!llama_model_statewise_init(model_, statewise_map.c_str())) {
+            throw std::runtime_error("pleiades_engine: statewise cache init failed for map: " + statewise_map);
+        }
+    }
 
     std::string tmpl = read_model_meta_str(model_, "tokenizer.chat_template");
     tool_dialect_ = detect_tool_dialect(tmpl);

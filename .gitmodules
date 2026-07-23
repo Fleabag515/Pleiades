@@ -1,3 +1,14 @@
 [submodule "third_party/llama.cpp"]
 	path = third_party/llama.cpp
-	url = https://github.com/ggerganov/llama.cpp
+	url = https://github.com/Fleabag515/llama.cpp
+	# Fork of ggerganov/llama.cpp, branch statewise-v1 -- carries exactly one
+	# extra commit on top of the previous upstream pin (gguf-v0.19.0-36-
+	# gb46812de7): the Statewise v1 static MoE expert cache port (see
+	# docs/specs/2026-07-21-native-inference-engine-design.md, Phase 7).
+	# Repointed here (2026-07-23) specifically because that commit does not
+	# exist on upstream ggerganov/llama.cpp -- a plain submodule pin at it
+	# would be unreachable/unclonable for anyone but this machine. To pick
+	# up new upstream llama.cpp changes in the future, rebase this fork's
+	# statewise-v1 branch onto the new upstream commit and re-push, rather
+	# than repointing back to upstream directly (that would silently drop
+	# the Statewise cache).

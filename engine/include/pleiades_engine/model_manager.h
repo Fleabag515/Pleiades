@@ -41,7 +41,13 @@ public:
     // request.
     //
     // Throws std::runtime_error on failure.
-    void load(const std::string& path, int n_gpu_layers = 0, int n_cpu_moe = 0, bool use_mlock = false);
+    // statewise_map (optional): path to a routing-profile file enabling the statewise
+    // MoE expert cache (per-layer GPU hot-expert copies). Applied after load via
+    // llama_model_statewise_init(). Only meaningful when the cached layers' experts are
+    // CPU-offloaded (n_cpu_moe covering them) so the cold chain stays on CPU -- otherwise
+    // the CUDA placement tripwire will abort. Empty = disabled. See docs Phase 7.
+    void load(const std::string& path, int n_gpu_layers = 0, int n_cpu_moe = 0, bool use_mlock = false,
+              const std::string& statewise_map = "");
 
     void unload();
 
