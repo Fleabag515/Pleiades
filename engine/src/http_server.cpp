@@ -22,7 +22,41 @@
 // stream per model" design -- a resize arriving mid-decode would otherwise
 // free the llama_context out from under an in-flight llama_decode() call.
 //
-// See docs/specs/2026-07-21-native-inference-engine-design.md, Phase 3.
+// See docs/specs/2026-07-21-native-inference-engine-design.md, Phase 3, and
+// the GPU/MoE-offload/context-param-parity pass for the flag-based CLI
+// below (previously 6 positional args).
+//
+// -- CLI --------------------------------------------------------------------
+// Named flags, matching llama-server's own flag-based convention (and the
+// exact short-flag spelling pleiades/launch.py already uses when invoking
+// native llama-server -- see build_command() in that file -- so a future
+// pass can point that code at this binary with minimal translation):
+//
+//   --model PATH        (required)
+//   --host HOST          (default 127.0.0.1)
+//   --port PORT           (default 8080)
+//   --ctx N               (default 4096)          llama_context n_ctx
+//   --ngl N               (default 0)             n_gpu_layers (negative = all)
+//   --n-cpu-moe N         (default 0)              see ModelManager::load()
+//   --ub N                (default 512)           n_ubatch
+//   --batch N             (default 2048)          n_batch
+//   --fa on|off|auto      (default auto)          flash attention
+//   --ctk TYPE            (default f16)           KV cache type for K
+//   --ctv TYPE            (default f16)           KV cache type for V
+//   --alias NAME          (default pleiades-engine)
+//   --threads N           (default 0 = library default)
+//   --mlock               (flag, default off)
+//
+// Legacy positional mode is also still accepted for one transition period:
+// `<model> <host> <port> [n_ctx] [n_gpu_layers] [alias]`, matching this
+// binary's Phase 3/5 argv shape exactly -- pleiades/launch.py's
+// PLEIADES_ENGINE=pleiades_native branch still invokes it this way today
+// (see that file's own comment on why it isn't being touched in this pass:
+// wiring autofit/MoE-placement through launch.py is explicitly out of scope
+// for this pass). Positional mode is detected by argv[1] not starting with
+// "-"; it maps onto the same Args with n_cpu_moe/ub/batch/fa/ctk/ctv/threads/
+// mlock left at their defaults above (i.e. unchanged from this binary's
+// pre-this-pass behavior). New callers should use flags.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +64,7 @@
 #include <exception>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "httplib.h"
 #include "llama.h"
@@ -153,29 +188,170 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         });
 }
 
+// -- CLI argument parsing ---------------------------------------------------
+
+struct Args {
+    std::string model;
+    std::string host = "127.0.0.1";
+    int port = 8080;
+    int n_ctx = 4096;
+    int n_gpu_layers = 0;
+    int n_cpu_moe = 0;
+    int n_ubatch = 512;
+    int n_batch = 2048;
+    int n_threads = 0;
+    std::string flash_attn = "auto";
+    std::string cache_type_k = "f16";
+    std::string cache_type_v = "f16";
+    std::string alias = "pleiades-engine";
+    bool use_mlock = false;
+};
+
+void print_usage(const char* prog) {
+    std::fprintf(stderr,
+        "usage: %s --model PATH [--host HOST] [--port PORT] [--ctx N] [--ngl N]\n"
+        "       [--n-cpu-moe N] [--ub N] [--batch N] [--fa on|off|auto]\n"
+        "       [--ctk TYPE] [--ctv TYPE] [--alias NAME] [--threads N] [--mlock]\n"
+        "\n"
+        "legacy positional mode (still accepted): %s <model.gguf> <host> <port>"
+        " [n_ctx] [n_gpu_layers] [alias]\n",
+        prog, prog);
+}
+
+// Mirrors common/arg.cpp's common_arg_utils::is_truthy/is_falsey/is_autoy
+// (same accepted spellings) for the --fa flag.
+llama_flash_attn_type parse_flash_attn(const std::string& value) {
+    if (value == "on" || value == "enabled" || value == "true" || value == "1") {
+        return LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    }
+    if (value == "off" || value == "disabled" || value == "false" || value == "0") {
+        return LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
+    if (value == "auto" || value == "-1") {
+        return LLAMA_FLASH_ATTN_TYPE_AUTO;
+    }
+    throw std::runtime_error("unknown value for --fa: '" + value + "' (expected on/off/auto)");
+}
+
+// Mirrors common/arg.cpp's file-local `kv_cache_types` list and
+// kv_cache_type_from_str()/ggml_type_name() lookup for --ctk/--ctv.
+ggml_type parse_cache_type(const std::string& value) {
+    static const std::vector<ggml_type> kTypes = {
+        GGML_TYPE_F32,  GGML_TYPE_F16,   GGML_TYPE_BF16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0,
+        GGML_TYPE_Q4_1, GGML_TYPE_IQ4_NL, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
+    };
+    for (ggml_type t : kTypes) {
+        if (value == ggml_type_name(t)) {
+            return t;
+        }
+    }
+    throw std::runtime_error("unsupported cache type: '" + value + "'");
+}
+
+Args parse_args(int argc, char** argv) {
+    Args a;
+    if (argc < 2) {
+        print_usage(argv[0]);
+        std::exit(2);
+    }
+
+    std::string first = argv[1];
+    bool flag_mode = !first.empty() && first[0] == '-';
+
+    if (!flag_mode) {
+        // Legacy positional mode: <model> <host> <port> [n_ctx] [n_gpu_layers] [alias].
+        if (argc < 4) {
+            print_usage(argv[0]);
+            std::exit(2);
+        }
+        a.model = argv[1];
+        a.host = argv[2];
+        a.port = std::atoi(argv[3]);
+        if (argc > 4) a.n_ctx = std::atoi(argv[4]);
+        if (argc > 5) a.n_gpu_layers = std::atoi(argv[5]);
+        if (argc > 6) a.alias = argv[6];
+        return a;
+    }
+
+    auto next = [&](int& i) -> std::string {
+        if (i + 1 >= argc) {
+            throw std::runtime_error(std::string("missing value for ") + argv[i]);
+        }
+        return argv[++i];
+    };
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--model") {
+            a.model = next(i);
+        } else if (arg == "--host") {
+            a.host = next(i);
+        } else if (arg == "--port") {
+            a.port = std::stoi(next(i));
+        } else if (arg == "--ctx") {
+            a.n_ctx = std::stoi(next(i));
+        } else if (arg == "--ngl") {
+            a.n_gpu_layers = std::stoi(next(i));
+        } else if (arg == "--n-cpu-moe") {
+            a.n_cpu_moe = std::stoi(next(i));
+        } else if (arg == "--ub") {
+            a.n_ubatch = std::stoi(next(i));
+        } else if (arg == "--batch") {
+            a.n_batch = std::stoi(next(i));
+        } else if (arg == "--fa") {
+            a.flash_attn = next(i);
+        } else if (arg == "--ctk") {
+            a.cache_type_k = next(i);
+        } else if (arg == "--ctv") {
+            a.cache_type_v = next(i);
+        } else if (arg == "--alias") {
+            a.alias = next(i);
+        } else if (arg == "--threads") {
+            a.n_threads = std::stoi(next(i));
+        } else if (arg == "--mlock") {
+            a.use_mlock = true;
+        } else if (arg == "--help" || arg == "-h") {
+            print_usage(argv[0]);
+            std::exit(0);
+        } else {
+            throw std::runtime_error("unknown flag: " + arg);
+        }
+    }
+    if (a.model.empty()) {
+        throw std::runtime_error("--model is required");
+    }
+    return a;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 4) {
-        std::fprintf(stderr, "usage: %s <model.gguf> <host> <port> [n_ctx] [n_gpu_layers] [alias]\n", argv[0]);
+    Args args;
+    try {
+        args = parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        print_usage(argv[0]);
         return 2;
     }
-    std::string model_path = argv[1];
-    std::string host = argv[2];
-    int port = std::atoi(argv[3]);
-    int n_ctx = argc > 4 ? std::atoi(argv[4]) : 4096;
-    int n_gpu_layers = argc > 5 ? std::atoi(argv[5]) : 0;
-    std::string alias = argc > 6 ? argv[6] : "pleiades-engine";
 
     llama_backend_init();
 
     try {
+        ContextParams cparams;
+        cparams.n_ubatch = args.n_ubatch;
+        cparams.n_batch = args.n_batch;
+        cparams.n_threads = args.n_threads;
+        cparams.flash_attn_type = parse_flash_attn(args.flash_attn);
+        cparams.type_k = parse_cache_type(args.cache_type_k);
+        cparams.type_v = parse_cache_type(args.cache_type_v);
+
         ModelManager models;
-        models.load(model_path, n_gpu_layers);
+        models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock);
         ContextGovernor ctx;
-        ctx.create(models.model(), n_ctx, /*n_ctx_max=*/llama_model_n_ctx_train(models.model()));
+        ctx.create(models.model(), args.n_ctx, /*n_ctx_max=*/llama_model_n_ctx_train(models.model()), cparams);
         Engine engine(models, ctx);
-        ServerState state{models, ctx, engine, alias, {}};
+        ServerState state{models, ctx, engine, args.alias, {}};
 
         httplib::Server svr;
 
@@ -225,9 +401,13 @@ int main(int argc, char** argv) {
             }
         });
 
-        std::printf("[pleiades-engine-server] listening on %s:%d (n_ctx=%d, ceiling=%d, alias=%s)\n",
-                    host.c_str(), port, state.ctx.n_ctx(), state.ctx.n_ctx_max(), alias.c_str());
-        svr.listen(host.c_str(), port);
+        std::printf(
+            "[pleiades-engine-server] listening on %s:%d (n_ctx=%d, ceiling=%d, alias=%s, ngl=%d, "
+            "n_cpu_moe=%d, ub=%d, batch=%d, fa=%s, ctk=%s, ctv=%s, mlock=%s)\n",
+            args.host.c_str(), args.port, state.ctx.n_ctx(), state.ctx.n_ctx_max(), args.alias.c_str(),
+            args.n_gpu_layers, args.n_cpu_moe, args.n_ubatch, args.n_batch, args.flash_attn.c_str(),
+            args.cache_type_k.c_str(), args.cache_type_v.c_str(), args.use_mlock ? "on" : "off");
+        svr.listen(args.host.c_str(), args.port);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         llama_backend_free();
