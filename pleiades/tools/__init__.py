@@ -197,9 +197,10 @@ def build_default_belt(ctx: ToolContext) -> ToolBelt:
     from .system_tools import (CharactersTool, HardwareTool, ModelsTool,
                                ProfileTool)
     from .vault_tool import VaultTool
+    from .wait_tool import WaitTool
 
     belt = ToolBelt([SearchTool(), VaultTool(), HardwareTool(), ModelsTool(),
-                     ProfileTool(), CharactersTool()])
+                     ProfileTool(), CharactersTool(), WaitTool()])
 
     if ctx.profile.has_email:
         from .email_box import EmailTool

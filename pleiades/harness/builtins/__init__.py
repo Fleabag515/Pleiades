@@ -15,5 +15,6 @@ from . import schedule   # noqa: F401  create/list/update/delete_scheduled_task
 from . import browser    # noqa: F401  browser_open/read/click/fill/screenshot/close (optional dep)
 from . import inference  # noqa: F401  hardware / models / profile / characters
 from . import practice   # noqa: F401  practice_status / study_tool / record_lesson
+from . import wait       # noqa: F401  wait (pause N seconds before continuing)
 from .. import subagent   # noqa: F401  dispatch_subagent / dispatch_subagents_parallel
 from .. import toolsearch # noqa: F401  find_tools / list_catalog / call_tool
