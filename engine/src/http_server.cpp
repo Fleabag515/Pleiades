@@ -44,7 +44,9 @@
 //   --ctk TYPE            (default f16)           KV cache type for K
 //   --ctv TYPE            (default f16)           KV cache type for V
 //   --alias NAME          (default pleiades-engine)
-//   --threads N           (default 0 = library default)
+//   --threads N           (default: auto-detected from hardware -- see
+//                          detect_default_threads() below -- NOT ggml's
+//                          hardcoded GGML_DEFAULT_N_THREADS of 4)
 //   --mlock               (flag, default off)
 //
 // Legacy positional mode is also still accepted for one transition period:
@@ -57,6 +59,7 @@
 // "-"; it maps onto the same Args with n_cpu_moe/ub/batch/fa/ctk/ctv/threads/
 // mlock left at their defaults above (i.e. unchanged from this binary's
 // pre-this-pass behavior). New callers should use flags.
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +67,7 @@
 #include <exception>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "httplib.h"
@@ -248,6 +252,43 @@ ggml_type parse_cache_type(const std::string& value) {
     throw std::runtime_error("unsupported cache type: '" + value + "'");
 }
 
+// Sensible default thread count when --threads isn't passed explicitly.
+// Without this, args.n_threads stays 0, ContextParams.n_threads stays 0 (its
+// "leave llama_context_default_params() alone" sentinel -- see
+// context_governor.h), and the context silently launches pinned at ggml's
+// GGML_DEFAULT_N_THREADS (4 -- third_party/llama.cpp/ggml/include/ggml.h),
+// regardless of the real machine's core count. That was confirmed to be the
+// highest-ROI bug an engine review found: the daily-driver workload (a
+// large MoE model with CPU-resident experts) is CPU-matmul-bound
+// specifically on those 4 pinned threads.
+//
+// Mirrors pleiades/launch.py's own `threads = max((os.cpu_count() or 8) //
+// 2, 4)` formula (its "physical cores beat SMT" comment) instead of
+// inventing a new policy: std::thread::hardware_concurrency() is the C++
+// analogue of os.cpu_count() (both report logical/SMT thread count, not
+// physical cores, and both are allowed to report 0/None as "unknown" per
+// their respective specs -- hence the "or 8"/"== 0 -> 8" fallback before
+// halving). Using every logical thread for CPU matmuls oversubscribes real
+// physical cores 2x on SMT/hyperthreaded hardware, which empirically loses
+// throughput; half of the logical count approximates physical core count
+// without a separate topology query. The floor of 4 keeps small/low-core
+// boxes from being squeezed to 1-2 threads.
+//
+// This is resolved here, in the binary's arg handling, rather than inside
+// ContextGovernor itself: ContextParams.n_threads == 0 is an intentional,
+// tested sentinel ("leave library default alone") that cli_main.cpp and
+// the bench binaries rely on to keep their pre-this-fix behavior byte for
+// byte (see test_context_governor.cpp's defaults-match-upstream case).
+// Only this binary -- the actual serving path real workloads run through --
+// gets the auto-detected default; the CLI/bench tools are unaffected.
+int detect_default_threads() {
+    unsigned hc = std::thread::hardware_concurrency();
+    if (hc == 0) {
+        hc = 8;
+    }
+    return std::max<int>(static_cast<int>(hc) / 2, 4);
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     if (argc < 2) {
@@ -341,7 +382,14 @@ int main(int argc, char** argv) {
         ContextParams cparams;
         cparams.n_ubatch = args.n_ubatch;
         cparams.n_batch = args.n_batch;
-        cparams.n_threads = args.n_threads;
+        // args.n_threads == 0 means --threads wasn't passed -- resolve a real
+        // auto-detected default here rather than letting the 0 sentinel ride
+        // through to ContextGovernor and silently pin at ggml's default of 4
+        // (see detect_default_threads() above for the full rationale).
+        cparams.n_threads = args.n_threads > 0 ? args.n_threads : detect_default_threads();
+        std::fprintf(stderr, "[pleiades-engine] n_threads=%d n_threads_batch=%d (%s)\n",
+                     cparams.n_threads, cparams.n_threads,
+                     args.n_threads > 0 ? "explicit --threads" : "auto-detected");
         cparams.flash_attn_type = parse_flash_attn(args.flash_attn);
         cparams.type_k = parse_cache_type(args.cache_type_k);
         cparams.type_v = parse_cache_type(args.cache_type_v);
