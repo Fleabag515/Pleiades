@@ -43,6 +43,14 @@ add_executable(test_chat_template test_chat_template.cpp)
 target_link_libraries(test_chat_template PRIVATE pleiades_engine)
 add_test(NAME test_chat_template COMMAND test_chat_template)
 
+# Also pure string/JSON logic -- dialect detection, tool-aware prompt
+# formatting, and tool-call output parsing are all plain functions of
+# text/JSON, no model needed (see test_tool_calls.cpp's own header comment
+# for the real GGUFs this was reverse-engineered from).
+add_executable(test_tool_calls test_tool_calls.cpp)
+target_link_libraries(test_tool_calls PRIVATE pleiades_engine)
+add_test(NAME test_tool_calls COMMAND test_tool_calls)
+
 pleiades_add_test(test_model_manager)
 pleiades_add_test(test_context_governor)
 pleiades_add_test(test_engine)

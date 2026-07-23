@@ -15,7 +15,12 @@
 // cost formula, not yet ported to C++; add it here once it is.
 //
 // Chat templating uses the hardcoded ChatML stopgap (chat_template.h/.cpp),
-// not real per-model jinja -- see that file's header comment for why.
+// not real per-model jinja -- see that file's header comment for why. Tool
+// calling (Phase 5) is layered on top of that same stopgap: the request's
+// `tools` array is rendered into the model's own detected dialect
+// (ModelManager::tool_dialect(), see chat_template.h::ToolDialect) and its
+// generated text is parsed back into structured `tool_calls`
+// (tool_call_parser.h) for the non-streaming path -- see handle_chat().
 //
 // One mutex serializes every request (chat AND resize), matching
 // EngineState's own `self.lock` in server.py and llama.cpp's own "single
@@ -77,6 +82,7 @@
 #include "pleiades_engine/context_governor.h"
 #include "pleiades_engine/engine.h"
 #include "pleiades_engine/model_manager.h"
+#include "pleiades_engine/tool_call_parser.h"
 
 using json = nlohmann::json;
 using namespace pleiades_engine;
@@ -109,13 +115,11 @@ json props_json(ServerState& s) {
     };
 }
 
-std::vector<ChatMessage> parse_messages(const json& body) {
-    std::vector<ChatMessage> out;
-    for (const auto& m : body.value("messages", json::array())) {
-        out.push_back({m.value("role", "user"), m.value("content", "")});
-    }
-    return out;
-}
+// Message parsing (role/content/tool_calls/tool_call_id round-trip, plus
+// the JSON-null-content safety fix) lives in chat_template.cpp's
+// parse_chat_messages() now -- shared with the unit tests in
+// test_tool_calls.cpp, which a http_server.cpp-local static function
+// couldn't be.
 
 std::string now_id() {
     static int counter = 0;
@@ -132,7 +136,7 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                          "application/json");
         return;
     }
-    auto messages = parse_messages(body);
+    auto messages = parse_chat_messages(body);
     if (messages.empty()) {
         res.status = 400;
         res.set_content(
@@ -142,21 +146,90 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     }
     int n_predict = body.value("max_tokens", 512);
     bool stream = body.value("stream", false);
-    std::string prompt = format_chatml(messages);
+
+    std::vector<json> tools;
+    if (body.contains("tools") && body["tools"].is_array()) {
+        for (const auto& t : body["tools"]) {
+            tools.push_back(t);
+        }
+    }
+
+    ToolDialect dialect = s.models.tool_dialect();
+    if (!tools.empty() && dialect == ToolDialect::NONE) {
+        std::fprintf(stderr,
+                      "[pleiades-engine-server] WARNING: request offered %zu tool(s) but no tool-calling dialect "
+                      "was detected for this model at load time -- ignoring tools, falling back to a plain "
+                      "completion (no tool_calls will ever be parsed from this model's output; see "
+                      "ModelManager::tool_dialect()).\n",
+                      tools.size());
+    }
+
+    std::string prompt = format_chat_prompt(messages, tools, dialect, s.models.open_thinking());
     long created = static_cast<long>(std::time(nullptr));
     std::string id = now_id();
 
     if (!stream) {
         std::lock_guard<std::mutex> lock(s.mu);
         GenerationResult r = s.engine.complete(prompt, n_predict);
+
+        json message;
+        std::string finish_reason = "stop";
+
+        if (dialect == ToolDialect::NONE) {
+            message = {{"role", "assistant"}, {"content", r.text}};
+        } else {
+            ParsedToolCalls parsed = parse_tool_calls(r.text, dialect, tools);
+            if (!parsed.ok) {
+                // Fail loud and distinctly from a normal 200/"stop" response
+                // -- see tool_call_parser.h's doc comment on
+                // ParsedToolCalls. A 4xx/5xx here makes
+                // pleiades/harness/llm.py::_post's urllib.request.urlopen()
+                // raise HTTPError, which agent.py's loop already treats as
+                // a retryable "model_error" (NOT as "no tool_calls -> final
+                // answer") -- exactly the distinction that must never be
+                // lost (Pleiades often runs with exec_policy "allow", so a
+                // real intended action must never silently fail to fire).
+                res.status = 422;
+                res.set_content(
+                    json{{"error",
+                          {{"message", "model produced a malformed or incomplete tool call: " + parsed.error},
+                           {"type", "tool_call_parse_error"}}}}
+                        .dump(),
+                    "application/json");
+                return;
+            }
+            message = {{"role", "assistant"}};
+            if (!parsed.calls.empty()) {
+                // OpenAI convention: content is null (not "") when a turn
+                // is ONLY tool calls with no leading prose -- and this
+                // engine's own parse_chat_messages() is null-safe reading
+                // it back on the next round (see chat_template.h).
+                message["content"] = parsed.content.empty() ? json(nullptr) : json(parsed.content);
+                json tc_array = json::array();
+                for (size_t i = 0; i < parsed.calls.size(); ++i) {
+                    tc_array.push_back({
+                        {"id", "call_" + std::to_string(i)},
+                        {"type", "function"},
+                        {"function",
+                         {{"name", parsed.calls[i].name}, {"arguments", parsed.calls[i].arguments.dump()}}},
+                    });
+                }
+                message["tool_calls"] = tc_array;
+                finish_reason = "tool_calls";
+            } else {
+                message["content"] = parsed.content;
+            }
+            if (!parsed.reasoning_content.empty()) {
+                message["reasoning_content"] = parsed.reasoning_content;
+            }
+        }
+
         json resp = {
             {"id", id},
             {"object", "chat.completion"},
             {"created", created},
             {"model", s.alias},
-            {"choices", json::array({{{"index", 0},
-                                       {"message", {{"role", "assistant"}, {"content", r.text}}},
-                                       {"finish_reason", "stop"}}})},
+            {"choices", json::array({{{"index", 0}, {"message", message}, {"finish_reason", finish_reason}}})},
             {"usage",
              {{"prompt_tokens", r.n_prompt_tokens},
               {"completion_tokens", r.n_generated_tokens},
@@ -167,7 +240,15 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     }
 
     // Streaming: one provider call runs the whole generation, writing an
-    // SSE chunk per token via the on_token callback, then [DONE].
+    // SSE chunk per token via the on_token callback, then [DONE]. Tool-call
+    // OUTPUT parsing is intentionally NOT wired in here -- the harness
+    // always requests stream:false for tool-capable calls (see
+    // pleiades/harness/llm.py::_chat_openai's `"stream": False`), so a
+    // streamed response never needs its <tool_call> tags parsed out of raw
+    // token deltas (which would also require handling a tag split across
+    // SSE chunks -- out of scope, never exercised). The PROMPT is still
+    // built tool-dialect-aware above, so history still round-trips
+    // correctly even for a streamed turn.
     res.set_chunked_content_provider(
         "text/event-stream", [&s, messages, prompt, n_predict, id, created](size_t /*offset*/, httplib::DataSink& sink) {
             std::lock_guard<std::mutex> lock(s.mu);
@@ -396,6 +477,14 @@ int main(int argc, char** argv) {
 
         ModelManager models;
         models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock);
+        // Tool-calling dialect is sniffed once here (ModelManager::load(),
+        // from the model's own tokenizer.chat_template) -- logged loudly
+        // since a silent NONE means every /v1/chat/completions request
+        // that offers `tools` will have them ignored entirely (see
+        // handle_chat()'s WARNING log for that case).
+        std::fprintf(stderr, "[pleiades-engine] tool-call dialect: %s%s\n",
+                     tool_dialect_name(models.tool_dialect()),
+                     models.open_thinking() ? " (open-thinking generation prompt)" : "");
         ContextGovernor ctx;
         ctx.create(models.model(), args.n_ctx, /*n_ctx_max=*/llama_model_n_ctx_train(models.model()), cparams);
         Engine engine(models, ctx);

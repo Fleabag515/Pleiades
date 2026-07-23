@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "llama.h"
+#include "pleiades_engine/chat_template.h"
 
 namespace pleiades_engine {
 
@@ -34,6 +35,11 @@ public:
     // --mlock): force the OS to keep the model resident in RAM rather than
     // swapping/compressing it.
     //
+    // Also detects this model's own tool-calling dialect (see
+    // tool_dialect()/open_thinking() below) by reading its
+    // tokenizer.chat_template metadata -- once, here, not re-sniffed per
+    // request.
+    //
     // Throws std::runtime_error on failure.
     void load(const std::string& path, int n_gpu_layers = 0, int n_cpu_moe = 0, bool use_mlock = false);
 
@@ -43,9 +49,26 @@ public:
     llama_model* model() const { return model_; }
     const std::string& path() const { return path_; }
 
+    // Which tool-calling text dialect this model's own chat template
+    // expects/emits (see chat_template.h::ToolDialect), detected once at
+    // load() time by reading tokenizer.chat_template via
+    // llama_model_meta_val_str() and sniffing it with detect_tool_dialect()
+    // -- never guessed from the model's name/path. ToolDialect::NONE
+    // (including before any model is loaded) means "no tool support for
+    // this model" -- callers must fall back to plain completion behavior,
+    // not attempt to parse tool calls that will never come.
+    ToolDialect tool_dialect() const { return tool_dialect_; }
+
+    // Whether this model's template defaults to an OPEN `<think>\n`
+    // generation-prompt suffix (see detect_open_thinking()). Only
+    // meaningful when tool_dialect() != NONE, but valid (false) regardless.
+    bool open_thinking() const { return open_thinking_; }
+
 private:
     llama_model* model_ = nullptr;
     std::string path_;
+    ToolDialect tool_dialect_ = ToolDialect::NONE;
+    bool open_thinking_ = false;
 
     // Storage for the tensor_buft_overrides regex patterns built by
     // load()'s n_cpu_moe handling. llama_model_params::tensor_buft_overrides
