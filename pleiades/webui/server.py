@@ -1747,6 +1747,14 @@ def create_app() -> FastAPI:
                             # the character's own file tools regardless of
                             # whether it can also literally see the image.
                             stream_kwargs["attachments"] = resolved_attachments
+                            # First audio attachment (if any) drives the
+                            # audio fallback path (see Engine._audio_fallback_note)
+                            # -- transcription-only today, see
+                            # pleiades/tools/audio_transcribe.py's docstring.
+                            _audio = next((a for a in resolved_attachments
+                                          if (a.get("mime") or "").lower().startswith("audio/")), None)
+                            if _audio:
+                                stream_kwargs["audio_path"] = _audio.get("path")
                         for _evt in engine.stream_events(p, body.message, **stream_kwargs):
                             evq.put(_evt)
                         evq.put(_END)
