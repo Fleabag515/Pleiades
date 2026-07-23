@@ -10,6 +10,10 @@ interface ComposerProps {
   disabled: boolean
   streaming: boolean
   onSend: (text: string) => void
+  // Weave a message into the turn that's already streaming, instead of
+  // starting a second one (see chatStore.tsx's `interject`). Called instead
+  // of onSend whenever `streaming` is true.
+  onInterject: (text: string) => void
   onStop: () => void
   onNewChat: () => void
 }
@@ -94,6 +98,7 @@ function Composer({
   disabled,
   streaming,
   onSend,
+  onInterject,
   onStop,
   onNewChat
 }: ComposerProps): React.JSX.Element {
@@ -174,8 +179,15 @@ function Composer({
 
   const submit = (): void => {
     const trimmed = text.trim()
-    if (!trimmed || disabled || streaming) return
-    onSend(trimmed)
+    if (!trimmed || disabled) return
+    // While a turn is already streaming, don't start a second concurrent
+    // one (the backend would 409 it anyway, see server.py's per-chat
+    // lock) -- weave this into the running turn instead.
+    if (streaming) {
+      onInterject(trimmed)
+    } else {
+      onSend(trimmed)
+    }
     setText('')
   }
 
@@ -229,7 +241,13 @@ function Composer({
             }}
             disabled={disabled}
             rows={1}
-            placeholder={disabled ? 'Select a character first…' : `Message ${character}…`}
+            placeholder={
+              disabled
+                ? 'Select a character first…'
+                : streaming
+                  ? `Send ${character} a message mid-task…`
+                  : `Message ${character}…`
+            }
             className="max-h-60 min-h-[24px] w-full resize-none bg-transparent px-1 py-1 text-[15px] text-ink placeholder:text-ink-faint focus:outline-none"
           />
 
@@ -338,13 +356,24 @@ function Composer({
             </div>
 
             {streaming ? (
-              <button
-                onClick={onStop}
-                className="flex-none rounded-2xl bg-bg-300 px-3.5 py-2 text-sm font-medium text-ink transition hover:bg-rose-500/20 hover:text-rose-300"
-                title="Stop generating"
-              >
-                ◼ Stop
-              </button>
+              <div className="flex flex-none items-center gap-1.5">
+                {text.trim() && (
+                  <button
+                    onClick={submit}
+                    title="Send this into the running turn, without interrupting it"
+                    className="flex-none rounded-2xl bg-bg-300 px-3.5 py-2 text-sm font-medium text-ink-dim transition hover:bg-accent/20 hover:text-accent"
+                  >
+                    ↩ Send
+                  </button>
+                )}
+                <button
+                  onClick={onStop}
+                  className="flex-none rounded-2xl bg-bg-300 px-3.5 py-2 text-sm font-medium text-ink transition hover:bg-rose-500/20 hover:text-rose-300"
+                  title="Stop generating"
+                >
+                  ◼ Stop
+                </button>
+              </div>
             ) : (
               <button
                 onClick={submit}

@@ -109,14 +109,18 @@ function ToolChain({ tools }: { tools: ToolItem[] }): React.JSX.Element {
  * server.py's chats_message() both only ever flush a new one once
  * something else has happened in between), so it always gets its own
  * `ReasoningBlock`, in sequence with everything else in the turn. */
-function groupItems(
-  items: AssistantItem[]
-): Array<
-  { kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] } | { kind: 'reasoning'; text: string }
-> {
-  const groups: Array<
-    { kind: 'text'; text: string } | { kind: 'tools'; tools: ToolItem[] } | { kind: 'reasoning'; text: string }
-  > = []
+type ItemGroup =
+  | { kind: 'text'; text: string }
+  | { kind: 'tools'; tools: ToolItem[] }
+  | { kind: 'reasoning'; text: string }
+  // A message the user sent mid-turn (see chatStore.tsx's `interject` /
+  // engine.py's poll_injections) -- rendered as its own distinct group, in
+  // place, so it's clear this was a live interruption and not part of the
+  // assistant's own text.
+  | { kind: 'user_injected'; text: string }
+
+function groupItems(items: AssistantItem[]): ItemGroup[] {
+  const groups: ItemGroup[] = []
   for (const item of items) {
     if (item.t === 'tool') {
       const last = groups[groups.length - 1]
@@ -124,6 +128,8 @@ function groupItems(
       else groups.push({ kind: 'tools', tools: [item] })
     } else if (item.t === 'reasoning') {
       groups.push({ kind: 'reasoning', text: item.text })
+    } else if (item.t === 'user_injected') {
+      groups.push({ kind: 'user_injected', text: item.text })
     } else {
       groups.push({ kind: 'text', text: item.text })
     }
@@ -259,6 +265,18 @@ function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.El
           if (g.kind === 'reasoning') {
             const isLive = Boolean(streaming) && i === groups.length - 1
             return <ReasoningBlock key={i} text={g.text} streaming={isLive} />
+          }
+          if (g.kind === 'user_injected') {
+            return (
+              <div key={i} className="my-1.5 flex justify-end">
+                <div className="max-w-[85%] rounded-2xl border border-accent/30 bg-bubble-user/70 px-4 py-2 text-[14px] leading-relaxed text-ink-bright">
+                  <div className="mb-0.5 text-[11px] font-medium uppercase tracking-wide text-accent">
+                    sent mid-task
+                  </div>
+                  <div className="whitespace-pre-wrap break-words">{g.text}</div>
+                </div>
+              </div>
+            )
           }
           return (
             <div key={i} className="break-words">

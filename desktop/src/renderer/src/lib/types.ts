@@ -56,7 +56,12 @@ export interface ReasoningItem {
   text: string
 }
 
-export type AssistantItem = TextItem | ToolItem | ReasoningItem
+export interface UserInjectedItem {
+  t: 'user_injected'
+  text: string
+}
+
+export type AssistantItem = TextItem | ToolItem | ReasoningItem | UserInjectedItem
 
 export interface TurnMeta {
   tokens?: number
@@ -131,6 +136,15 @@ export type StreamEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; name: string; args: string }
   | { type: 'tool_result'; name: string; output: string; ok: boolean }
+  // A message sent via POST .../interject while this turn was in flight,
+  // woven in by Engine.stream_events' poll_injections at a safe round/tool
+  // boundary (see engine.py) -- rendered inline, in order, like the rest of
+  // the turn's events.
+  | { type: 'user_injected'; text: string }
+  // An interjection that arrived too late to be woven into the turn (it was
+  // still sitting in the chat's inbox when the turn ended) -- never silently
+  // dropped; the frontend should offer to resend it as a fresh message.
+  | { type: 'undelivered'; text: string }
   | { type: 'done'; tokens: number; seconds: number; tps: number }
   | { type: 'stopped' }
   | { type: 'error'; error: string }
