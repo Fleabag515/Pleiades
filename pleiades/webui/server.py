@@ -146,6 +146,12 @@ class ChatMessage(BaseModel):
     system: Optional[str] = None
 
 
+class ChatInterject(BaseModel):
+    """A message woven into an ALREADY-IN-FLIGHT turn (see chats_interject) —
+    distinct from ChatMessage, which always starts a brand-new turn."""
+    message: str
+
+
 class ModelFetch(BaseModel):
     repo: str
     name: str = ""
@@ -1337,6 +1343,31 @@ def create_app() -> FastAPI:
     # Per-chat stop flags for the emergency-stop button: set() to cut a
     # streaming run short between rounds/chunks (see Engine.stream_events).
     chat_stops: dict[str, threading.Event] = {}
+    # Mid-turn user interjections (see chats_interject / Engine.stream_events'
+    # poll_injections): one Queue[str] per chat that currently has a turn
+    # in flight. Registered/cleared in chats_message()'s try/finally exactly
+    # like chat_approvals/chat_stops above.
+    import queue as _queue_mod
+    chat_inboxes: dict[str, "_queue_mod.Queue[str]"] = {}
+    # Per-chat in-flight lock -- fixes a real pre-existing bug: nothing used
+    # to stop two concurrent POST /message calls for the SAME chat_id from
+    # both registering into chat_stops/chat_approvals (the second clobbers
+    # the first's entries) and both driving the engine at once, interleaving
+    # two separate turns into one transcript via append_turn. A plain
+    # non-blocking Lock per chat_id turns the second concurrent request into
+    # a clean 409 instead of silent corruption. Guarded by a small mutex so
+    # two threads creating the SAME chat's lock for the first time can't
+    # race and hand out two different Lock objects.
+    chat_locks: dict[str, threading.Lock] = {}
+    _chat_locks_guard = threading.Lock()
+
+    def _lock_for(chat_id: str) -> threading.Lock:
+        with _chat_locks_guard:
+            lock = chat_locks.get(chat_id)
+            if lock is None:
+                lock = threading.Lock()
+                chat_locks[chat_id] = lock
+            return lock
 
     def _chat_approve_cb(chat_id: str, profile: Optional[Profile] = None):
         import threading
@@ -1408,9 +1439,22 @@ def create_app() -> FastAPI:
 
         Lines: {"type":"token","text"} | {"type":"tool_call","name","args"} |
                {"type":"tool_result","name","output","ok"} |
+               {"type":"user_injected","text"} | {"type":"undelivered","text"} |
                {"type":"done","tokens","seconds","tps"} | {"type":"error","error"}
         The model has the FULL tool belt (chat + harness) and uses tools only
         when the prompt needs them. The turn is persisted to the chat file.
+
+        Concurrency: a per-chat lock (see _lock_for) is acquired here, BEFORE
+        the streaming generator is even returned to Starlette, and released
+        in gen()'s finally. Two POSTs racing for the same chat_id used to
+        both register into chat_stops/chat_approvals (the second clobbering
+        the first's entries) and both drive the engine at once, interleaving
+        two turns into one transcript via append_turn -- a real correctness
+        bug independent of mid-turn interjection. The second racer now gets a
+        clean 409 instead. A genuinely NEW message while a turn is already
+        in flight for this chat should go through POST .../interject instead
+        (see chats_interject) -- it weaves into the running turn rather than
+        starting a second one.
         """
         from .. import chats
         try:
@@ -1419,14 +1463,37 @@ def create_app() -> FastAPI:
         except (FileNotFoundError, ValueError):
             raise HTTPException(404, "No such chat (or its character is gone).")
 
+        lock = _lock_for(chat_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "A turn is already in progress for this chat "
+                                     "-- use .../interject to send a message into it.")
+
         def gen():
             import json as _json
+            import queue as _q
             items: list[dict] = []
             text_acc = ""
             reasoning_acc = ""
             meta: dict = {}
             stop_evt = threading.Event()
             chat_stops[chat_id] = stop_evt
+            # Mid-turn interjections land here (see chats_interject). Queued
+            # BEFORE the try block so it's visible to callers the instant
+            # this turn starts, and so the finally block below can still
+            # drain anything left over even if engine construction itself
+            # blows up.
+            inbox: "_q.Queue[str]" = _q.Queue()
+            chat_inboxes[chat_id] = inbox
+
+            def _poll_injections() -> list[str]:
+                out: list[str] = []
+                while True:
+                    try:
+                        out.append(inbox.get_nowait())
+                    except _q.Empty:
+                        break
+                return out
+
             try:
                 from ..engine import Engine
                 engine = Engine(settings=config.Settings.load(),
@@ -1438,7 +1505,6 @@ def create_app() -> FastAPI:
                 # silent for a while, and without traffic some link in the
                 # browser←uvicorn chain gives up — the user then sees a raw
                 # Firefox "Error in input stream" instead of their reply.
-                import queue as _q
                 evq: _q.Queue = _q.Queue(maxsize=512)
                 _END = object()
 
@@ -1453,7 +1519,8 @@ def create_app() -> FastAPI:
                         hist = chats.recent_messages(chat)
                         for _evt in engine.stream_events(p, body.message, system=body.system,
                                                          history=hist,
-                                                         should_stop=stop_evt.is_set):
+                                                         should_stop=stop_evt.is_set,
+                                                         poll_injections=_poll_injections):
                             evq.put(_evt)
                         evq.put(_END)
                     except Exception as ex:  # re-raised on the response thread
@@ -1510,6 +1577,19 @@ def create_app() -> FastAPI:
                                     it["output"] = evt["output"][:4000]
                                     it["ok"] = evt["ok"]
                                     break
+                    elif evt["type"] == "user_injected":
+                        # A mid-turn interjection the engine wove into this
+                        # SAME turn (see Engine.stream_events' poll_injections)
+                        # — persist it as its own item, interleaved in place,
+                        # so reloading the chat and chats.recent_messages()
+                        # both see it exactly where it happened.
+                        if reasoning_acc:
+                            items.append({"t": "reasoning", "text": reasoning_acc})
+                            reasoning_acc = ""
+                        if text_acc:
+                            items.append({"t": "text", "text": text_acc})
+                            text_acc = ""
+                        items.append({"t": "user_injected", "text": evt["text"]})
                     elif evt["type"] == "done":
                         meta = {k: evt[k] for k in ("tokens", "seconds", "tps")}
                     elif evt["type"] == "stopped":
@@ -1533,10 +1613,48 @@ def create_app() -> FastAPI:
                            "or did it crash?) — partial reply kept · " + msg)
                 yield _json.dumps({"type": "error", "error": msg}) + "\n"
             finally:
+                # Edge case: an interjection can arrive in the tiny window
+                # between the engine's last poll_injections() drain and the
+                # turn actually ending (e.g. the user types a correction just
+                # as the model produces its final answer with no more tool
+                # rounds left to apply it at). Never silently drop it -- surface
+                # it so the frontend can offer to resend it as a fresh message.
+                leftover: list[str] = []
+                while True:
+                    try:
+                        leftover.append(inbox.get_nowait())
+                    except _q.Empty:
+                        break
+                for _text in leftover:
+                    try:
+                        yield _json.dumps({"type": "undelivered", "text": _text},
+                                          ensure_ascii=False) + "\n"
+                    except Exception:
+                        pass
                 chat_approvals.pop(chat_id, None)  # no stale approval cards
                 chat_stops.pop(chat_id, None)
+                chat_inboxes.pop(chat_id, None)
+                lock.release()
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.post("/api/chats/{chat_id}/interject")
+    def chats_interject(chat_id: str, body: ChatInterject) -> dict:
+        """Weave a message into an ALREADY-IN-FLIGHT turn for this chat,
+        instead of starting a second concurrent one.
+
+        The engine only drains this queue at safe round/tool boundaries
+        (see Engine.stream_events' poll_injections) -- never mid-stream, since
+        re-prefilling context mid-token-generation is a 150-200s round trip on
+        the daily-driver model (see engine.py's _UPSTREAM_TIMEOUT comment).
+        409s if there's no turn in flight for this chat_id -- the caller
+        should fall back to POST .../message (a brand-new turn) in that case.
+        """
+        inbox = chat_inboxes.get(chat_id)
+        if inbox is None:
+            raise HTTPException(409, "No turn in progress for this chat to interject into.")
+        inbox.put(body.message)
+        return {"ok": True}
 
     # ----------------------------- chat ------------------------------------ #
     @app.post("/api/profiles/{name}/chat")
