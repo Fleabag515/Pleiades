@@ -93,7 +93,7 @@ def _service_state_windows(name: str) -> tuple[str, str, "int | None", "str | No
         if r.returncode != 0:
             state, substate = "inactive", "not-installed"
         else:
-            status_line = next((l for l in r.stdout.splitlines() if l.startswith("Status:")), "")
+            status_line = next((ln for ln in r.stdout.splitlines() if ln.startswith("Status:")), "")
             running = "running" in status_line.lower()
             state = "active" if running else "inactive"
             substate = status_line.split(":", 1)[-1].strip() or "unknown"
