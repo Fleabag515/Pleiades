@@ -1,7 +1,8 @@
 import { memo } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
-import type { AssistantItem, ChatMessageEntry, ToolItem } from '../lib/types'
+import { attachmentUrl } from '../lib/api'
+import type { AssistantItem, ChatMessageEntry, MessageAttachment, ToolItem } from '../lib/types'
 import ActivityBlock, { type ActivityPart } from './ActivityBlock'
 import ToolChain from './ToolChain'
 
@@ -9,6 +10,14 @@ interface MessageBubbleProps {
   message: ChatMessageEntry
   base: string
   character: string
+  // This message's chat id -- needed to build the GET .../attachments/{name}
+  // URL (see lib/api.ts's `attachmentUrl`) each persisted attachment chip
+  // below points its thumbnail/`<audio>` src at. Optional/nullable because
+  // a couple of call sites (the live streaming draft bubble, which is
+  // always an assistant turn and never carries attachments) don't have one
+  // handy -- attachments only ever land on `role: 'user'` messages, so it's
+  // simply not read on any path where it'd be missing.
+  chatId?: string | null
   streaming?: boolean
 }
 
@@ -180,6 +189,81 @@ function Markdown({ text }: { text: string }): React.JSX.Element {
   )
 }
 
+/** Small glyph differentiating an attachment chip by MIME prefix -- same
+ * unicode-glyph-as-icon convention Composer.tsx already uses for its own
+ * attach button (&#128206;) and per-chip error state (&#9888;), so this
+ * isn't introducing a new visual idiom, just extending the existing one. */
+function attachmentIcon(mime: string): string {
+  if (mime.startsWith('image/')) return '\u{1F5BC}'
+  if (mime.startsWith('audio/')) return '\u{1F3B5}'
+  return '\u{1F4C4}'
+}
+
+/** One persisted attachment on a historical (already-sent) user message.
+ *
+ * Deliberately mirrors Composer.tsx's own pre-send chip (`attachedFiles`
+ * rendering: `rounded-lg border border-border px-2 py-1 text-xs text-ink-dim`)
+ * so the same visual pattern reads as "this is an attachment" whether it's
+ * still uploading in the composer or long since sent and sitting in
+ * history -- that consistency was the whole point of this pass (see owner
+ * feedback: "no indication a file was uploaded... some kind of file
+ * indicator would be nice").
+ *
+ * Images get a real thumbnail -- fetched from GET .../attachments/{name}
+ * (lib/api.ts's `attachmentUrl`, added alongside this component; see
+ * pleiades/webui/server.py's `chats_attachment_get`) -- since the upload
+ * response's `path` is a path on THIS machine the renderer process can't
+ * load directly. Audio gets a native `<audio controls>` against that same
+ * URL (cheap, and a real player is more useful than a mute chip for
+ * something the user very likely wants to play back). Everything else
+ * falls back to the plain icon+filename chip.
+ */
+function AttachmentChip({
+  attachment,
+  base,
+  chatId
+}: {
+  attachment: MessageAttachment
+  base: string
+  chatId: string
+}): React.JSX.Element {
+  const url = attachmentUrl(base, chatId, attachment.name)
+
+  if (attachment.mime.startsWith('image/')) {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        title={attachment.name}
+        className="block h-16 w-16 overflow-hidden rounded-lg border border-border bg-bg-300/40"
+      >
+        <img src={url} alt={attachment.name} className="h-full w-full object-cover" />
+      </a>
+    )
+  }
+
+  if (attachment.mime.startsWith('audio/')) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-xs text-ink-dim">
+        <span aria-hidden>{attachmentIcon(attachment.mime)}</span>
+        <span className="max-w-[140px] truncate">{attachment.name}</span>
+        <audio controls src={url} className="h-7 max-w-[200px]" />
+      </div>
+    )
+  }
+
+  return (
+    <div
+      title={attachment.name}
+      className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-xs text-ink-dim"
+    >
+      <span aria-hidden>{attachmentIcon(attachment.mime)}</span>
+      <span className="max-w-[160px] truncate">{attachment.name}</span>
+    </div>
+  )
+}
+
 /** Renders one persisted (or in-progress) chat turn.
  *
  * Structure matches what live accessibility-tree inspection of the real
@@ -189,10 +273,18 @@ function Markdown({ text }: { text: string }): React.JSX.Element {
  * spans almost the full column as plain text with no card/border,
  * which is the detail that made the previous version (bubbles on both
  * sides) read as generic/ChatGPT-like rather than Claude-like. */
-function MessageBubble({ message, streaming }: MessageBubbleProps): React.JSX.Element {
+function MessageBubble({ message, base, chatId, streaming }: MessageBubbleProps): React.JSX.Element {
   if (message.role === 'user') {
+    const attachments = message.attachments
     return (
-      <div className="flex justify-end px-5 py-2">
+      <div className="flex flex-col items-end gap-1.5 px-5 py-2">
+        {attachments && attachments.length > 0 && chatId && (
+          <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
+            {attachments.map((a, i) => (
+              <AttachmentChip key={`${a.name}-${i}`} attachment={a} base={base} chatId={chatId} />
+            ))}
+          </div>
+        )}
         <div className="max-w-[85%] rounded-2xl bg-bubble-user px-4 py-2.5 text-[15px] leading-relaxed text-ink-bright">
           <div className="whitespace-pre-wrap break-words">{message.content}</div>
         </div>

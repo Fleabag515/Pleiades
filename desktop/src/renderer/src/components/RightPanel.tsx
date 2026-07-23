@@ -552,7 +552,7 @@ function HistorySection({
             <div className="p-3 text-xs text-ink-faint">Empty chat.</div>
           )}
           {viewing.messages.map((m, i) => (
-            <MessageBubble key={i} message={m} base={base} character={character} />
+            <MessageBubble key={i} message={m} base={base} character={character} chatId={viewing.id} />
           ))}
         </div>
       </div>

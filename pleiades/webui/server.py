@@ -21,6 +21,7 @@ The whole thing binds to 127.0.0.1 by default — it is a local admin tool.
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import re
 import socket
@@ -1509,6 +1510,31 @@ def create_app() -> FastAPI:
                 chat["character"], chat_id, file.filename or "file", data)
         except (ValueError, OSError) as e:
             raise HTTPException(400, f"Could not save attachment: {e}")
+
+    @app.get("/api/chats/{chat_id}/attachments/{filename}")
+    def chats_attachment_get(chat_id: str, filename: str):
+        """Stream one previously-uploaded attachment's raw bytes back (see
+        POST .../attachments above + pleiades/attachments.py) so the desktop
+        UI can render a persisted attachment chip's real thumbnail/`<audio>`
+        player against a real URL (see MessageBubble.tsx) -- the upload
+        endpoint only ever returned a path on THIS machine, which is no use
+        to an `<img src=...>` in the renderer process.
+
+        Same path-traversal guard as the upload endpoint, just applied to
+        the filename coming back out instead of going in -- see
+        attachments.attachment_path / sanitize_filename.
+        """
+        from .. import chats
+        from .. import attachments as chat_attachments
+        try:
+            chat = chats.load(chat_id)
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(404, "No such chat.")
+        path = chat_attachments.attachment_path(chat["character"], chat_id, filename)
+        if not path:
+            raise HTTPException(404, "No such attachment.")
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(str(path), media_type=mime, headers={"Cache-Control": "no-cache"})
 
     @app.delete("/api/chats/{chat_id}")
     def chats_delete(chat_id: str) -> dict:
