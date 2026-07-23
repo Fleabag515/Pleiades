@@ -225,15 +225,21 @@ function Install-NativeRuntime($plan) {
   }
 }
 
+$AnamnesisSpec = "github:Fleabag515/anamnesis"   # the plain "anamnesis" name on the
+# public npm registry is squatted by an unrelated, unmaintained package (last
+# published 2022, no `anamnesis` binary at all) — `npm install -g anamnesis`
+# silently installs the wrong thing on every platform. Installing straight
+# from source is the only spec that actually resolves to Fleabag515/anamnesis.
+
 function Install-Anamnesis {
-  if (-not (Have npm)) { Warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g anamnesis'."; return }
+  if (-not (Have npm)) { Warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g $AnamnesisSpec'."; return }
   $installed = ""
   $latest = ""
   try {
     $out = (npm ls -g anamnesis --depth=0 2>$null | Out-String)
     if ($out -match "anamnesis@([0-9][^\s]*)") { $installed = $Matches[1] }
   } catch {}
-  try { $latest = (npm view anamnesis version 2>$null | Out-String).Trim() } catch {}
+  try { $latest = (npm view $AnamnesisSpec version 2>$null | Out-String).Trim() } catch {}
 
   if ($installed -and $latest -and ($installed -eq $latest)) {
     Say "Anamnesis $installed already installed and current — skipping"
@@ -245,8 +251,8 @@ function Install-Anamnesis {
     Say "Installing Anamnesis (memory proxy)"
   }
   Info "npm pulls large native deps here (node-llama-cpp, transformers) — a few minutes of progress output is normal."
-  npm install -g anamnesis --no-audit --no-fund
-  if ($LASTEXITCODE -ne 0) { Warn "Could not install anamnesis globally; run 'npm i -g anamnesis' yourself." }
+  npm install -g $AnamnesisSpec --no-audit --no-fund --onnxruntime-node-install-cuda=skip
+  if ($LASTEXITCODE -ne 0) { Warn "Could not install anamnesis globally; run 'npm i -g $AnamnesisSpec' yourself." }
 }
 
 function Fetch-Browser($py) {

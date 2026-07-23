@@ -27,6 +27,12 @@ WITH_BROWSER=1
 WITH_SEARXNG=1
 WITH_DISCORD=1
 WITH_NATIVE_RUNTIME=1
+# The plain "anamnesis" name on the public npm registry is squatted by an
+# unrelated, unmaintained package (last published 2022, no `anamnesis` binary
+# at all) — `npm install -g anamnesis` silently installs the wrong thing on
+# every platform. Installing straight from source is the only spec that
+# actually resolves to Fleabag515/anamnesis.
+ANAMNESIS_SPEC="github:Fleabag515/anamnesis"
 
 # ---- pretty output ---------------------------------------------------------
 if [ -t 1 ]; then B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'; else B=""; G=""; Y=""; R=""; N=""; fi
@@ -127,7 +133,7 @@ ensure_node() {
     apt-get|dnf|zypper) pm_install nodejs npm;;
     pacman)             pm_install nodejs npm;;
     brew)               pm_install node;;
-    *) warn "Could not auto-install Node. Install Node.js + npm, then 'npm i -g anamnesis'.";;
+    *) warn "Could not auto-install Node. Install Node.js + npm, then 'npm i -g $ANAMNESIS_SPEC'.";;
   esac
 }
 
@@ -216,9 +222,9 @@ install_python_pkg() {
 
 # ---- external services -----------------------------------------------------
 install_anamnesis() {
-  if ! have npm; then warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g anamnesis'."; return; fi
+  if ! have npm; then warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g $ANAMNESIS_SPEC'."; return; fi
   installed="$(npm ls -g --depth=0 anamnesis 2>/dev/null | grep -o 'anamnesis@[0-9][^ ]*' | head -n1 | cut -d@ -f2 || true)"
-  latest="$(npm view anamnesis version 2>/dev/null || true)"
+  latest="$(npm view "$ANAMNESIS_SPEC" version 2>/dev/null || true)"
   if [ -n "$installed" ] && [ -n "$latest" ] && [ "$installed" = "$latest" ]; then
     say "Anamnesis $installed already installed and current — skipping"
     return
@@ -229,7 +235,9 @@ install_anamnesis() {
     say "Installing Anamnesis (memory proxy)"
   fi
   info "npm pulls large native deps here (node-llama-cpp, transformers) — a few minutes of output is normal."
-  npm install -g anamnesis --no-audit --no-fund || $SUDO npm install -g anamnesis --no-audit --no-fund || { warn "Could not install anamnesis globally; run 'npm i -g anamnesis' yourself."; return; }
+  npm install -g "$ANAMNESIS_SPEC" --no-audit --no-fund --onnxruntime-node-install-cuda=skip \
+    || $SUDO npm install -g "$ANAMNESIS_SPEC" --no-audit --no-fund --onnxruntime-node-install-cuda=skip \
+    || { warn "Could not install anamnesis globally; run 'npm i -g $ANAMNESIS_SPEC' yourself."; return; }
   have anamnesis && anamnesis status >/dev/null 2>&1 || true
 }
 

@@ -98,7 +98,9 @@ CMAKE_ARGS="-DGGML_METAL=on"  pip install -e ".[all]"  # Apple Silicon
 ### One-time external setup
 
 ```bash
-npm install -g anamnesis && anamnesis status   # memory proxy daemon on :9000
+npm install -g github:Fleabag515/anamnesis --onnxruntime-node-install-cuda=skip && anamnesis status  # memory proxy daemon on :9000
+# (the plain "anamnesis" name on the public npm registry is an unrelated, unmaintained
+# package — install straight from source, as above, or it silently installs the wrong thing)
 camoufox fetch                                  # downloads the headed browser (only if using [browser])
 ```
 

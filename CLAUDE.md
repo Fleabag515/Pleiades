@@ -61,8 +61,14 @@ Pleiades is the agent runtime, the tool layer, and (now) the inference server un
 
 ### How Anamnesis works (the parts Pleiades depends on)
 
-- A **Node.js** app, `npm install -g anamnesis`. Integration is pure HTTP, so the
-  Python/JS split is irrelevant.
+- A **Node.js** app, `npm install -g github:Fleabag515/anamnesis`. Integration is pure
+  HTTP, so the Python/JS split is irrelevant. **Don't install plain `anamnesis`** — that
+  name on the public npm registry is squatted by an unrelated, unmaintained package
+  (verified 2026-07-23: no `anamnesis` binary, last published 2022); the GitHub-source
+  spec is the only one that resolves to this project. Also pass
+  `--onnxruntime-node-install-cuda=skip` — a transitive dep (`onnxruntime-node`, via
+  `@huggingface/transformers`) otherwise always tries to fetch a CUDA binary even
+  without `nvcc`/a GPU present.
 - Runs as a **background daemon** with a **control REST API on `127.0.0.1:9000`**.
 - Each **character** is an independent proxy on its own auto-assigned port (e.g. `:8084`).
   Its OpenAI-compatible endpoint is `http://127.0.0.1:<port>/v1`. Point an OpenAI client
@@ -240,7 +246,8 @@ the inference server, the Discord bot); GitHub (`gh repo create` — repo doesn'
   (Gmail/mail.com app-password presets included; generic IMAP for anything else).
 - **A Discord bot token per character** (if hosting) — Developer Portal; enable Message
   Content intent.
-- **Anamnesis installed** — `npm install -g anamnesis`; `anamnesis status`.
+- **Anamnesis installed** — `npm install -g github:Fleabag515/anamnesis --onnxruntime-node-install-cuda=skip`;
+  `anamnesis status`.
 
 ## 7. First-session checklist
 
@@ -256,7 +263,7 @@ the inference server, the Discord bot); GitHub (`gh repo create` — repo doesn'
    manually) → `git add -A && git commit -m "Initial scaffold" && git push -u origin main`.
 3. `python -m venv .venv && . .venv/bin/activate && pip install -e ".[all]"` (add
    `CMAKE_ARGS=...` for GPU builds of llama-cpp-python).
-4. `npm install -g anamnesis && anamnesis status`.
+4. `npm install -g github:Fleabag515/anamnesis --onnxruntime-node-install-cuda=skip && anamnesis status`.
 5. `camoufox fetch` (if using the browser).
 6. Build order: `config.py` → `anamnesis.py` → `vault.py` → `profiles.py` →
    `inference/__init__.py` → `tools/__init__.py` → `tools/{search,email_box,vault_tool}` →
