@@ -315,6 +315,33 @@ function createWindow(): void {
     mainWindow?.webContents.send('pleiades:window-maximized-changed', false)
   )
 
+  // Follow-up to the "can't type after reopening" fix in showMainWindow():
+  // that function's explicit webContents.focus() call only runs on paths
+  // that go through THIS app's own JS -- tray click, the app-menu/global
+  // shortcut, or `app.on('activate')`. But per the 'close' handler just
+  // below, this is a tray-resident app that minimizes (never destroys) its
+  // window, and minimize() deliberately keeps it in _NET_CLIENT_LIST so
+  // it's *also* restorable straight from the window manager itself: Alt+Tab,
+  // the taskbar/window-list applet, or switching back to it after a
+  // workspace/monitor change. All of those hand the window its OS-level
+  // focus back without ever calling showMainWindow(), so the previous fix
+  // never ran on that path -- almost certainly why the bug was still
+  // reproducible after that patch landed.
+  //
+  // Hooking the BrowserWindow's own native 'focus' event closes that gap:
+  // it fires no matter *how* the window regains OS focus, JS-driven or not.
+  // It also self-heals the narrower race in showMainWindow() itself --
+  // show()/restore() are synchronous Electron calls, but the underlying
+  // X11 focus grant from the window manager is not, so a focus()/
+  // webContents.focus() pair called immediately afterward can (intermittently
+  // -- "sometimes", matching the report) run before the window manager has
+  // actually finished granting focus. Whenever real focus does land, this
+  // listener re-syncs Chromium's focused element regardless of what
+  // triggered the show or how the timing lined up.
+  mainWindow.on('focus', () => {
+    mainWindow?.webContents.focus()
+  })
+
   // Tray-resident app pattern: clicking the OS window-close button hides the
   // window instead of destroying it, so the backend keeps running and the
   // app stays reachable from the tray icon. A real quit (tray "Quit", the
@@ -379,13 +406,14 @@ function showMainWindow(): void {
   // `focus()` above only grants the BrowserWindow OS-level window focus --
   // on Linux (Cinnamon/Muffin, confirmed environment) that doesn't
   // reliably re-route keyboard input to the page's own focused element
-  // after a hide()/show() cycle (this is a tray-resident app: the window
-  // close button hides rather than destroys, so this path runs far more
-  // often than a fresh createWindow() would). Symptom this fixes: window
-  // is visible, but clicking into the message box doesn't let you type
-  // until the app is fully closed and reopened. Explicitly focusing the
-  // webContents (distinct from window-level focus) is the standard fix
-  // for this class of Electron/Linux bug.
+  // after a hide()/show() cycle. Explicitly focusing the webContents
+  // (distinct from window-level focus) covers the common case immediately.
+  // It is NOT the whole fix, though: this call only runs on the showMainWindow()
+  // path (tray click / activate), and even here can race the window
+  // manager's own (async) focus grant. createWindow()'s `mainWindow.on('focus', ...)`
+  // listener is the belt-and-suspenders piece that covers every other way
+  // this window can regain OS focus (Alt+Tab, taskbar/window-list applet,
+  // workspace switch) plus self-heals this call if it fired too early.
   mainWindow.webContents.focus()
 }
 
