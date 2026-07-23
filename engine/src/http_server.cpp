@@ -171,6 +171,14 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     if (!stream) {
         std::lock_guard<std::mutex> lock(s.mu);
         GenerationResult r = s.engine.complete(prompt, n_predict);
+        // Prove-it-fires observability (Phase 6): report how much of the
+        // prompt was served from the KV prefix cache vs. re-decoded. On a
+        // pure-attention model a repeated persona/system prefix shows a high
+        // `cached` here; on a hybrid-recurrent model (qwen35moe) it stays 0
+        // by design (partial reuse is architecturally impossible there) and
+        // the engine safely cold-decodes -- see the design doc's Phase 6.
+        std::fprintf(stderr, "[pleiades-engine-server] chat: prompt_tokens=%d prefix_cached=%d decoded=%d\n",
+                     r.n_prompt_tokens, r.n_prompt_cached, r.n_prompt_tokens - r.n_prompt_cached);
 
         json message;
         std::string finish_reason = "stop";
@@ -262,9 +270,11 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                 return sink.write(data.data(), data.size());
             };
             write_chunk({{"role", "assistant"}}, nullptr);
-            s.engine.generate(prompt, n_predict, [&](const std::string& piece) {
+            GenerationResult sr = s.engine.generate(prompt, n_predict, [&](const std::string& piece) {
                 return write_chunk({{"content", piece}}, nullptr);
             });
+            std::fprintf(stderr, "[pleiades-engine-server] chat(stream): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
+                         sr.n_prompt_tokens, sr.n_prompt_cached, sr.n_prompt_tokens - sr.n_prompt_cached);
             write_chunk(json::object(), "stop");
             static const std::string done = "data: [DONE]\n\n";
             sink.write(done.data(), done.size());

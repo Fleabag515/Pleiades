@@ -413,13 +413,149 @@ whole effort) — the new branch didn't disturb anything on the default path.
 adding autofit/MoE-offload support to this branch, is not part of this
 phase.
 
-## Phase 6 — Prefix-cache optimization (post-parity)
+## Phase 6 — Prefix-cache optimization (done, results below)
 
-**Goal:** now that resize works and is in production, use
-`llama_state_seq_get_data`/`llama_state_seq_set_data` to avoid reprocessing a
-stable shared prefix (persona/owner-facts/task-block that Anamnesis resends
-most turns) across a resize, per qwen's original suggestion. This is a
-latency optimization layered on a working system, not a prerequisite.
+**Goal:** avoid re-decoding a stable shared prefix (the persona/owner-facts/
+task-block Anamnesis resends most turns) on every `/v1/chat/completions`
+request, per qwen's original suggestion. A latency optimization on a working
+system, not a prerequisite.
+
+**Diagnosis correction — it was worse than "no caching across resize."**
+The kickoff framing assumed the pre-Phase-6 engine cached a prefix but lost
+it across resize. Reading the source (`engine/src/engine.cpp`,
+`http_server.cpp`) and the pinned llama.cpp (`third_party/llama.cpp`
+@ `b46812de7`) found there was **no prefix caching or KV bookkeeping of any
+kind, and the omission was an active correctness bug, not just a missed
+optimization.** `Engine::generate()` tokenized the whole prompt and decoded
+it via `llama_batch_get_one()` every request. That helper leaves
+`batch.pos == nullptr`; llama.cpp then auto-assigns each token's position as
+`memory->seq_pos_max(seq)+1` (`src/llama-batch.cpp:100`) — i.e. it *appends*
+after whatever is already resident. Nothing ever cleared the KV between
+requests (confirmed: zero `llama_memory_*`/`seq_rm`/`memory_clear` calls
+existed anywhere in `engine/`). So on turn 2+ the entire resent prompt —
+persona block included — was re-decoded at *new, growing* positions on top of
+the previous turn's residue, silently duplicating content in the KV cache and
+making the model attend over stale prior-request tokens. It happened to look
+fine in the Phase 3/5 manual checks because each of those sent a *single*
+request per server process; the bug only bites on the 2nd+ request against
+one long-lived context, which is exactly the real Anamnesis chat pattern.
+Verified empirically (`seq_pos_min/max` probe): the diagnosis held.
+
+**What shipped:**
+
+- `PrefixCache` (`engine/include/pleiades_engine/prefix_cache.h` +
+  `src/prefix_cache.cpp`) — one responsibility: track the token sequence
+  resident in sequence 0's KV and compute the longest reusable prefix of a
+  new prompt (LCP, capped at `prompt.size()-1` so at least one token is
+  always decoded fresh — the resident context's last logits belong to the
+  previous turn's last *generated* token, not this prompt's final token).
+  Does no `llama_*` calls itself, so it unit-tests without a model.
+- `ContextGovernor::epoch()` — a monotonic counter bumped on every context
+  (re)creation. `Engine` compares it to detect a resize and drop the cache,
+  rather than comparing the `llama_context*` pointer (Phase 4 already
+  documented that a freed-then-reallocated context routinely reuses the same
+  address, so pointer identity is not a reliable "was the KV recreated"
+  signal).
+- `Engine::generate()` rewritten: invalidate on epoch change → compute
+  reusable prefix → guard it against a KV that no longer holds a clean
+  `[0, n_reuse)` region (`seq_pos_min > 0`, e.g. SWA/recurrent eviction) →
+  `llama_memory_seq_rm(mem, 0, n_reuse, -1)` to trim the KV back to that
+  prefix (which, when `n_reuse == 0`, is exactly the full KV clear the old
+  code was missing) → decode only the suffix. If the trim is refused
+  (`seq_rm` returns false), fall back to a full clear + cold decode. Each
+  generated token is appended to the tracked sequence so the *next* request
+  can reuse it too. `Engine::reset_prefix_cache()` added for explicit resets.
+- `http_server.cpp` logs `prompt_tokens/prefix_cached/decoded` per chat
+  request (both streaming and non-streaming) so cache behavior is observable
+  on the real path — the Phase 5 lesson (a feature that builds but never
+  fires from the real call site) applies here too. No wire-contract change.
+- Tests (`engine/tests/test_prefix_cache.cpp`) and a benchmark
+  (`engine/src/bench_prefix_cache.cpp`, `pleiades-engine-bench-prefix`).
+
+**Resize interaction — strategy 3b chosen (drop the cache post-resize),
+after empirically confirming 3a is *feasible* and rejecting it on
+cost/benefit, not on impossibility.** The plan offered (a) snapshot the
+resident sequence via `llama_state_seq_get_data` before resize and restore it
+via `llama_state_seq_set_data` into the new context, vs. (b) drop the cache
+and cold-decode the next request. A throwaway experiment tested 3a directly:
+capture at `n_ctx=4096`, restore into a *fresh* context at `n_ctx=8192`.
+`llama_state_seq_set_data` **succeeded** (non-zero bytes consumed, coherent
+continuation) on both the tiny fixture *and* the real Ornith-35B — so
+restoring across a different `n_ctx` is genuinely supported here, not the
+assumed dead end. It was still rejected because: the state blob is
+~63 MB for a 16-token prefix on the 35B (the hybrid model carries large
+fixed recurrent-state buffers regardless of token count); resize is a rare,
+already-"accept a pause" event whose whole framing (Phase 0/Qwen) is "no
+reload, session preserved," not zero-cost; 3a adds state-blob versioning and
+sequence bookkeeping — a new bug class — to save exactly *one* turn's prefill
+at each gear change, after which the cache re-warms naturally; and 3b is
+trivially, provably correct and matches Phase 2's established "resize
+deliberately discards session state" posture. If resize-boundary latency ever
+shows up as a measured problem, 3a is a proven, droppable-in addition. So
+`resize()` bumps the epoch, `Engine` sees it, clears the cache, and the next
+request cold-decodes — same behavior as today, plus the cache re-warms on the
+turn after.
+
+**Results (2026-07-23):**
+
+*Correctness (the load-bearing check — a caching bug here would silently
+corrupt every conversation):* the benchmark and `test_prefix_cache` both
+assert a warm prefix-cache hit produces **byte-identical** generated text to
+a cold full-prompt decode of the same prompt on a fresh context.
+
+| model / path | prefix reuse | prompt-processing | byte-identical vs cold |
+|---|---|---|---|
+| stories15M fixture (CPU, attention) | works | (unit test) | YES |
+| Ternary-Bonsai-4B `qwen3` (GPU, `-ngl -1`, flash-attn) | 1091/1092 tok | **315.1 ms → 11.3 ms (27.8x)** | YES |
+| Ornith-1.0-35B `qwen35moe` (CPU) | 0 (see below) | 6933 ms → 6990 ms (1.0x) | YES (safe cold fallback) |
+
+*The 35B shows no speedup — and that is correct, not a regression.* Ornith
+(and the other production 35B, Qwen3.6-35B-A3B) are `qwen35moe`, a hybrid
+Gated-DeltaNet architecture: llama.cpp allocates `llama_memory_recurrent`
+buffers for most layers (only every ~4th layer is real attention). A
+recurrent layer's state is a rolled-up running summary with no addressable
+per-token history, so a *partial* prefix cannot be reused. Probed directly:
+after decoding 25 tokens the recurrent memory reports `seq_pos_min = 24`
+(only the last position, not 0) and `llama_memory_seq_rm(mem, 0, 12, -1)`
+(trim to a mid-sequence prefix) returns **false**. Both the `seq_pos_min`
+guard and the `seq_rm`-false fallback independently force `n_reuse = 0`, so
+the engine safely cold-decodes — and the byte-identical-vs-cold-reference
+check still passes, which *is* the proof that Phase 6's correctness fix works
+on this model: turn 2's output no longer attends over turn 1's residue (the
+old bug), even though there's no speedup to be had. Net: pure-attention
+models (the Qwen2.5/Qwen3 dense GGUFs Pleiades serves most) get both the
+correctness fix and a large prefill win; the hybrid-recurrent 35B MoE
+characters get the correctness fix only. This is a real, honestly-reported
+architectural limit of KV prefix caching, not a bug in this implementation.
+
+*End-to-end HTTP (`pleiades-engine-server` on the 4B, real
+`/v1/chat/completions` via `urllib`, three back-to-back requests over one
+server process):*
+
+| request | wall-clock | server log |
+|---|---|---|
+| cold (system + user1) | 461.7 ms | `prefix_cached=0 decoded=1061` → "…Paris." |
+| shared prefix + new user turn | 98.0 ms | `prefix_cached=1068 decoded=18` → "…Tokyo." |
+| identical to request 1 | 92.4 ms | `prefix_cached=1060 decoded=1` → "…Paris." |
+
+~4.7x warm wall-clock, coherent answers, and the third request returning the
+correct France answer proves it is *not* polluted by the intervening Japan
+request — the exact corruption the pre-Phase-6 code would have produced. The
+server-side `prefix_cached` log confirms the caching path actually fires on
+the real request path, not just in the library/unit tests.
+
+**Verification method:** engine `ctest` 7/7 (adds `test_prefix_cache`: pure
+LCP/epoch bookkeeping without a model, plus fixture-model reuse/divergence/
+resize-invalidation and byte-identical warm-vs-cold on both full and partial
+reuse). `bench_prefix_cache` self-checks byte-identical output and aborts
+nonzero if it ever diverges. Real 35B (`qwen35moe`) and 4B (`qwen3`) runs on
+this box (RTX 2080 Ti); GPU numbers exercise the FlashAttention path so the
+byte-identical claim covers the kernels production actually uses. Full
+Pleiades pytest still green: 462 passed, same single pre-existing unrelated
+`test_sandbox.py::test_run_sandboxed_reports_memory_kill` flake noted
+throughout this effort (no Python touched this phase). No characters were
+displaced — `models-running.json` was empty (no live production character)
+for the duration, and the shared GPU had ~8 GB free.
 
 ## Phase 7 — Statewise integration (adaptive MoE expert residency)
 

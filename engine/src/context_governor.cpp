@@ -39,6 +39,10 @@ void ContextGovernor::create_ctx(int n_ctx) {
             "pleiades_engine: failed to create llama_context at n_ctx=" + std::to_string(n_ctx));
     }
     n_ctx_ = n_ctx;
+    // Every fresh context starts with an empty KV -- bump the epoch so any
+    // prefix cache tied to the previous context invalidates itself (see
+    // context_governor.h::epoch()).
+    ++epoch_;
 }
 
 void ContextGovernor::create(llama_model* model, int n_ctx, int n_ctx_max, const ContextParams& params) {
