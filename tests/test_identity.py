@@ -84,3 +84,86 @@ def test_searchtool_delegates_to_harness(monkeypatch):
     out = SearchTool().run(ctx, query="hello", num_results=3)
     assert out == "WS:hello:3"
     assert seen["url"] == "http://searx.local:8888"
+
+
+# ─── bind_character: self-heal the assigned model server (fix 2026-07-23) ────
+# Anamnesis's character proxy being "active" says nothing about whether the
+# model server it forwards to is actually alive -- confirmed live: Mark's
+# model server exited hours before anyone noticed, and `pleiades work`/
+# scheduled-task runs (this harness path) quietly kept retrying against the
+# dead upstream since bind_character only ever ensured the ANAMNESIS proxy
+# was up, never the model behind it (unlike Engine._resolve_upstream, the
+# webui-chat/Discord-bot path, which already had this check).
+
+def test_bind_character_starts_a_stopped_assigned_model(monkeypatch):
+    from pleiades.harness import Config
+    import pleiades.models as models_mod
+    import pleiades.anamnesis as anamnesis_mod
+
+    name = _make_profile("dana_t", model="some-local-model")
+    started = []
+    monkeypatch.setattr(models_mod.ModelManager, "get", lambda self, n: {"name": n})
+    monkeypatch.setattr(models_mod.ModelManager, "is_running", lambda self, n: False)
+    monkeypatch.setattr(models_mod.ModelManager, "start", lambda self, n, **kw: started.append(n))
+    monkeypatch.setattr(anamnesis_mod.Anamnesis, "ensure_running", lambda self, n, **kw: "")
+
+    cfg = Config.load()
+    identity.bind_character(name, cfg=cfg, route_inference=True)
+
+    assert started == ["some-local-model"]
+
+
+def test_bind_character_does_not_restart_an_already_running_model(monkeypatch):
+    from pleiades.harness import Config
+    import pleiades.models as models_mod
+    import pleiades.anamnesis as anamnesis_mod
+
+    name = _make_profile("erin_t", model="some-local-model")
+    started = []
+    monkeypatch.setattr(models_mod.ModelManager, "get", lambda self, n: {"name": n})
+    monkeypatch.setattr(models_mod.ModelManager, "is_running", lambda self, n: True)
+    monkeypatch.setattr(models_mod.ModelManager, "start", lambda self, n, **kw: started.append(n))
+    monkeypatch.setattr(anamnesis_mod.Anamnesis, "ensure_running", lambda self, n, **kw: "")
+
+    cfg = Config.load()
+    identity.bind_character(name, cfg=cfg, route_inference=True)
+
+    assert started == []
+
+
+def test_bind_character_skips_model_check_for_cloud_models(monkeypatch):
+    from pleiades.harness import Config
+    import pleiades.models as models_mod
+    import pleiades.anamnesis as anamnesis_mod
+
+    name = _make_profile("frank_t", model="openrouter:some/cloud-model")
+    checked = []
+    monkeypatch.setattr(models_mod.ModelManager, "get", lambda self, n: checked.append(n) or {"name": n})
+    monkeypatch.setattr(models_mod.ModelManager, "is_running", lambda self, n: False)
+    monkeypatch.setattr(models_mod.ModelManager, "start", lambda self, n, **kw: (_ for _ in ()).throw(AssertionError("must not start a cloud model")))
+    monkeypatch.setattr(anamnesis_mod.Anamnesis, "ensure_running", lambda self, n, **kw: "")
+
+    cfg = Config.load()
+    identity.bind_character(name, cfg=cfg, route_inference=True)
+
+    assert checked == []  # ModelManager.get should never even be called for a cloud model
+
+
+def test_bind_character_model_start_failure_does_not_block_binding(monkeypatch):
+    from pleiades.harness import Config
+    import pleiades.models as models_mod
+    import pleiades.anamnesis as anamnesis_mod
+
+    name = _make_profile("greg_t", model="some-local-model")
+    monkeypatch.setattr(models_mod.ModelManager, "get", lambda self, n: {"name": n})
+    monkeypatch.setattr(models_mod.ModelManager, "is_running", lambda self, n: False)
+
+    def _boom(self, n, **kw):
+        raise RuntimeError("model boom")
+
+    monkeypatch.setattr(models_mod.ModelManager, "start", _boom)
+    monkeypatch.setattr(anamnesis_mod.Anamnesis, "ensure_running", lambda self, n, **kw: "")
+
+    cfg = Config.load()
+    profile = identity.bind_character(name, cfg=cfg, route_inference=True)  # must not raise
+    assert profile.name == name

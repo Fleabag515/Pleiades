@@ -90,6 +90,27 @@ def bind_character(
 
     # Route inference through the character's Anamnesis proxy (memory + llama.cpp).
     if cfg is not None and route_inference:
+        # Ensure the character's assigned LOCAL model server is actually
+        # running BEFORE routing through Anamnesis's proxy for it. Anamnesis's
+        # proxy being "active" says nothing about whether the model server it
+        # forwards to (its upstream.baseUrl) is actually alive — confirmed
+        # live 2026-07-23: Mark's model server had exited hours earlier and
+        # this path never noticed, so every `pleiades work`/scheduled-task run
+        # as Mark quietly retried against a dead upstream instead of erroring
+        # clearly or self-healing. Engine._resolve_upstream (engine.py) — the
+        # webui chat + Discord bot's own code path — already does this same
+        # is_running/start check; this mirrors it here so the harness
+        # CLI/scheduled-task path (which never touches Engine at all) is
+        # equally self-healing instead of silently worse than the other one.
+        model_name = getattr(profile, "model", "") or ""
+        if model_name and not model_name.startswith(("openrouter:", "ollama-cloud:")):
+            try:
+                from ..models import ModelManager
+                mm = ModelManager()
+                if mm.get(model_name) and not mm.is_running(model_name):
+                    mm.start(model_name)
+            except Exception:
+                pass  # best-effort — a genuinely broken model shouldn't block binding
         try:
             proxy_url = pm.anamnesis.ensure_running(name)  # http://127.0.0.1:<port>/v1
             if proxy_url:
