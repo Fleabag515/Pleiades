@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 
-from . import Tool, ToolContext, format_invalid_choice
+from . import Tool, ToolContext, format_invalid_choice, vision_caption
 
 # ---------------------------------------------------------------------- #
 # Fallback backend: harness/builtins/browser.py's Camoufox singleton.
@@ -257,6 +257,46 @@ async def _panel_screenshot(page, out_path: str) -> str:
     return f"Screenshot saved to {out_path} (this is the same page visible live in the desktop panel)."
 
 
+# ---------------------------------------------------------------------- #
+# Thin vision-fallback captioning (docs/specs/2026-07-22-vision-grounded-
+# browser-use-design.md, "Thin vision-fallback layer for text-only models").
+# Deliberately separate from Phases 2-6's vision-escalation-for-clicking --
+# this is NOT grounded to any clickable element and cannot itself resolve a
+# click. It only runs when 'elements' finds nothing (the cheapest proxy this
+# project has for "this is probably canvas/custom-rendered"), and only when
+# PLEIADES_VISION_FALLBACK_URL points at a separately-run tiny captioner
+# (see pleiades/tools/vision_caption.py) -- unconfigured, this is a total
+# no-op and today's "No interactive elements found" message is unchanged.
+# ---------------------------------------------------------------------- #
+
+async def _panel_screenshot_bytes(page) -> "bytes | None":
+    try:
+        return await page.screenshot(full_page=False)
+    except Exception:
+        return None
+
+
+async def _panel_vision_fallback_caption(page) -> "str | None":
+    if not vision_caption.is_configured():
+        return None
+    png = await _panel_screenshot_bytes(page)
+    if not png:
+        return None
+    return vision_caption.caption_screenshot(png)
+
+
+def _with_vision_fallback(elements_text: str, caption: "str | None") -> str:
+    if not caption:
+        return elements_text
+    return (
+        elements_text
+        + "\n\nVisual description (from a small, separate screenshot-captioning "
+        "model -- NOT grounded to any clickable element, purely descriptive; see "
+        "docs/specs/2026-07-22-vision-grounded-browser-use-design.md, 'Thin "
+        "vision-fallback layer'): " + caption
+    )
+
+
 async def _panel_goto(session, url: str) -> str:
     if session.status == "running":
         await session.navigate(url)
@@ -292,7 +332,11 @@ def _run_panel(ctx: ToolContext, action: str, **kw) -> str:
             return browser_view.run_sync(_panel_read(page, kw.get("selector")))
         if action == "elements":
             items = browser_view.run_sync(_panel_elements(page))
-            return _format_elements(items)
+            out = _format_elements(items)
+            if not items:
+                caption = browser_view.run_sync(_panel_vision_fallback_caption(page))
+                out = _with_vision_fallback(out, caption)
+            return out
         if action == "click":
             # 'ref' (from the 'elements' action) is the most specific target --
             # prefer it over selector/text when given. Resolves to the same
@@ -333,7 +377,10 @@ class BrowserTool(Tool):
         "is); 'elements' (lists every clickable/fillable thing on the current "
         "page with a stable 'ref' id — call this when you're not sure what's on "
         "the page, then click/type using that ref instead of guessing a "
-        "selector); 'click' (ref: an id from 'elements' — most reliable — OR "
+        "selector. If nothing is found and a small vision-fallback captioner is "
+        "configured, a short plain-text description of the screenshot is appended too "
+        "\u2014 informational only, not something you can click by ref); "
+        "'click' (ref: an id from 'elements' \u2014 most reliable \u2014 OR "
         "selector: a CSS selector, OR text: visible link/button text); 'type' "
         "(ref or selector, plus text to fill a field, plus optional submit=true "
         "to press Enter afterward); 'read' (optional selector to scope it, "

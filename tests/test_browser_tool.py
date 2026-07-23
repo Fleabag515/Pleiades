@@ -14,13 +14,19 @@ from pleiades.webui import browser_view
 class FakePage:
     """Duck-types just enough of a Playwright Page for these tests."""
 
-    def __init__(self, elements=None):
+    def __init__(self, elements=None, screenshot_bytes=b"fake-png-bytes"):
         self._elements = elements if elements is not None else []
         self.clicked = []
         self.filled = []
+        self.screenshot_calls = 0
+        self._screenshot_bytes = screenshot_bytes
 
     async def evaluate(self, _js):
         return self._elements
+
+    async def screenshot(self, **kw):
+        self.screenshot_calls += 1
+        return self._screenshot_bytes
 
     async def click(self, selector, timeout=8000):
         if selector not in ('[data-pleiades-ref="e1_ab12"]', "#real-button"):
@@ -150,3 +156,84 @@ def test_run_panel_click_requires_ref_selector_or_text(monkeypatch):
     out = bt._run_panel(_ctx(), "click")
     assert "[browser error]" in out
     assert "ref" in out
+
+
+# ─── Thin vision-fallback captioning hook (docs/specs/2026-07-22-vision- ───
+# grounded-browser-use-design.md, "Thin vision-fallback layer for
+# text-only models") -- only fires when 'elements' finds nothing AND a
+# fallback captioner is configured; a total no-op otherwise.
+
+
+def test_run_panel_elements_nonempty_never_triggers_vision_fallback(monkeypatch):
+    items = [{"ref": "e1_ab12", "role": "button", "label": "Sign in", "enabled": True, "tag": "button"}]
+    page = FakePage(elements=items)
+    _patch_browser_view(monkeypatch, page)
+
+    def _boom(_png):
+        raise AssertionError("must not caption a screenshot when elements were found")
+
+    monkeypatch.setattr(bt.vision_caption, "caption_screenshot", _boom)
+
+    out = bt._run_panel(_ctx(), "elements")
+
+    assert "Sign in" in out
+    assert page.screenshot_calls == 0
+
+
+def test_run_panel_elements_empty_unconfigured_leaves_message_unchanged(monkeypatch):
+    page = FakePage(elements=[])
+    _patch_browser_view(monkeypatch, page)
+    monkeypatch.setattr(bt.vision_caption, "is_configured", lambda: False)
+
+    def _boom(_png):
+        raise AssertionError("must not caption when the fallback isn't configured")
+
+    monkeypatch.setattr(bt.vision_caption, "caption_screenshot", _boom)
+
+    out = bt._run_panel(_ctx(), "elements")
+
+    assert out == "No interactive elements found on the current page."
+    assert page.screenshot_calls == 0
+
+
+def test_run_panel_elements_empty_caption_returns_none_leaves_message_unchanged(monkeypatch):
+    page = FakePage(elements=[])
+    _patch_browser_view(monkeypatch, page)
+    monkeypatch.setattr(bt.vision_caption, "is_configured", lambda: True)
+    monkeypatch.setattr(bt.vision_caption, "caption_screenshot", lambda _png: None)
+
+    out = bt._run_panel(_ctx(), "elements")
+
+    assert out == "No interactive elements found on the current page."
+    assert page.screenshot_calls == 1
+
+
+def test_run_panel_elements_empty_configured_appends_caption(monkeypatch):
+    page = FakePage(elements=[])
+    _patch_browser_view(monkeypatch, page)
+    monkeypatch.setattr(bt.vision_caption, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        bt.vision_caption, "caption_screenshot",
+        lambda _png: "A blue rectangle with a white circle.",
+    )
+
+    out = bt._run_panel(_ctx(), "elements")
+
+    assert "No interactive elements found" in out
+    assert "A blue rectangle with a white circle." in out
+    assert "NOT grounded to any clickable element" in out
+    assert page.screenshot_calls == 1
+
+
+def test_panel_screenshot_bytes_returns_none_on_failure():
+    class BrokenPage(FakePage):
+        async def screenshot(self, **kw):
+            raise Exception("page closed mid-screenshot")
+
+    got = asyncio.run(bt._panel_screenshot_bytes(BrokenPage()))
+    assert got is None
+
+
+def test_with_vision_fallback_passthrough_when_no_caption():
+    assert bt._with_vision_fallback("original text", None) == "original text"
+    assert bt._with_vision_fallback("original text", "") == "original text"
