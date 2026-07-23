@@ -14,6 +14,7 @@ import {
   listChats,
   listScheduledTasks,
   listWorkJobs,
+  runScheduledTaskNow,
   updateScheduledTask
 } from '../lib/api'
 import type {
@@ -25,6 +26,7 @@ import type {
   WorkJobDetail,
   WorkJobSummary
 } from '../lib/types'
+import { checkCron } from '../lib/cron'
 import { relativeTime } from '../lib/format'
 import MessageBubble from './MessageBubble'
 
@@ -368,7 +370,10 @@ function HistorySection({
 // --------------------------------------------------------------------------
 
 function formatSchedule(t: ScheduledTask): string {
-  if (t.cron) return `cron ${t.cron}`
+  if (t.cron) {
+    const check = checkCron(t.cron)
+    return check.valid && check.describe ? check.describe : `cron ${t.cron}`
+  }
   if (t.next_run) return new Date(t.next_run * 1000).toLocaleString()
   return 'fired (one-time)'
 }
@@ -390,6 +395,9 @@ function ScheduledTasksSection({
   const [cronInput, setCronInput] = useState('0 7 * * *')
   const [whenInput, setWhenInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [runningId, setRunningId] = useState<string | null>(null)
+
+  const cronCheck = mode === 'cron' ? checkCron(cronInput) : null
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -409,6 +417,7 @@ function ScheduledTasksSection({
 
   const submit = async (): Promise<void> => {
     if (!taskText.trim()) return
+    if (mode === 'cron' && !checkCron(cronInput).valid) return
     setBusy(true)
     try {
       const input =
@@ -449,6 +458,18 @@ function ScheduledTasksSection({
     }
   }
 
+  const runNow = async (t: ScheduledTask): Promise<void> => {
+    setRunningId(t.id)
+    try {
+      await runScheduledTaskNow(base, t.id)
+      await refresh()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setRunningId(null)
+    }
+  }
+
   return (
     <div>
       {error && <div className="mb-2 text-xs text-rose-300">{error}</div>}
@@ -462,6 +483,15 @@ function ScheduledTasksSection({
               <div className="flex items-start justify-between gap-2">
                 <span className="truncate text-xs text-ink">{t.task}</span>
                 <div className="flex flex-none items-center gap-1.5">
+                  <button
+                    onClick={() => runNow(t)}
+                    disabled={runningId === t.id}
+                    className="text-[10px] font-medium uppercase text-ink-faint transition hover:text-accent disabled:opacity-40"
+                    aria-label="Run scheduled task now"
+                    title="Run now"
+                  >
+                    {runningId === t.id ? '…' : '▶'}
+                  </button>
                   <button
                     onClick={() => toggle(t)}
                     className={`text-[10px] font-medium uppercase transition ${
@@ -482,6 +512,7 @@ function ScheduledTasksSection({
               <div className="mt-0.5 text-[10px] text-ink-faint">
                 {formatSchedule(t)}
                 {t.character ? ` · ${t.character}` : ''}
+                {t.last_run ? ` · last ran ${relativeTime(t.last_run)}` : ''}
               </div>
             </li>
           ))}
@@ -525,6 +556,11 @@ function ScheduledTasksSection({
               className="rounded bg-bg-200 px-2 py-1 text-xs text-ink outline-none"
             />
           )}
+          {mode === 'cron' && cronInput.trim() && (
+            <p className={`text-[10px] ${cronCheck?.valid ? 'text-ink-faint' : 'text-rose-300'}`}>
+              {cronCheck?.valid ? cronCheck.describe : cronCheck?.error}
+            </p>
+          )}
           <div className="flex justify-end gap-2 pt-0.5">
             <button
               onClick={() => setAdding(false)}
@@ -534,7 +570,12 @@ function ScheduledTasksSection({
             </button>
             <button
               onClick={submit}
-              disabled={busy || !taskText.trim() || (mode === 'once' && !whenInput)}
+              disabled={
+                busy ||
+                !taskText.trim() ||
+                (mode === 'once' && !whenInput) ||
+                (mode === 'cron' && !cronCheck?.valid)
+              }
               className="rounded bg-accent px-2 py-1 text-[10px] font-medium text-bg-app disabled:opacity-40"
             >
               Add

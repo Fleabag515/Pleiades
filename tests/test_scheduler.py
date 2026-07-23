@@ -1,5 +1,6 @@
 """pleiades.scheduler: cron matching + ScheduledTaskManager CRUD + tick()."""
 
+import threading
 import time
 from datetime import datetime
 
@@ -211,3 +212,92 @@ def test_tick_with_no_launcher_still_advances_state():
     fired = tick(mgr)
     assert t["id"] in fired
     assert mgr.get(t["id"])["enabled"] is False
+
+
+# --------------------------------------------------------------------------- #
+# run_now: manual "fire immediately" trigger, independent of the schedule
+# --------------------------------------------------------------------------- #
+def test_run_now_fires_one_time_task_and_disables_it():
+    mgr = ScheduledTaskManager()
+    fired_calls = []
+
+    def fake_launcher(task, character, tier, policy):
+        fired_calls.append(task)
+        return "job-manual-1"
+
+    set_job_launcher(fake_launcher)
+    try:
+        t = mgr.create("run me manually", fire_at=time.time() + 3600)
+        d = mgr.run_now(t["id"])
+        assert "run me manually" in fired_calls
+        assert d["last_job_id"] == "job-manual-1"
+        assert d["enabled"] is False       # one-time: still disables after firing
+        assert d["last_run"] > 0
+    finally:
+        set_job_launcher(None)
+
+
+def test_run_now_recurring_task_keeps_its_schedule():
+    mgr = ScheduledTaskManager()
+    set_job_launcher(lambda *a: "job-manual-2")
+    try:
+        t = mgr.create("recurring manual", cron="0 6 * * *")
+        original_next_run = t["next_run"]
+        d = mgr.run_now(t["id"])
+        assert d["enabled"] is True
+        assert d["last_job_id"] == "job-manual-2"
+        # next_run is recomputed from the cron (not shifted by the manual
+        # run), so it may equal or advance past the original -- but the task
+        # must still be scheduled to run again.
+        assert d["next_run"] >= original_next_run - 1
+    finally:
+        set_job_launcher(None)
+
+
+def test_run_now_unknown_task_raises():
+    mgr = ScheduledTaskManager()
+    with pytest.raises(ScheduleError):
+        mgr.run_now("does-not-exist")
+
+
+# --------------------------------------------------------------------------- #
+# concurrency: background tick thread + API/harness calls hit the same
+# scheduled_tasks.json with no locking -- read-then-write is vulnerable to a
+# classic lost-update race under concurrent access.
+# --------------------------------------------------------------------------- #
+def test_concurrent_creates_do_not_lose_writes(monkeypatch):
+    """Reproduces the race: ScheduledTaskManager._save() overwrites the whole
+    file with no lock guarding the load-mutate-save cycle, so N threads
+    calling .create() around the same time can each read the same
+    pre-mutation snapshot and stomp each other's writes on the way out."""
+    mgr = ScheduledTaskManager()
+    orig_save = ScheduledTaskManager._save
+
+    def slow_save(self, data):
+        time.sleep(0.05)  # widen the window between read and write
+        orig_save(self, data)
+
+    monkeypatch.setattr(ScheduledTaskManager, "_save", slow_save)
+
+    n = 8
+    created_ids: list = []
+    ids_lock = threading.Lock()
+
+    def make(i):
+        t = mgr.create(f"race-task-{i}", fire_at=time.time() + 3600 + i)
+        with ids_lock:
+            created_ids.append(t["id"])
+
+    threads = [threading.Thread(target=make, args=(i,)) for i in range(n)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    reg = mgr._load()
+    survived = [tid for tid in created_ids if tid in reg]
+    assert len(survived) == n, (
+        f"lost {n - len(survived)} of {n} concurrently-created scheduled "
+        "tasks to a read-modify-write race (no lock around "
+        "load+mutate+save in ScheduledTaskManager)"
+    )

@@ -485,6 +485,12 @@ export async function deleteScheduledTask(base: string, id: string): Promise<voi
   if (!res.ok) throw new Error(`DELETE /api/scheduled-tasks/${id} -> ${res.status}`)
 }
 
+/** Manual "Run now" trigger -- fires a task immediately, out of band from
+ * its schedule (POST /api/scheduled-tasks/{id}/run, see server.py). */
+export async function runScheduledTaskNow(base: string, id: string): Promise<ScheduledTask> {
+  return asJson(await fetch(`${base}/api/scheduled-tasks/${id}/run`, { method: 'POST' }))
+}
+
 // ---- Right panel: browser-use embed (Playwright/Chromium, see browser_view.py) ----
 
 export async function browserViewStatus(

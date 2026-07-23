@@ -7,6 +7,7 @@ scheduled-tasks tool.
     list_scheduled_tasks()
     update_scheduled_task(task_id, enabled=False)
     delete_scheduled_task(task_id)
+    run_scheduled_task_now(task_id)
 
 A scheduled task fires by starting a real work job (the same thing
 POST /api/work runs) for the given — or, if left blank, the currently
@@ -121,3 +122,21 @@ def delete_scheduled_task(task_id: str) -> str:
     """
     ok = ScheduledTaskManager().delete(task_id)
     return f"Deleted {task_id}." if ok else f"Error: no such scheduled task: {task_id}"
+
+
+@tool(tags=("schedule",))
+def run_scheduled_task_now(task_id: str) -> str:
+    """Fire a scheduled task immediately, out of band from its schedule --
+    useful to test a task works before waiting for its cron/fire_at, or to
+    run a recurring task an extra time on demand.
+
+    task_id: id from list_scheduled_tasks.
+
+    A one-time task still disables itself after this runs it (same as if it
+    had fired normally); a recurring task's next scheduled run is untouched.
+    """
+    try:
+        t = ScheduledTaskManager().run_now(task_id)
+    except ScheduleError as e:
+        return f"Error: {e}"
+    return f"Ran {t['id']} now (job {t['last_job_id'] or '(none)'})."
