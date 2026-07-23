@@ -3,10 +3,6 @@ llama-server runtime only (see pleiades/launch.py's build_command docstring
 for why the python fallback and PLEIADES_ENGINE=pleiades_native are
 deliberately excluded)."""
 
-import os
-
-import pytest
-
 from pleiades import launch, runtime
 from pleiades.autofit import RuntimeCaps
 from pleiades.config import Settings

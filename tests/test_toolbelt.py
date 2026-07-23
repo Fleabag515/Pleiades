@@ -3,6 +3,27 @@ from types import SimpleNamespace
 from pleiades.tools import Tool, ToolBelt
 
 
+class _FakeProfileAnamnesis:
+    """Stand-in for pleiades.anamnesis.Anamnesis: the webui's ProfileManager
+    only ever calls .exists()/.create_character()/.delete() on the path these
+    tests exercise (profile create/tools/policy — no chat, no proxy). Avoids
+    needing a live Anamnesis daemon on :9000 just to test the local-only
+    tool-policy plumbing."""
+
+    def __init__(self, *_a, **_k):
+        self._names = set()
+
+    def exists(self, name):
+        return name in self._names
+
+    def create_character(self, name, **_cfg):
+        self._names.add(name)
+        return {"name": name}
+
+    def delete(self, name):
+        self._names.discard(name)
+
+
 class EchoTool(Tool):
     name = "echo"
     description = "Echo back the text."
@@ -108,7 +129,7 @@ def test_toolbelt_get_returns_tool_or_none():
     assert belt.get("nope") is None
 
 
-def test_profile_tools_endpoint_reflects_exec_policy_and_usage():
+def test_profile_tools_endpoint_reflects_exec_policy_and_usage(monkeypatch):
     """Full round trip: create a profile, hit GET .../tools, and check that
     status honestly reflects exec_policy (deny -> blocked, ask -> needs
     approval, allow -> available) and that use_count/last_used come from
@@ -118,8 +139,10 @@ def test_profile_tools_endpoint_reflects_exec_policy_and_usage():
     from fastapi.testclient import TestClient
 
     from pleiades import chats
+    import pleiades.profiles as profiles_mod
     from pleiades.webui import create_app
 
+    monkeypatch.setattr(profiles_mod, "Anamnesis", _FakeProfileAnamnesis)
     app = create_app()
     client = TestClient(app, base_url="http://127.0.0.1")
 
@@ -217,7 +240,7 @@ def test_dispatch_blanket_allow_ask_deny_unchanged_by_preset_addition():
     assert belt.dispatch("echo", {"text": "hi"}, ctx=_ctx(exec_policy="ask"), approve=lambda t, a: True) == "echo: hi"
 
 
-def test_set_tool_policy_endpoint_persists_and_reflected_in_tools_list():
+def test_set_tool_policy_endpoint_persists_and_reflected_in_tools_list(monkeypatch):
     """Full round trip: switch a character into preset, set/clear a
     per-tool override via the new endpoint, and confirm GET .../tools
     reflects both the stored tool_policy and the resulting status."""
@@ -225,8 +248,10 @@ def test_set_tool_policy_endpoint_persists_and_reflected_in_tools_list():
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
+    import pleiades.profiles as profiles_mod
     from pleiades.webui import create_app
 
+    monkeypatch.setattr(profiles_mod, "Anamnesis", _FakeProfileAnamnesis)
     app = create_app()
     client = TestClient(app, base_url="http://127.0.0.1")
 
