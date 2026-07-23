@@ -7,7 +7,16 @@ import {
   useRef,
   useState
 } from 'react'
-import { createChat, getApproval, getChat, listChats, postApproval, stopChat, streamMessage } from './api'
+import {
+  createChat,
+  getApproval,
+  getChat,
+  interjectMessage,
+  listChats,
+  postApproval,
+  stopChat,
+  streamMessage
+} from './api'
 import type { AssistantItem, ChatMessageEntry, PendingApproval, TurnMeta } from './types'
 
 export interface AssistantDraft {
@@ -24,6 +33,13 @@ export interface ChatSessionState {
   approval: PendingApproval | null
   approvalBusy: boolean
   error: string | null
+  // A message the user sent mid-turn (see `interject`) that arrived too
+  // late to be woven in -- the turn ended before the engine polled for it
+  // again (see webui/server.py's chats_message `undelivered` event). Never
+  // silently dropped: the composer surfaces this so the user can resend it
+  // as a fresh message. Cleared automatically the next time send()/interject
+  // runs for this character.
+  undelivered: string | null
 }
 
 const EMPTY_SESSION: ChatSessionState = {
@@ -34,13 +50,19 @@ const EMPTY_SESSION: ChatSessionState = {
   streaming: false,
   approval: null,
   approvalBusy: false,
-  error: null
+  error: null,
+  undelivered: null
 }
 
 interface ChatStoreContextValue {
   sessions: Record<string, ChatSessionState>
   ensureLiveChat: (base: string, character: string) => Promise<void>
   send: (base: string, character: string, text: string) => Promise<void>
+  // Weave a message into an ALREADY-IN-FLIGHT turn instead of starting a
+  // second concurrent one (see api.ts's interjectMessage). Falls back to a
+  // normal send() if there's no turn in flight (e.g. the turn just finished
+  // in the tiny window before this call landed) so it never silently no-ops.
+  interject: (base: string, character: string, text: string) => Promise<void>
   stop: (base: string, character: string) => Promise<void>
   respondApproval: (base: string, character: string, ok: boolean) => Promise<void>
   startNewChat: (base: string, character: string) => Promise<void>
@@ -147,7 +169,8 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
         history: [...s.history, userMsg],
         draft: { items: [], meta: {} },
         streaming: true,
-        error: null
+        error: null,
+        undelivered: null
       }))
 
       clearApprovalTimer(character)
@@ -217,6 +240,18 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
               }
             }
             patchSession(character, { draft: { items, meta: {} } })
+          } else if (evt.type === 'user_injected') {
+            // A message sent via interject() while this turn was already
+            // running, woven in by the engine at a safe round/tool boundary
+            // -- render it inline, in order, exactly where it happened.
+            flushReasoning()
+            flushText()
+            items = [...items, { t: 'user_injected', text: evt.text }]
+            patchSession(character, { draft: { items, meta: {} } })
+          } else if (evt.type === 'undelivered') {
+            // Arrived too late to be woven into this turn (see
+            // ChatSessionState.undelivered) -- never silently dropped.
+            patchSession(character, { undelivered: evt.text })
           } else if (evt.type === 'done') {
             flushReasoning()
             flushText()
@@ -245,6 +280,30 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
       }
     },
     [ensureLiveChat, patchSession, clearApprovalTimer]
+  )
+
+  // Weave a message into an ALREADY-IN-FLIGHT turn (see api.ts's
+  // interjectMessage / webui/server.py's chats_interject) instead of
+  // starting a second concurrent turn for this character. The composer
+  // calls this instead of send() whenever `streaming` is already true.
+  // Falls back to a normal send() if the backend says there's no turn in
+  // flight (a race where the turn finished in the tiny window between the
+  // composer deciding to interject and this call landing) -- the message
+  // must never just silently vanish.
+  const interject = useCallback(
+    async (base: string, character: string, text: string): Promise<void> => {
+      const chatId = sessionsRef.current[character]?.chatId
+      if (!chatId) {
+        await send(base, character, text)
+        return
+      }
+      try {
+        await interjectMessage(base, chatId, text)
+      } catch {
+        await send(base, character, text)
+      }
+    },
+    [send]
   )
 
   const stop = useCallback(async (base: string, character: string): Promise<void> => {
@@ -302,6 +361,7 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
           approval: null,
           approvalBusy: false,
           error: null,
+          undelivered: null,
           loading: false
         })
       } catch (e) {
@@ -312,8 +372,8 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
   )
 
   const value = useMemo(
-    () => ({ sessions, ensureLiveChat, send, stop, respondApproval, startNewChat }),
-    [sessions, ensureLiveChat, send, stop, respondApproval, startNewChat]
+    () => ({ sessions, ensureLiveChat, send, interject, stop, respondApproval, startNewChat }),
+    [sessions, ensureLiveChat, send, interject, stop, respondApproval, startNewChat]
   )
 
   return <ChatStoreContext.Provider value={value}>{children}</ChatStoreContext.Provider>
@@ -328,6 +388,6 @@ export function useChatSession(character: string): ChatSessionState {
 export function useChatStoreActions(): Omit<ChatStoreContextValue, 'sessions'> {
   const ctx = useContext(ChatStoreContext)
   if (!ctx) throw new Error('useChatStoreActions must be used within ChatSessionsProvider')
-  const { ensureLiveChat, send, stop, respondApproval, startNewChat } = ctx
-  return { ensureLiveChat, send, stop, respondApproval, startNewChat }
+  const { ensureLiveChat, send, interject, stop, respondApproval, startNewChat } = ctx
+  return { ensureLiveChat, send, interject, stop, respondApproval, startNewChat }
 }

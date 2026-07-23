@@ -45,7 +45,7 @@ interface ChatViewProps {
  */
 function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX.Element {
   const session = useChatSession(character)
-  const { ensureLiveChat, send, stop, respondApproval, startNewChat } = useChatStoreActions()
+  const { ensureLiveChat, send, interject, stop, respondApproval, startNewChat } = useChatStoreActions()
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -114,6 +114,21 @@ function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX
             </div>
           )}
 
+          {session.undelivered && (
+            <div className="mx-5 my-2 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+              <span>
+                This arrived too late to reach the running turn and was not delivered:{' '}
+                <span className="italic">&ldquo;{session.undelivered}&rdquo;</span>
+              </span>
+              <button
+                onClick={() => send(base, character, session.undelivered as string)}
+                className="flex-none rounded-md bg-amber-500/20 px-2.5 py-1 text-xs font-medium text-amber-100 transition hover:bg-amber-500/30"
+              >
+                Resend
+              </button>
+            </div>
+          )}
+
           {session.error && (
             <div className="mx-5 my-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
               {session.error}
@@ -127,6 +142,7 @@ function ChatView({ base, character, rightPanelOpen }: ChatViewProps): React.JSX
           disabled={!character}
           streaming={session.streaming}
           onSend={(text) => send(base, character, text)}
+          onInterject={(text) => interject(base, character, text)}
           onStop={() => stop(base, character)}
           onNewChat={() => {
             if (

@@ -100,6 +100,24 @@ export async function stopChat(base: string, chatId: string): Promise<void> {
   await fetch(`${base}/api/chats/${chatId}/stop`, { method: 'POST' })
 }
 
+/**
+ * Weave a message into an ALREADY-IN-FLIGHT turn (see pleiades/webui/
+ * server.py's chats_interject) instead of starting a second concurrent one.
+ * Throws (caller should surface it / fall back to a fresh send) if there's
+ * no turn in flight for this chat -- e.g. a race where the turn just
+ * finished between the composer deciding to interject and this call landing.
+ */
+export async function interjectMessage(base: string, chatId: string, message: string): Promise<void> {
+  const res = await fetch(`${base}/api/chats/${chatId}/interject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message })
+  })
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`)
+  }
+}
+
 export async function getApproval(base: string, chatId: string): Promise<PendingApproval | null> {
   const data = await asJson<{ pending: PendingApproval | null }>(
     await fetch(`${base}/api/chats/${chatId}/approval`)
