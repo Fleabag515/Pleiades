@@ -14,7 +14,9 @@ Memory is Anamnesis's job — we never re-send long histories or separately pers
 
 from __future__ import annotations
 
+import base64
 import os
+from pathlib import Path
 from typing import Callable, Optional, Union
 
 from . import config
@@ -600,20 +602,69 @@ class Engine:
             out.append(m)
         return out
 
+    # Image mimetypes worth ever offering to a vision model / fallback
+    # captioner -- an attachment of any other type (pdf, docx, audio, ...)
+    # is out of scope here; feature/attach-cache's own _attachments_note
+    # (real-path injection for tool use) already covers "give the model a
+    # path it can read with its own tools" for every attachment type,
+    # vision content-parts/fallback-captioning only ever apply to images.
+    _IMAGE_MIME_PREFIXES = ("image/",)
+
+    @staticmethod
+    def _read_attachment_bytes(att: dict) -> "bytes | None":
+        """Real bytes for one attachment dict, whichever shape it arrived in.
+
+        feature/attach-cache's real shape (pleiades/attachments.py,
+        confirmed once that branch actually landed code, 2026-07-23) is
+        `{"name", "path", "mime"}` -- a real file already saved on disk by
+        POST /api/chats/{id}/attachments, resolved via
+        attachments.resolve_attachments(). `data_b64`/`data` (inline
+        base64) is also accepted, for callers/tests that have raw bytes in
+        hand without a cache file backing them (e.g. this module's own test
+        suite, or a future non-file-backed caller). Returns None -- never
+        raises -- on anything unreadable so one bad attachment can't fail
+        the whole turn.
+        """
+        path = att.get("path")
+        if path:
+            try:
+                return Path(path).read_bytes()
+            except OSError:
+                return None
+        data = att.get("data_b64") or att.get("data") or ""
+        if not data:
+            return None
+        try:
+            return base64.b64decode(data)
+        except Exception:
+            return None
+
+    @classmethod
+    def _is_image_attachment(cls, att: dict) -> bool:
+        mime = (att.get("mime") or "").lower()
+        if mime:
+            return mime.startswith(cls._IMAGE_MIME_PREFIXES)
+        # No mime given (some manual callers) -- fall back to a
+        # filename-extension guess so this doesn't just silently no-op.
+        name = (att.get("name") or att.get("filename") or "").lower()
+        return name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+
     @staticmethod
     def _build_user_content(user_message: str, attachments: Optional[list[dict]],
                             vision_capable: bool) -> "str | list[dict]":
         """The FRESH user turn only: an OpenAI content-parts array when there
-        are real attachments AND the assigned model can actually take image
-        input, else plain text with any image attachments described via the
-        fallback captioner (see _describe_attachments_as_text) when one is
-        configured, or just noted as present when it isn't.
+        are real IMAGE attachments AND the assigned model can actually take
+        image input, else plain text with any image attachments described
+        via the fallback captioner (see _describe_attachments_as_text) when
+        one is configured, or just noted as present when it isn't.
 
-        `attachments`: [{"mime": "image/png", "data_b64": "...", "name":
-        "logo.png"}, ...] -- the shape documented in this project's
-        2026-07-23 vision-routing design pending feature/attach-cache
-        landing its own attachment/cache mechanism; adjust here if that
-        branch ships a different shape.
+        `attachments`: real entries from feature/attach-cache's
+        `attachments.resolve_attachments()` -- `{"name", "path", "mime"}`,
+        a real file on disk (see _read_attachment_bytes) -- or, for tests/
+        simpler callers, inline `{"mime", "data_b64", "name"}`. Non-image
+        attachments (pdf, docx, audio, ...) are left alone entirely here;
+        feature/attach-cache's own `_attachments_note` (real-path injection
+        for tool use) already covers those.
 
         Only ever applied to the NEW message, never to resent history (see
         _degrade_history_attachments) -- re-encoding a past image as base64
@@ -623,15 +674,19 @@ class Engine:
         """
         if not attachments:
             return user_message
+        images = [a for a in attachments if Engine._is_image_attachment(a)]
+        if not images:
+            return user_message
         if vision_capable:
             parts: list[dict] = [{"type": "text", "text": user_message}]
-            for att in attachments:
-                data = att.get("data_b64") or att.get("data") or ""
-                if not data:
+            for att in images:
+                raw = Engine._read_attachment_bytes(att)
+                if raw is None:
                     continue
                 mime = att.get("mime") or "image/png"
+                b64 = base64.b64encode(raw).decode("ascii")
                 parts.append({"type": "image_url",
-                              "image_url": {"url": f"data:{mime};base64,{data}"}})
+                              "image_url": {"url": f"data:{mime};base64,{b64}"}})
             return parts if len(parts) > 1 else user_message
         # Non-vision model: never send an image marker it can't render (see
         # _model_vision_capable's docstring) -- describe it in text instead,
@@ -640,7 +695,7 @@ class Engine:
         # PLEIADES_VISION_FALLBACK_URL). Absent that config, the model still
         # learns an image was attached, just not what's in it -- strictly
         # better than silently dropping it with no trace at all.
-        return Engine._describe_attachments_as_text(user_message, attachments)
+        return Engine._describe_attachments_as_text(user_message, images)
 
     @staticmethod
     def _describe_attachments_as_text(user_message: str, attachments: list[dict]) -> str:
@@ -652,13 +707,9 @@ class Engine:
                 notes.append(f"[attached image: {name} -- no vision-fallback model "
                              f"configured (PLEIADES_VISION_FALLBACK_URL); contents unknown]")
                 continue
-            data = att.get("data_b64") or att.get("data") or ""
-            if not data:
-                continue
-            try:
-                raw = __import__("base64").b64decode(data)
-            except Exception:
-                notes.append(f"[attached image: {name} -- could not decode]")
+            raw = Engine._read_attachment_bytes(att)
+            if raw is None:
+                notes.append(f"[attached image: {name} -- could not read/decode]")
                 continue
             desc = vision_client.describe_image(raw)
             notes.append(f"[attached image: {name}] " + (desc or "(fallback captioner "

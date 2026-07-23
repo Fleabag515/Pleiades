@@ -60,13 +60,13 @@ def test_build_user_content_builds_content_parts_when_vision_capable():
 
 def test_build_user_content_multiple_attachments():
     atts = [
-        {"mime": "image/png", "data_b64": "AAA", "name": "a.png"},
-        {"mime": "image/jpeg", "data_b64": "BBB", "name": "b.jpg"},
+        {"mime": "image/png", "data_b64": "QUFB", "name": "a.png"},
+        {"mime": "image/jpeg", "data_b64": "QkJC", "name": "b.jpg"},
     ]
     content = Engine._build_user_content("compare these", atts, vision_capable=True)
     assert len(content) == 3
-    assert content[1]["image_url"]["url"] == "data:image/png;base64,AAA"
-    assert content[2]["image_url"]["url"] == "data:image/jpeg;base64,BBB"
+    assert content[1]["image_url"]["url"] == "data:image/png;base64,QUFB"
+    assert content[2]["image_url"]["url"] == "data:image/jpeg;base64,QkJC"
 
 
 def test_build_user_content_falls_back_to_text_description_when_not_vision_capable(monkeypatch):
@@ -116,7 +116,7 @@ def test_base_messages_wires_attachments_only_into_the_fresh_turn_not_history():
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,STALE"}, "name": "old.png"},
         ]},
     ]
-    atts = [{"mime": "image/png", "data_b64": "FRESH", "name": "new.png"}]
+    atts = [{"mime": "image/png", "data_b64": "RlJFU0g=", "name": "new.png"}]
     messages = Engine._base_messages("new question", None, None, history,
                                      attachments=atts, vision_capable=True)
     # system, degraded history user turn, fresh user turn
@@ -126,7 +126,7 @@ def test_base_messages_wires_attachments_only_into_the_fresh_turn_not_history():
     fresh = messages[-1]
     assert fresh["role"] == "user"
     assert isinstance(fresh["content"], list)
-    assert fresh["content"][1]["image_url"]["url"] == "data:image/png;base64,FRESH"
+    assert fresh["content"][1]["image_url"]["url"] == "data:image/png;base64,RlJFU0g="
 
 
 def test_model_vision_capable_local_registered_model(tmp_path):
@@ -175,3 +175,29 @@ def test_model_vision_capable_ollama_cloud_manual_override():
     p = Profile(name="char-ollama-vision", model="ollama-cloud:qwen2.5vl",
                model_capabilities="vision")
     assert eng._model_vision_capable(p) is True
+
+
+def test_build_user_content_reads_real_file_path_attachment(tmp_path):
+    """feature/attach-cache's real shape (pleiades/attachments.py,
+    resolve_attachments()) is {"name","path","mime"} -- a real file already
+    saved on disk, no inline base64 at all. Confirm that shape works too."""
+    img = tmp_path / "logo.png"
+    img.write_bytes(b"\x89PNG-fake-bytes")
+    atts = [{"name": "logo.png", "path": str(img), "mime": "image/png"}]
+    content = Engine._build_user_content("what is this?", atts, vision_capable=True)
+    assert isinstance(content, list)
+    import base64 as b64mod
+    expected = b64mod.b64encode(b"\x89PNG-fake-bytes").decode("ascii")
+    assert content[1]["image_url"]["url"] == f"data:image/png;base64,{expected}"
+
+
+def test_build_user_content_ignores_nonimage_attachments():
+    atts = [{"name": "notes.pdf", "path": "/tmp/does-not-matter.pdf", "mime": "application/pdf"}]
+    content = Engine._build_user_content("check this doc", atts, vision_capable=True)
+    assert content == "check this doc"
+
+
+def test_build_user_content_unreadable_path_falls_back_to_plain_text(tmp_path):
+    atts = [{"name": "gone.png", "path": str(tmp_path / "does-not-exist.png"), "mime": "image/png"}]
+    content = Engine._build_user_content("what is this?", atts, vision_capable=True)
+    assert content == "what is this?"

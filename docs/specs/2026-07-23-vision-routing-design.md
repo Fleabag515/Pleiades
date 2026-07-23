@@ -51,13 +51,31 @@ warning against assuming any of this "just works."
      is never re-sent as base64 on a later turn (would re-prefill
      1000+ image tokens per round on a model that may already be
      CPU-offloaded for MoE experts — a real latency regression).
-   - `feature/attach-cache` (the parallel branch meant to own the actual
-     attachment/cache mechanism) had landed no commits as of this writing
-     (`git diff main..feature/attach-cache` was empty) — built against the
-     documented attachment shape (`{"mime","data_b64","name"}`) from this
-     project's working notes; adjust `_build_user_content`/
-     `_degrade_history_attachments` if that branch ships something
-     different.
+   - `feature/attach-cache` had landed no commits when this work started
+     (`git diff main..feature/attach-cache` was empty), so this was first
+     built against the documented attachment shape
+     (`{"mime","data_b64","name"}`) from this project's working notes. That
+     branch landed a real commit (`63146c7`) mid-session; its real shape
+     turned out to be `{"name","path","mime"}` — a real file already saved
+     to `pleiades/attachments.py`'s per-chat cache directory, resolved via
+     `resolve_attachments()`, NOT inline base64. `_build_user_content()` was
+     updated (`_read_attachment_bytes()`) to read real bytes off `path`
+     when present, falling back to `data_b64`/`data` for tests/simpler
+     callers. Also added `_is_image_attachment()` (mime-prefix, falling back
+     to a filename-extension guess) so non-image attachments (pdf, docx,
+     audio — attach-cache's own `_attachments_note` path-injection already
+     covers those) are left alone by the vision path entirely. The two
+     branches are complementary by design, per attach-cache's own
+     docstring: it deliberately does none of the "can a model see/hear
+     this" work (that's this branch's job); it only answers "where is the
+     file" for tool use. Not yet merged into one branch — both are
+     independent feature branches off `main`; whoever merges them will hit
+     a textual conflict in `stream_events()`'s signature and the
+     `_base_messages()` call site (attach-cache added its own
+     `attachments_note: Optional[str]` param there), which is expected and
+     resolvable: BOTH parameters are needed side by side (`attachments_note`
+     for the real-path text note, `attachments` for the vision content-parts
+     array) since they solve different problems.
 
 ## Live verification (step 4) — real evidence, not assumed
 
