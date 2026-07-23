@@ -557,14 +557,137 @@ throughout this effort (no Python touched this phase). No characters were
 displaced — `models-running.json` was empty (no live production character)
 for the duration, and the shared GPU had ~8 GB free.
 
-## Phase 7 — Statewise integration (adaptive MoE expert residency)
+## Phase 7 — Statewise integration (static MoE expert cache) — DONE 2026-07-23
 
-**Goal:** bolt Ion's Statewise adaptive expert-caching (`llama_statewise_swap`
-C API, per the earlier council discussion) onto the new engine's
-`ModelManager`, once it's the default. Requires cloning
-`github.com/ionizedd/llama.cpp-Statewise` locally first (not present on this
-box currently) and reading its actual `FLEAGLE_HANDOFF.md` before touching
-anything — not yet done.
+**Goal (as-shipped):** give the engine a *static* GPU-resident cache of the
+hot MoE experts, so that on a CPU-offloaded MoE model the most-routed experts
+are read at GPU bandwidth instead of host bandwidth. This is v1 of Ion's
+`ionizedd/llama.cpp-Statewise` fork, hand-ported onto our vendored llama.cpp
+(`b46812de`) for the `qwen35moe` (Ornith 35B-A3B, the character's production
+model). **v2 online adaptation is deliberately out of scope** — reasoning below.
+
+### What shipped
+
+A load-time cache, no GGUF/arch changes, activated by a routing-profile file:
+
+- **`ggml-cpu` `mul_mat_id` sentinel skip** — an expert id of `-1` zeroes that
+  dst row and skips it. This is how the *cold* side of the split (experts kept
+  on CPU) drops the experts that the GPU cache already served.
+- **`ggml-cuda` `mul_mat_id` placement tripwire** — a cold, sentinel-bearing
+  matmul is tagged `op_params[0]==1`; if such a node is ever scheduled on CUDA
+  it `GGML_ABORT`s instead of running (CUDA would read `-1` as an expert index
+  and silently corrupt output). This mirrors Ion's *vulkan* tripwire exactly.
+  **We did NOT write a CUDA `-1`-skip kernel** — see "CUDA port" below.
+- **`llama-graph` `build_moe_ffn` split** (both overloads) — decode-only
+  (`n_tokens <= 8`; prompt processing keeps the dense path). Each used expert
+  is served by exactly one side: a cached expert runs on the GPU hot chain
+  (its per-layer cache tensor) and is zeroed on the cold chain via `-1`; a
+  miss is zeroed on the hot chain (routed to a dummy all-zero slot `K`) and
+  runs on the CPU cold chain. The two are recombined with an `add`. Guarded to
+  separate gate/up, no per-expert scales/biases, SILU — all true for Ornith.
+- **`llama-model` `statewise_init`** — at load, allocates per-layer cache
+  tensors `[n_embd, n_ff_exp, K+1]` (slot `K` = zeros) plus two F32 id-remap
+  tables in one device buffer, and fills them by slab-copying the chosen
+  experts out of the CPU expert tensors. Reachable three ways: the
+  `LLAMA_STATEWISE_MAP` env var (for `llama-cli`/`llama-bench` A/Bs), a new
+  public `llama_model_statewise_init()` C API, and a `statewise_map` parameter
+  on `pleiades_engine::ModelManager::load()` (the real engine call site — it
+  throws if the profile can't be applied rather than silently disabling).
+- **`qwen35moe.cpp`** — wires each layer's cache tensors into the shared
+  `build_moe_ffn` call. Because Ornith stores *separate* gate/up experts
+  (`ffn_gate_up_exps == nullptr`, confirmed from the GGUF: 40 MoE layers, 256
+  experts, `n_ff_exp` 512, Q6_K), it inherits the split with no bespoke FFN
+  code — the hybrid Gated-DeltaNet attention layers are untouched.
+
+### The qwen35moe / build_moe_ffn integration point
+
+Ornith routes through the *shared* `build_moe_ffn` helper (its
+`build_layer_ffn` calls the 5-tensor overload), so the whole port reduces to
+threading an optional `const llama_statewise_layer * sw` through the two
+overloads and branching inside. No merged-`gate_up` path, no per-expert
+scale/bias tensors exist on this model, so those are `GGML_ASSERT`-guarded off
+in the split rather than implemented.
+
+### Measured on RTX 2080 Ti (11 GB, sm_75) + real Ornith Q6_K
+
+Config: `-ngl 99 --n-cpu-moe 40 --no-mmap` (all 40 layers' experts on CPU,
+~25 GB host; ~1.6 GB non-expert on GPU). Same flags both sides; only the cache
+differs. Wiki-profiled map, K=32 hot experts/layer (3.25 GB cache incl. dummy
+slots), coverage curve from this session's `expert_counts_wiki.csv`.
+
+| check | result |
+|---|---|
+| `test-backend-ops MUL_MAT_ID` | 764/764 OK on **both** CPU and CUDA |
+| 64-tok greedy, cache OFF vs ON | **byte-for-byte identical** output |
+| `llama-bench` tg96 decode | **18.66 → 24.97 t/s (+33.8%)** |
+| engine `ctest` | 7/7 pass | 
+| Python `pytest -q` | 462 pass, 1 fail (pre-existing `test_sandbox` flake) |
+
+The +33.8% is larger than Ion's +10.6% because this config is far more
+CPU-bound than his (all experts offloaded on an 11 GB card vs his partial
+offload on 16 GB) — every cache hit saves more here. Note `llama-bench` tg is
+*unconditioned* generation (Ion's "OOD" case, which was neutral on his box);
+that it still wins strongly here is a hardware effect, not a contradiction.
+
+### Honest deviations from the original Phase 7 one-liner
+
+- **v2 descoped.** The original line named `llama_statewise_swap` (v2 online
+  adaptation). Before writing code this session we re-ran Ion's own
+  `expert-stats` telemetry against the *real* Ornith model. The static premise
+  (a small hot subset serves most routing) replicated well — good for v1. But
+  the **domain-conditional hot-set-shift** signal that is v2's entire
+  justification did **not** clearly replicate: cross-domain top-K overlap at
+  matched pool-fraction was ~28%, near the ~25% random baseline, versus Ion's
+  clear 11.3%-vs-25% anti-correlation on his model. Given the weak signal plus
+  v2's real cost (usage-counter instrumentation, a live swap API, a supervisor
+  wired into the decode loop — which Ion never finished even in his own fork),
+  we built v1 only. No `llama_statewise_swap`, no supervisor, no adapt tool.
+- **CUDA guard is a tripwire, not a skip.** The handoff framed the CUDA task as
+  "port the id==-1 skip." Reading Ion's fork, his *vulkan* change is not a skip
+  either — it's an abort tripwire; he tried the real shader-side skip and
+  measured ~11% global cost, reverted it, and let the CPU own the cold side.
+  We made the identical choice for CUDA, and it is also the *safer* one: a
+  tripwire can only ever abort, never silently corrupt, whereas a hand-written
+  CUDA `-1`-skip kernel is exactly the thing that could corrupt every future
+  generation. Correctness rests on the cold experts staying CPU-pinned
+  (`n_cpu_moe` covering the cached layers), which the tripwire enforces loudly.
+- **Token-identity is length-scoped.** Cache OFF vs ON is token-identical at 64
+  tokens but diverges at ~75 tokens on a 256-token run — at a greedy *tie*
+  (e.g. "…753 BC (Roman *civilization*…)" vs "…753 BC (Romulus and Remus)"),
+  both coherent. This is GPU-vs-CPU expert-matmul numerics flipping a near-tie,
+  the same class as `-ngl` placement variation, not a routing bug. Matches
+  Ion's own `ba758e0cb` finding verbatim.
+
+### Submodule strategy (a real decision)
+
+The patch lives *inside* the `third_party/llama.cpp` submodule, which `.gitmodules`
+pins to upstream `ggerganov/llama.cpp`. Options were: (a) commit to a local
+branch and repoint the gitlink at a commit only this machine has; (b) push a
+fork under `Fleabag515` and repoint `.gitmodules` at it; (c) something else.
+
+**Chosen: (a) now, with a safety net, and (b) recommended when ready to push.**
+The port is committed as `statewise-v1` in the submodule (off `b46812de`) and
+the superproject gitlink points at it. Because that commit is unreachable from
+any remote until pushed, `git submodule update` on a fresh clone would fail —
+so the **complete patch is also committed to the superproject** as
+`patches/statewise-v1-llamacpp.patch`, making the work reproducible from
+Pleiades' own history regardless of submodule remote state (re-apply with
+`git -C third_party/llama.cpp am < patches/statewise-v1-llamacpp.patch`). The
+permanent home should be option (b): a `Fleabag515/llama.cpp` fork carrying the
+`statewise-v1` branch, with `.gitmodules` repointed at it — the same pattern
+Ion used (`ionizedd/llama.cpp-Statewise`). That is deferred here only because
+this task explicitly must not push; it is the one remaining follow-up.
+
+### Not fully confident about / follow-ups
+
+- Only K=32/wiki measured end-to-end; the solver-optimal per-layer K (Ion's
+  knapsack over the coverage curve) and larger K (48/64, ~62-71% coverage)
+  are unmeasured on this card's VRAM budget — bounded by the ~8.5 GB free with
+  live services running, not by the code.
+- The tripwire assumes `n_cpu_moe` covers every cached layer; if a future load
+  config offloads fewer layers than the map caches, the cold matmul for an
+  uncovered layer would land on CUDA and (correctly) abort. `ModelManager`
+  callers must keep the two in sync.
 
 ## Phase 8 — Cross-platform matrix (later milestones, per the ask)
 
