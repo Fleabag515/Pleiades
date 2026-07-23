@@ -755,18 +755,26 @@ def model() -> None:
                    "-1 = all layers, 0 = CPU. NVIDIA/CUDA, AMD/ROCm, Apple/Metal builds.")
 @click.option("--chat-format", default="", help="Override chat template (e.g. chatml, llama-3).")
 @click.option("--port", default=0, help="Fixed port (0 = auto-assign).")
+@click.option("--mmproj", default="", help="Path to a multimodal-projector GGUF for vision "
+                                            "support; blank = auto-detect a mmproj-*.gguf "
+                                            "sitting next to PATH.")
+@click.option("--capabilities", default="", help="Manual capability override, comma-separated "
+                                                  "(e.g. 'vision'). Usually unnecessary for "
+                                                  "local models -- --mmproj already implies it.")
 def model_add(name: str, path: str, n_ctx: str, n_gpu_layers: str,
-              chat_format: str, port: int) -> None:
+              chat_format: str, port: int, mmproj: str, capabilities: str) -> None:
     """Register a GGUF model file under NAME."""
     from .models import ModelManager, ModelError
     try:
         m = ModelManager().add(name, path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers,
-                               chat_format=chat_format, port=port)
+                               chat_format=chat_format, port=port,
+                               mmproj=mmproj, capabilities=capabilities)
     except ModelError as e:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
+    vision_note = f" (vision: mmproj={m['mmproj']})" if m.get("mmproj") else ""
     console.print(f"[green]Added model '{name}'[/green] → {m['path']} "
-                  f"(port {m['port']}, gpu_layers {m['n_gpu_layers']}).")
+                  f"(port {m['port']}, gpu_layers {m['n_gpu_layers']}){vision_note}.")
     console.print(f"Start it: [bold]pleiades model start {name}[/bold]")
 
 

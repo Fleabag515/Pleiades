@@ -14,7 +14,9 @@ Memory is Anamnesis's job — we never re-send long histories or separately pers
 
 from __future__ import annotations
 
+import base64
 import os
+from pathlib import Path
 from typing import Callable, Optional, Union
 
 from . import config
@@ -289,6 +291,38 @@ class Engine:
         return (self._resolve_upstream(profile).get("model")
                 or getattr(profile, "model", "") or profile.name)
 
+    def _model_vision_capable(self, profile: Profile) -> bool:
+        """Can this character's currently-assigned brain accept image input?
+
+        Gates whether _base_messages() builds an OpenAI content-parts array
+        for an attached image or just sends plain text (see
+        docs/specs/2026-07-23-vision-routing-design.md) -- sending image
+        parts to a model/runtime that can't render them is worse than not
+        attaching at all, since a silently-dropped image marker reads to the
+        model as "an image was mentioned but nothing is there."
+
+        profile.model conventions (mirrors _resolve_upstream):
+          ""                        -> default/currently-running local model
+          "<registered name>"       -> that local GGUF's own registry entry
+          "openrouter:"/"ollama-cloud:" prefixed -> no local file to sniff;
+              falls back to profile.model_capabilities, a manual override
+              (see Profile's docstring on that field for how it gets set).
+        """
+        model = getattr(profile, "model", "") or ""
+        if model.startswith("openrouter:") or model.startswith("ollama-cloud:"):
+            caps = getattr(profile, "model_capabilities", "") or ""
+            return "vision" in {c.strip() for c in caps.split(",") if c.strip()}
+        from .models import ModelManager, is_vision_capable
+        mm = ModelManager()
+        entry = mm.get(model) if model else None
+        if not entry:
+            try:
+                running = [m for m in mm.list() if m.get("running")]
+                entry = running[0] if running else None
+            except Exception:
+                entry = None
+        return is_vision_capable(entry)
+
     def _point_upstream(self, profile: Profile) -> str:
         """Resolve the upstream the character should use, point Anamnesis at it,
         and return the character's proxy base URL.
@@ -527,20 +561,169 @@ class Engine:
         return ans in ("y", "yes")
 
     # -- main entry point --------------------------------------------------- #
-    def run(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None) -> str:
+    def run(self, profile: Union[str, Profile], user_message: str, *, system: Optional[str] = None,
+           attachments: Optional[list[dict]] = None) -> str:
         if isinstance(profile, str):
             profile = self.manager.get(profile)
 
         client, ctx, belt = self._client_for(profile)
         try:
-            return self._loop(client, ctx, belt, profile, user_message, system)
+            return self._loop(client, ctx, belt, profile, user_message, system, attachments=attachments)
         finally:
             ctx.close()
 
     @staticmethod
+    def _degrade_history_attachments(history: list[dict]) -> list[dict]:
+        """Past image attachments in the resent history tail must never come
+        back as base64 (see _build_user_content's docstring for the cost
+        this avoids) -- they degrade to a plain text placeholder instead.
+
+        `history` (chats.recent_messages' output, resent every turn -- see
+        _base_messages) is currently always plain {"role","content": str}
+        pairs; chats.py's persisted message shape doesn't carry attachments
+        yet as of this writing (feature/attach-cache, not landed). This is
+        a no-op passthrough until then, and starts degrading the moment a
+        list-shaped `content` (OpenAI content-parts) shows up in that tail,
+        so nobody has to remember to add this the day it lands.
+        """
+        out = []
+        for m in history:
+            content = m.get("content")
+            if isinstance(content, list):
+                text_bits = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        text_bits.append(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        text_bits.append(f"[attached image: {part.get('name') or 'image'}]")
+                m = {**m, "content": "\n".join(t for t in text_bits if t)}
+            out.append(m)
+        return out
+
+    # Image mimetypes worth ever offering to a vision model / fallback
+    # captioner -- an attachment of any other type (pdf, docx, audio, ...)
+    # is out of scope here; feature/attach-cache's own _attachments_note
+    # (real-path injection for tool use) already covers "give the model a
+    # path it can read with its own tools" for every attachment type,
+    # vision content-parts/fallback-captioning only ever apply to images.
+    _IMAGE_MIME_PREFIXES = ("image/",)
+
+    @staticmethod
+    def _read_attachment_bytes(att: dict) -> "bytes | None":
+        """Real bytes for one attachment dict, whichever shape it arrived in.
+
+        feature/attach-cache's real shape (pleiades/attachments.py,
+        confirmed once that branch actually landed code, 2026-07-23) is
+        `{"name", "path", "mime"}` -- a real file already saved on disk by
+        POST /api/chats/{id}/attachments, resolved via
+        attachments.resolve_attachments(). `data_b64`/`data` (inline
+        base64) is also accepted, for callers/tests that have raw bytes in
+        hand without a cache file backing them (e.g. this module's own test
+        suite, or a future non-file-backed caller). Returns None -- never
+        raises -- on anything unreadable so one bad attachment can't fail
+        the whole turn.
+        """
+        path = att.get("path")
+        if path:
+            try:
+                return Path(path).read_bytes()
+            except OSError:
+                return None
+        data = att.get("data_b64") or att.get("data") or ""
+        if not data:
+            return None
+        try:
+            return base64.b64decode(data)
+        except Exception:
+            return None
+
+    @classmethod
+    def _is_image_attachment(cls, att: dict) -> bool:
+        mime = (att.get("mime") or "").lower()
+        if mime:
+            return mime.startswith(cls._IMAGE_MIME_PREFIXES)
+        # No mime given (some manual callers) -- fall back to a
+        # filename-extension guess so this doesn't just silently no-op.
+        name = (att.get("name") or att.get("filename") or "").lower()
+        return name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+
+    @staticmethod
+    def _build_user_content(user_message: str, attachments: Optional[list[dict]],
+                            vision_capable: bool) -> "str | list[dict]":
+        """The FRESH user turn only: an OpenAI content-parts array when there
+        are real IMAGE attachments AND the assigned model can actually take
+        image input, else plain text with any image attachments described
+        via the fallback captioner (see _describe_attachments_as_text) when
+        one is configured, or just noted as present when it isn't.
+
+        `attachments`: real entries from feature/attach-cache's
+        `attachments.resolve_attachments()` -- `{"name", "path", "mime"}`,
+        a real file on disk (see _read_attachment_bytes) -- or, for tests/
+        simpler callers, inline `{"mime", "data_b64", "name"}`. Non-image
+        attachments (pdf, docx, audio, ...) are left alone entirely here;
+        feature/attach-cache's own `_attachments_note` (real-path injection
+        for tool use) already covers those.
+
+        Only ever applied to the NEW message, never to resent history (see
+        _degrade_history_attachments) -- re-encoding a past image as base64
+        on every subsequent turn would re-prefill ~1000+ image tokens per
+        round on a model that may already be CPU-offloaded for MoE experts,
+        a real latency regression, not a nicety.
+        """
+        if not attachments:
+            return user_message
+        images = [a for a in attachments if Engine._is_image_attachment(a)]
+        if not images:
+            return user_message
+        if vision_capable:
+            parts: list[dict] = [{"type": "text", "text": user_message}]
+            for att in images:
+                raw = Engine._read_attachment_bytes(att)
+                if raw is None:
+                    continue
+                mime = att.get("mime") or "image/png"
+                b64 = base64.b64encode(raw).decode("ascii")
+                parts.append({"type": "image_url",
+                              "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            return parts if len(parts) > 1 else user_message
+        # Non-vision model: never send an image marker it can't render (see
+        # _model_vision_capable's docstring) -- describe it in text instead,
+        # via the same on-demand fallback captioner vision_caption.py uses
+        # for browser-use screenshots (pleiades/tools/vision_client.py,
+        # PLEIADES_VISION_FALLBACK_URL). Absent that config, the model still
+        # learns an image was attached, just not what's in it -- strictly
+        # better than silently dropping it with no trace at all.
+        return Engine._describe_attachments_as_text(user_message, images)
+
+    @staticmethod
+    def _describe_attachments_as_text(user_message: str, attachments: list[dict]) -> str:
+        from .tools import vision_client
+        notes = []
+        for att in attachments:
+            name = att.get("name") or "image"
+            if not vision_client.is_configured():
+                notes.append(f"[attached image: {name} -- no vision-fallback model "
+                             f"configured (PLEIADES_VISION_FALLBACK_URL); contents unknown]")
+                continue
+            raw = Engine._read_attachment_bytes(att)
+            if raw is None:
+                notes.append(f"[attached image: {name} -- could not read/decode]")
+                continue
+            desc = vision_client.describe_image(raw)
+            notes.append(f"[attached image: {name}] " + (desc or "(fallback captioner "
+                         "did not return a usable description)"))
+        if not notes:
+            return user_message
+        return user_message + "\n\n" + "\n".join(notes)
+
+    @staticmethod
     def _base_messages(user_message: str, system: Optional[str],
                        env_note: Optional[str] = None,
-                       history: Optional[list[dict]] = None) -> list[dict]:
+                       history: Optional[list[dict]] = None,
+                       attachments: Optional[list[dict]] = None,
+                       vision_capable: bool = False) -> list[dict]:
         """The new turn (Anamnesis supplies deep memory/history) + local time.
 
         `history` is an optional short tail of recent real turns (see
@@ -549,7 +732,13 @@ class Engine:
         (see the docstring on chats.recent_messages for why this matters).
         It is NOT a substitute for Anamnesis's memory — just enough raw
         context for pronoun/short-follow-up continuity within the current
-        conversation.
+        conversation. Any image attachments inside it are degraded to a
+        text placeholder (_degrade_history_attachments) -- only the FRESH
+        turn below may carry real image data.
+
+        `attachments`/`vision_capable`: see _build_user_content. Absent
+        attachments or a non-vision-capable model, behavior is byte-for-byte
+        identical to before this parameter existed (plain string content).
 
         When no caller system prompt is given, fall back to the default operating
         contract so the character actually drives its tools and stays in voice.
@@ -563,8 +752,10 @@ class Engine:
         sys_text = f"{base}{env}\n\n{time_line}"
         messages = [{"role": "system", "content": sys_text}]
         if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": user_message})
+            messages.extend(Engine._degrade_history_attachments(history))
+        messages.append({"role": "user",
+                         "content": Engine._build_user_content(user_message, attachments,
+                                                               vision_capable)})
         return messages
 
     @staticmethod
@@ -610,8 +801,11 @@ class Engine:
             f"workspace directory above; pass paths exactly as written for this OS."
         )
 
-    def _loop(self, client, ctx: ToolContext, belt: ToolBelt, profile: Profile, user_message: str, system: Optional[str]) -> str:
-        messages = self._base_messages(user_message, system, self._environment_note(profile))
+    def _loop(self, client, ctx: ToolContext, belt: ToolBelt, profile: Profile, user_message: str, system: Optional[str],
+              attachments: Optional[list[dict]] = None) -> str:
+        vision_capable = self._model_vision_capable(profile) if attachments else False
+        messages = self._base_messages(user_message, system, self._environment_note(profile),
+                                       attachments=attachments, vision_capable=vision_capable)
 
         tools = belt.openai_schema()
 
@@ -676,7 +870,8 @@ class Engine:
                       history: Optional[list[dict]] = None,
                       attachments_note: Optional[str] = None,
                       should_stop: Optional[Callable[[], bool]] = None,
-                      poll_injections: Optional[Callable[[], list[str]]] = None):
+                      poll_injections: Optional[Callable[[], list[str]]] = None,
+                      attachments: Optional[list[dict]] = None):
         """The full turn as a stream of structured events.
 
         Yields dicts, in order:
@@ -732,6 +927,15 @@ class Engine:
         _synthetic_tool_round() instead, same as the self-check above, or
         it will reproduce the exact Anamnesis memory-pollution bug that
         mechanism was built to avoid (see fix/anamnesis-reflection-injection).
+
+        `attachments`, if given, are image attachments for THIS turn only
+        (see _base_messages/_build_user_content) -- sent as OpenAI
+        content-parts only when the character's assigned model is actually
+        vision-capable (_model_vision_capable), otherwise silently ignored
+        as attachments (the caller should already be warning the user in
+        that case; this layer just never sends a marker the model can't
+        render). `history`'s own past attachments (if any land there once
+        feature/attach-cache exists) are always degraded to text, regardless.
         """
         if isinstance(profile, str):
             profile = self.manager.get(profile)
@@ -743,9 +947,16 @@ class Engine:
             if attachments_note:
                 # Same system-prompt "note" slot _environment_note already
                 # uses, just appended -- one extra paragraph of real machine
-                # facts, not a separate injection mechanism.
+                # facts, not a separate injection mechanism. Composes with
+                # the vision content-parts path below: the note gives the
+                # model a real file path to use with its own tools
+                # regardless of whether it can also literally see the image
+                # via _build_user_content's content-parts.
                 env_note = f"{env_note}\n\n{attachments_note}"
-            messages = self._base_messages(user_message, system, env_note, history)
+            vision_capable = self._model_vision_capable(profile) if attachments else False
+            messages = self._base_messages(user_message, system, env_note, history,
+                                           attachments=attachments,
+                                           vision_capable=vision_capable)
             tools = belt.openai_schema()
             import time as _time
 

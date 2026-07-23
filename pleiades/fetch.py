@@ -218,6 +218,32 @@ def fetch_model(repo: str, *, name: str = "", quant: str = "",
                   (lambda d, t, _p=part: progress(_p, d, t)) if progress else None,
                   client=client)
 
+    # Vision: an mmproj-*.gguf sidecar in this same repo is a companion to
+    # the model, never a model candidate itself (group_split_ggufs/pick_quant
+    # both filter it out via hardware.is_mmproj() -- see that function's
+    # docstring). It used to just never get downloaded at all, which meant
+    # ModelManager.add()'s sibling-file auto-detection (hardware.
+    # find_mmproj_sibling(), see models.py) had nothing to find even for a
+    # model that genuinely supports vision. Grab the largest mmproj file in
+    # the repo (mirrors pick_quant's own "prefer the highest-fidelity file"
+    # bias — an f16 projector over a Q8_0 one when both are offered) and
+    # place it in the same dest_dir so that auto-detection works exactly the
+    # same way it would for a manually-downloaded/arranged model.
+    mmproj_path = ""
+    mmproj_candidates = [f for f in files if hardware.is_mmproj(f["name"])]
+    if mmproj_candidates:
+        best_mmproj = max(mmproj_candidates, key=lambda f: int(f.get("size", 0)))
+        mmproj_dest = dest_dir / Path(best_mmproj["name"]).name
+        if not (mmproj_dest.is_file() and mmproj_dest.stat().st_size > 0):
+            try:
+                _download(repo, best_mmproj["name"], mmproj_dest,
+                          (lambda d, t, _p=best_mmproj["name"]: progress(_p, d, t)) if progress else None,
+                          client=client)
+            except FetchError:
+                mmproj_dest = None  # best-effort -- a failed mmproj pull must not fail the whole fetch
+        if mmproj_dest and mmproj_dest.is_file():
+            mmproj_path = str(mmproj_dest)
+
     # llama.cpp loads split GGUFs via the first part.
     first = dest_dir / Path(sorted(chosen["parts"])[0]).name
 
@@ -227,7 +253,8 @@ def fetch_model(repo: str, *, name: str = "", quant: str = "",
     if mm.get(model_name):
         entry = mm.get(model_name)
     else:
-        entry = mm.add(model_name, str(first), n_ctx=n_ctx, n_gpu_layers="auto")
+        entry = mm.add(model_name, str(first), n_ctx=n_ctx, n_gpu_layers="auto",
+                       mmproj=mmproj_path)
     entry = dict(entry)
     entry.update(chosen=chosen["name"], why=chosen.get("why", ""),
                  local_path=str(first), size=chosen["size"])

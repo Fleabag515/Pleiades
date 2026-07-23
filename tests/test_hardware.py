@@ -215,3 +215,31 @@ def test_is_mmproj():
     assert hardware.is_mmproj("repo/sub/MMPROJ-x.gguf")
     assert not hardware.is_mmproj("model-with-mmproj-in-middle.gguf")
     assert not hardware.is_mmproj("Some-Model-Q4_K_M.gguf")
+
+
+def test_find_mmproj_sibling_finds_a_match_in_the_same_directory(tmp_path):
+    model = tmp_path / "some-model-Q4_K_M.gguf"
+    model.write_bytes(b"fake-model")
+    mmproj = tmp_path / "mmproj-some-model-f16.gguf"
+    mmproj.write_bytes(b"fake-mmproj")
+    assert hardware.find_mmproj_sibling(str(model)) == str(mmproj)
+
+
+def test_find_mmproj_sibling_returns_empty_when_none_present(tmp_path):
+    model = tmp_path / "text-only-model.gguf"
+    model.write_bytes(b"fake-model")
+    assert hardware.find_mmproj_sibling(str(model)) == ""
+
+
+def test_find_mmproj_sibling_picks_the_largest_when_multiple_present(tmp_path):
+    model = tmp_path / "some-model.gguf"
+    model.write_bytes(b"fake-model")
+    small = tmp_path / "mmproj-some-model-Q8_0.gguf"
+    small.write_bytes(b"x" * 100)
+    big = tmp_path / "mmproj-some-model-f16.gguf"
+    big.write_bytes(b"x" * 500)
+    assert hardware.find_mmproj_sibling(str(model)) == str(big)
+
+
+def test_find_mmproj_sibling_nonexistent_model_path():
+    assert hardware.find_mmproj_sibling("/no/such/dir/model.gguf") == ""
