@@ -33,18 +33,20 @@ interface MessageBubbleProps {
  * real text), so nothing about *when* things happened is lost -- only the
  * outer chrome around them changes (see ActivityBlock.tsx).
  *
- * `tools` items that appear with nothing preceding them in the current run
- * (no open 'activity' group to fold into -- the model called a tool with
- * no `<think>` burst at all) stay as a bare `'tools'` group, unwrapped,
- * exactly like before: there's no thinking to anchor a collapsible summary
- * to, so there's nothing to collapse. In practice this is rare for models
- * that reason before every tool call, but it's a real, currently-untested
- * path worth flagging if tool-only bursts turn out to be common in
- * practice -- see report.
+ * CORRECTION (2026-07-23, Fleagle): the collapsed block is not just "a
+ * reasoning burst plus whatever tool calls follow it" -- it's ALL activity
+ * (reasoning bursts and/or tool calls, in whatever order the model actually
+ * produced them) that sits before or between the model's real text
+ * segments. A tool call with no preceding `<think>` burst (previously a
+ * bare, unwrapped `'tools'` group that fell outside the dim collapsed
+ * region entirely) now also opens/extends an `'activity'` group -- it just
+ * has a `tools` part with no `reasoning` part before it. The bare `'tools'`
+ * ItemGroup kind below is kept in the type + render switch for safety but
+ * should no longer actually be constructed by `groupItems`.
  *
  * `text`/`user_injected` items always close out any in-progress 'activity'
- * (or bare 'tools') run and start a fresh group -- a plain-text segment or
- * a live user interjection is never folded into the dim collapsed region.
+ * run and start a fresh group -- a plain-text segment or a live user
+ * interjection is never folded into the dim collapsed region.
  */
 type ItemGroup =
   | { kind: 'text'; text: string }
@@ -71,10 +73,15 @@ function groupItems(items: AssistantItem[]): ItemGroup[] {
         const lastPart = last.parts[last.parts.length - 1]
         if (lastPart && lastPart.kind === 'tools') lastPart.tools.push(item)
         else last.parts.push({ kind: 'tools', tools: [item] })
-      } else if (last && last.kind === 'tools') {
-        last.tools.push(item)
       } else {
-        groups.push({ kind: 'tools', tools: [item] })
+        // No open 'activity' group to fold into -- e.g. the model called a
+        // tool with no preceding <think> burst, or right after a plain text/
+        // user_injected segment. Start a NEW 'activity' group (with only a
+        // tools part, no reasoning part) rather than a bare 'tools' group,
+        // so this still collapses like every other run of activity between
+        // real text segments -- whether reasoning came first is an internal
+        // detail of the run, not a reason to leave it uncollapsed.
+        groups.push({ kind: 'activity', parts: [{ kind: 'tools', tools: [item] }] })
       }
     } else if (item.t === 'user_injected') {
       groups.push({ kind: 'user_injected', text: item.text })

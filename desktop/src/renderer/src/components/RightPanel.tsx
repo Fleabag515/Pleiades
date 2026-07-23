@@ -1480,18 +1480,20 @@ function BrowserViewSection({
       >
         {interactive ? 'Interaction: ON' : 'Enter interaction mode'}
       </button>
-      <button
-        onClick={toggleExpand}
-        disabled={!running}
-        className="rounded-lg bg-bg-300 px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-bg-400 hover:text-ink disabled:opacity-40"
-        title={
-          inModal
-            ? 'Close this pop-out and return to the small view'
-            : 'Open a larger view within the app'
-        }
-      >
-        {inModal ? 'Close pop-out' : 'Expand'}
-      </button>
+      {/* Only render Expand in the compact view -- once popped out, the
+          drawer's own X (aria-label="Close pop-out", in the header row
+          below) is the sole close control. A second "Close pop-out" text
+          button here was redundant with that X. */}
+      {!inModal && (
+        <button
+          onClick={toggleExpand}
+          disabled={!running}
+          className="rounded-lg bg-bg-300 px-2.5 py-1 text-[11px] text-ink-dim transition hover:bg-bg-400 hover:text-ink disabled:opacity-40"
+          title="Open a larger view within the app"
+        >
+          Expand
+        </button>
+      )}
       <button
         onClick={openSeparate}
         disabled={busy || !running || !!status?.headed}
