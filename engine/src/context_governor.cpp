@@ -15,6 +15,24 @@ ContextGovernor::~ContextGovernor() {
 void ContextGovernor::create_ctx(int n_ctx) {
     llama_context_params params = llama_context_default_params();
     params.n_ctx = static_cast<uint32_t>(n_ctx);
+
+    // Context-param parity knobs (see docs/specs/2026-07-21-native-
+    // inference-engine-design.md's GPU/context-parity pass). params_ is
+    // set once in create() and reapplied verbatim on every resize() so a
+    // resize can't silently drop these back to library defaults.
+    params.n_batch = static_cast<uint32_t>(params_.n_batch);
+    params.n_ubatch = static_cast<uint32_t>(params_.n_ubatch);
+    if (params_.n_threads > 0) {
+        // Matches common/arg.cpp's -t/--threads handler: n_threads and
+        // n_threads_batch both follow the same override (there's no
+        // separate governor-level knob for threads-batch yet).
+        params.n_threads = params_.n_threads;
+        params.n_threads_batch = params_.n_threads;
+    }
+    params.flash_attn_type = params_.flash_attn_type;
+    params.type_k = params_.type_k;
+    params.type_v = params_.type_v;
+
     ctx_ = llama_init_from_model(model_, params);
     if (!ctx_) {
         throw std::runtime_error(
@@ -23,9 +41,10 @@ void ContextGovernor::create_ctx(int n_ctx) {
     n_ctx_ = n_ctx;
 }
 
-void ContextGovernor::create(llama_model* model, int n_ctx, int n_ctx_max) {
+void ContextGovernor::create(llama_model* model, int n_ctx, int n_ctx_max, const ContextParams& params) {
     model_ = model;
     n_ctx_max_ = n_ctx_max;
+    params_ = params;
     create_ctx(n_ctx);
 }
 

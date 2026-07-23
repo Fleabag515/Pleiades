@@ -1,14 +1,18 @@
-# Pleiades native inference engine -- Phase 1 skeleton.
+# Pleiades native inference engine -- Phase 1 skeleton, GPU-enabled as of the
+# CUDA/MoE-offload/context-param-parity pass (see
+# docs/specs/2026-07-21-native-inference-engine-design.md).
 #
-# See docs/specs/2026-07-21-native-inference-engine-design.md for the full
-# plan. This phase: link libllama directly (no server, no HTTP, no
-# Anamnesis), expose ModelManager/ContextGovernor/Engine, and prove it with
-# a CLI smoke-test binary against a real small GGUF.
+# See that doc for the full plan. This phase: link libllama directly (no
+# HTTP transport concerns here), expose ModelManager/ContextGovernor/Engine,
+# and prove it with a CLI smoke-test binary against a real small GGUF.
 #
-# Build:
+# Build (GPU, default):
 #   cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build engine/build -j
 #   engine/build/pleiades-engine-cli <model.gguf> "<prompt>" [n_predict]
+#
+# Build (CPU-only, e.g. a box with no CUDA toolkit):
+#   cmake -S engine -B engine/build -DPLEIADES_ENGINE_CUDA=OFF
 cmake_minimum_required(VERSION 3.21)
 project(pleiades_engine LANGUAGES CXX C)
 
@@ -20,6 +24,32 @@ endif()
 
 option(PLEIADES_ENGINE_BUILD_TESTS "Build engine/tests (downloads a tiny fixture GGUF)" ON)
 include(CTest)
+
+# -- GPU (CUDA) backend -----------------------------------------------------
+# Mirrors ~/.pleiades/runtime/cuda-main's own build exactly (confirmed via
+# its build.log: cmake was invoked with `-DGGML_CUDA=ON` and nothing else
+# CUDA-arch-related -- CMAKE_CUDA_ARCHITECTURES was left UNINITIALIZED and
+# ggml/src/ggml-cuda/CMakeLists.txt's own logic auto-resolved it to "native",
+# which on this box's RTX 2080 Ti resolves to 75-real; see that build.log's
+# "Using CMAKE_CUDA_ARCHITECTURES=75 CMAKE_CUDA_ARCHITECTURES_NATIVE=75-real"
+# line). We do the same here: set GGML_CUDA before add_subdirectory() and
+# otherwise let ggml-cuda's own CMakeLists.txt auto-detect the architecture
+# -- do NOT hardcode 75 in this file, since that's specific to whatever GPU
+# happens to be attached at build time, not a property of the engine itself.
+# CUDA is not declared in this file's own `project()` LANGUAGES list (cuda-
+# main's top-level CMakeLists.txt doesn't either -- it's `project("llama.cpp"
+# C CXX)`); ggml-cuda's CMakeLists.txt calls enable_language(CUDA) itself
+# once GGML_CUDA is ON, so nothing else is needed at this level.
+option(PLEIADES_ENGINE_CUDA "Build the engine with CUDA (GGML_CUDA) backend support" ON)
+if (PLEIADES_ENGINE_CUDA)
+  set(GGML_CUDA ON CACHE BOOL "" FORCE)
+  # Escape hatch for cross-building on a box with no GPU attached (or a
+  # different GPU generation) -- pin explicitly rather than relying on
+  # "native" auto-detection. Unset by default.
+  if (DEFINED PLEIADES_ENGINE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES ${PLEIADES_ENGINE_CUDA_ARCHITECTURES} CACHE STRING "" FORCE)
+  endif()
+endif()
 
 # We only need libllama itself for this phase (llama_sampler_* and the
 # context/batch/decode API all live directly in include/llama.h) -- not

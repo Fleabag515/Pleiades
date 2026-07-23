@@ -52,6 +52,58 @@ int main(int argc, char** argv) {
         PLEIADES_CHECK(!m.is_loaded());
     }
 
+    // -- n_cpu_moe (MoE expert CPU offload) ------------------------------- //
+    // Replicates llama.cpp's own "--n-cpu-moe" (common/arg.cpp) via
+    // llama_model_params::tensor_buft_overrides (see model_manager.h/.cpp).
+    // The tiny fixture used here (tinyllamas/stories15M) is NOT a MoE model,
+    // so the per-layer "blk.N.\\.ffn_*_exps" regexes won't match any real
+    // tensor -- that mirrors upstream's own behavior (--n-cpu-moe on a dense
+    // model is a documented no-op, not an error, since the regex simply
+    // matches nothing). This still exercises the real code path end-to-end:
+    // pattern generation, tensor_buft_overrides construction/NULL-
+    // termination, and passing it through llama_model_load_from_file
+    // without the lifetime bug the council flagged (moe_override_patterns_/
+    // moe_overrides_ must be member storage, not stack temporaries that go
+    // out of scope before the load call reads them).
+    {
+        pleiades_engine::ModelManager m;
+        m.load(model_path, /*n_gpu_layers=*/0, /*n_cpu_moe=*/8);
+        PLEIADES_CHECK(m.is_loaded());
+        m.unload();
+        PLEIADES_CHECK(!m.is_loaded());
+    }
+
+    // n_cpu_moe larger than the model's real layer count must still be
+    // safe -- upstream's own --n-cpu-moe has no such bound-check either;
+    // extra per-layer regexes for nonexistent blk indices simply never
+    // match anything.
+    {
+        pleiades_engine::ModelManager m;
+        m.load(model_path, /*n_gpu_layers=*/0, /*n_cpu_moe=*/1000);
+        PLEIADES_CHECK(m.is_loaded());
+    }
+
+    // use_mlock=true must not crash even if the OS denies the lock (e.g. a
+    // low RLIMIT_MEMLOCK ulimit in a sandboxed/CI environment) --
+    // llama.cpp's own llama_mlock only logs a warning on failure
+    // (third_party/llama.cpp/src/llama-mmap.cpp), it never throws.
+    {
+        pleiades_engine::ModelManager m;
+        m.load(model_path, /*n_gpu_layers=*/0, /*n_cpu_moe=*/0, /*use_mlock=*/true);
+        PLEIADES_CHECK(m.is_loaded());
+    }
+
+    // Reloading the same object with a different n_cpu_moe must not leak or
+    // retain stale override entries from the previous load (moe_overrides_/
+    // moe_override_patterns_ are cleared at the top of every load()).
+    {
+        pleiades_engine::ModelManager m;
+        m.load(model_path, 0, /*n_cpu_moe=*/4);
+        PLEIADES_CHECK(m.is_loaded());
+        m.load(model_path, 0, /*n_cpu_moe=*/0);
+        PLEIADES_CHECK(m.is_loaded());
+    }
+
     llama_backend_free();
     return 0;
 }
