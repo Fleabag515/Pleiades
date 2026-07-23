@@ -398,7 +398,29 @@ class Engine:
             approve = getattr(self, "approve", None) or self._console_approve
             # find_tools/list_catalog/call_tool read this module-level binding
             # to apply the same approval policy call_tool dispatches into.
-            toolsearch.bind_dispatch(approve)
+            #
+            # agents_enabled gate (per-character, see profiles.Profile):
+            # dispatch_subagent/dispatch_subagents_parallel (harness/
+            # subagent.py) are tagged "meta", not "search", so registry.all()
+            # already makes them reachable through call_tool/find_tools
+            # whenever bind_dispatch's allow-list is unrestricted (None) --
+            # that's the existing "backdoor" the owner flagged: the raw
+            # dispatch capability was always live via chat's tool-search
+            # bridge regardless of any UI toggle. When agents are OFF for
+            # this character we now pass an explicit allow-list that is the
+            # full registry MINUS those two tool names, so find_tools can't
+            # surface them and call_tool refuses them outright ("not
+            # available to this agent"). When ON, we leave the allow-list
+            # unrestricted (None) exactly as before -- spawn_agents (the new,
+            # managed/depth-capped/concurrency-capped path; see
+            # pleiades/agents.py) is a separate, explicitly-bridged tool
+            # added by build_default_belt, not this fallback.
+            if getattr(profile, "agents_enabled", False):
+                toolsearch.bind_dispatch(approve)
+            else:
+                blocked = {"dispatch_subagent", "dispatch_subagents_parallel"}
+                allowed = {t.name for t in registry.all() if t.name not in blocked}
+                toolsearch.bind_dispatch(approve, allowed)
 
             class _Bridge(Tool):
                 def __init__(self, ht):
@@ -573,13 +595,15 @@ class Engine:
     def stream_events(self, profile: Union[str, Profile], user_message: str,
                       *, system: Optional[str] = None,
                       history: Optional[list[dict]] = None,
-                      should_stop: Optional[Callable[[], bool]] = None):
+                      should_stop: Optional[Callable[[], bool]] = None,
+                      poll_injections: Optional[Callable[[], list[str]]] = None):
         """The full turn as a stream of structured events.
 
         Yields dicts, in order:
             {"type": "token", "text": str}                       assistant text
             {"type": "tool_call", "name": str, "args": str}
             {"type": "tool_result", "name": str, "output": str, "ok": bool}
+            {"type": "user_injected", "text": str}     a poll_injections() message woven in
             {"type": "done", "tokens": int, "seconds": float, "tps": float}
             {"type": "stopped"}                      should_stop() fired early
         Tokens stream live from llama.cpp; each turn runs exactly once, so
@@ -591,6 +615,23 @@ class Engine:
         single blocking tool call already in flight (e.g. a slow browser
         action) — ponytail: add cooperative cancellation to tools if that
         turns out to matter in practice.
+
+        `poll_injections`, if given, returns any mid-turn user messages queued
+        since it was last called (e.g. webui/server.py's chats_interject
+        endpoint feeding a per-chat inbox Queue) — the substrate for "message
+        an in-flight turn like a Claude Code agent" without aborting/restarting
+        it. Re-prefilling the whole context to splice a message mid-token-
+        generation costs 150-200s on the daily-driver model (see
+        _UPSTREAM_TIMEOUT above), so this is ONLY ever drained and spliced at
+        safe boundaries: the top of a round (before the next _chat_create) and
+        between individual tool dispatches within a round. Even when polled
+        mid-round (to catch a message that arrived during a slow tool call
+        with low latency), anything collected is held in `pending_injections`
+        and only actually appended to `messages` once ALL of that round's
+        tool_call ids already have their tool results — splicing a "role":
+        "user" message between an assistant's tool_calls message and its
+        results would corrupt the transcript for chat templates that expect
+        that pairing to be contiguous.
         """
         if isinstance(profile, str):
             profile = self.manager.get(profile)
@@ -607,10 +648,26 @@ class Engine:
             interval = max(0, getattr(self.settings, "eval_interval", 40))
             ceiling = max(1, getattr(self.settings, "max_rounds", 400))
             round_i = 0
+            pending_injections: list[str] = []
             while True:
                 if should_stop and should_stop():
                     yield {"type": "stopped"}
                     return
+                # Safe boundary #1: top of the round, before the next
+                # _chat_create. Whatever's in `pending_injections` (queued
+                # mid-round below) plus anything newly available is applied
+                # HERE, never mid-round — by construction, if we reached this
+                # point via the bottom of the loop (not a fresh call), the
+                # PREVIOUS round's tool_calls/tool results are already fully
+                # paired in `messages`, so splicing a user message now cannot
+                # land between them.
+                if poll_injections:
+                    pending_injections.extend(poll_injections())
+                for _inj in pending_injections:
+                    messages.append({"role": "user",
+                                     "content": f"[message from the user, mid-task] {_inj}"})
+                    yield {"type": "user_injected", "text": _inj}
+                pending_injections = []
                 if interval and round_i and round_i % interval == 0:
                     messages.append({"role": "user", "content": _REFLECTION.format(n=round_i)})
                     yield {"type": "reasoning", "text": "[self-check] evaluating progress and checking for loops…"}
@@ -709,6 +766,15 @@ class Engine:
                                    for i, c in enumerate(ordered)],
                 })
                 for i, c in enumerate(ordered):
+                    # Safe boundary #2: between individual tool dispatches.
+                    # Only COLLECT here -- never splice into `messages` yet,
+                    # since we're sitting between the assistant's tool_calls
+                    # message (already appended above) and this round's tool
+                    # results (still being appended below). Anything collected
+                    # is applied at the top of the NEXT round instead, once
+                    # every tool_call id in `ordered` has its result appended.
+                    if poll_injections:
+                        pending_injections.extend(poll_injections())
                     yield {"type": "tool_call", "name": c["name"], "args": c["args"]}
                     result = belt.dispatch(c["name"], c["args"], ctx, approve=self.approve)
                     ok = not result.startswith("[error]")

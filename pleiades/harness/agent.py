@@ -180,7 +180,8 @@ class Agent:
                  tier_name: str | None = None,
                  system: str | None = None,
                  depth: int = 0,
-                 approve: Callable[[ToolCall, Tool], bool] | None = None) -> None:
+                 approve: Callable[[ToolCall, Tool], bool] | None = None,
+                 memory: Any | None = None) -> None:
         self.cfg = cfg or Config.load()
         self.llm = LLM(self.cfg)
         self.tools = tools if tools is not None else registry.all()
@@ -188,11 +189,22 @@ class Agent:
         self.system = system or SYSTEM
         self.depth = depth
         self.approve = approve or self._default_approve
-        # Reuse the store bound at startup (shared vector cache); else build one.
-        from .builtins.memory import _store          # lazy: avoids import cycle
-        self.memory = _store() or Anamnesis.from_config(self.cfg)
+        if memory is not None:
+            # Explicit override -- used by callers that must NOT pick up
+            # whatever memory store happens to be globally bound right now
+            # (see builtins.memory._MEM, a process-wide singleton set by
+            # bind_memory()). Ephemeral/background agents (pleiades/agents.py)
+            # pass a throwaway store here precisely so they can never read or
+            # write a character's real Anamnesis memory, even if a chat turn
+            # for that character is concurrently bound in the same process.
+            self.memory = memory
+        else:
+            # Reuse the store bound at startup (shared vector cache); else build one.
+            from .builtins.memory import _store      # lazy: avoids import cycle
+            self.memory = _store() or Anamnesis.from_config(self.cfg)
 
-    def run(self, task: str, *, on_event: Callable[[str, Any], None] | None = None
+    def run(self, task: str, *, on_event: Callable[[str, Any], None] | None = None,
+            should_stop: Callable[[], bool] | None = None
             ) -> AgentResult:
         emit = on_event or (lambda *_: None)
         tier = self.cfg.tier(self.tier_name)
@@ -219,6 +231,15 @@ class Agent:
 
         step = 0
         while True:
+            if should_stop and should_stop():
+                # Cooperative cancellation, polled once per step -- mirrors
+                # Engine.stream_events' should_stop (checked between rounds/
+                # chunks there; here between agent steps, since this loop
+                # isn't token-streamed). Can't interrupt a single blocking
+                # LLM/tool call already in flight, same caveat as the engine.
+                emit("stopped", {"step": step})
+                return AgentResult(answer=answer or "(stopped)", steps=step,
+                                   transcript=messages)
             if interval and step and step % interval == 0:
                 messages.append({"role": "user", "content": _REFLECTION.format(n=step)})
                 emit("reflect", {"step": step})
