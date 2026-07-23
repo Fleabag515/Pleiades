@@ -69,6 +69,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp
 add_library(pleiades_engine STATIC
   src/model_manager.cpp
   src/context_governor.cpp
+  src/prefix_cache.cpp
   src/engine.cpp
   src/chat_template.cpp
   src/tool_call_parser.cpp
@@ -94,6 +95,11 @@ target_link_libraries(pleiades-engine-bench-resize PRIVATE pleiades_engine)
 
 add_executable(pleiades-engine-bench-ladder src/bench_ladder.cpp)
 target_link_libraries(pleiades-engine-bench-ladder PRIVATE pleiades_engine)
+
+# Phase 6 benchmark: cold full-prompt decode vs. warm prefix-cache-hit
+# decode of the same prompt + one appended message.
+add_executable(pleiades-engine-bench-prefix src/bench_prefix_cache.cpp)
+target_link_libraries(pleiades-engine-bench-prefix PRIVATE pleiades_engine)
 
 # Phase 3: HTTP transport shim. cpp-httplib and nlohmann/json are both
 # vendored inside the llama.cpp submodule already (vendor/cpp-httplib,

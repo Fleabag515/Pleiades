@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 
 #include "llama.h"
@@ -67,11 +68,24 @@ public:
     int n_ctx_max() const { return n_ctx_max_; }
     const ContextParams& params() const { return params_; }
 
+    // Monotonic counter incremented every time a fresh llama_context is
+    // created (create() and each resize()). Consumers that cache anything
+    // tied to the LIVE context's KV memory (e.g. Engine's prefix cache)
+    // compare this against the epoch they last saw and drop that cache when
+    // it changes, because resize() = llama_free + recreate throws the KV
+    // away. This is deliberately NOT "did the llama_context* pointer
+    // change" -- freed-then-immediately-reallocated memory routinely comes
+    // back at the SAME address (see the Phase 4 test-bug writeup in the
+    // design doc), so pointer identity is not a reliable "was the KV
+    // recreated" signal; a monotonic counter is.
+    uint64_t epoch() const { return epoch_; }
+
 private:
     llama_model* model_ = nullptr;
     llama_context* ctx_ = nullptr;
     int n_ctx_ = 0;
     int n_ctx_max_ = 0;
+    uint64_t epoch_ = 0;
     ContextParams params_;
 
     void create_ctx(int n_ctx);
