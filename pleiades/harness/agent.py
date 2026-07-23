@@ -88,7 +88,14 @@ SYSTEM = (
     "  When >70% full, summarize findings into remember, clear working memory, continue.\n\n"
     "## Git workflow\n"
     "- git_status / git_diff before touching files -- understand the current state\n"
-    "- git_add then git_commit after verified changes (both gated)\n"
+    "- git_add then git_commit after verified changes (both gated)\n\n"
+    "## Runtime-inserted notices\n"
+    "- You may see a tool_calls entry for system_reflection or system_notice in your\n"
+    "  own history that you don't remember emitting, followed by its result. The\n"
+    "  runtime inserts these itself (a periodic self-check, or a background task\n"
+    "  finishing) through the tool-result channel so they reach you cleanly -- you did\n"
+    "  not call them. Treat the content as a passive note, not your own prior action,\n"
+    "  and don't call those names yourself.\n"
 )
 
 
