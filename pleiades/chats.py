@@ -41,9 +41,19 @@ def chats_dir() -> Path:
     return d
 
 
-def _path(chat_id: str) -> Path:
-    if not chat_id.replace("-", "").isalnum():
+def validate_chat_id(chat_id: str) -> str:
+    """Reject chat ids that aren't the plain hex/dash tokens `create()`
+    generates -- shared with pleiades/attachments.py, which uses chat_id as
+    a cache directory name and needs the exact same guarantee (no path
+    separators, no traversal) that this module already relies on for the
+    transcript file name below."""
+    if not chat_id or not chat_id.replace("-", "").isalnum():
         raise ValueError(f"invalid chat id {chat_id!r}")
+    return chat_id
+
+
+def _path(chat_id: str) -> Path:
+    validate_chat_id(chat_id)
     return chats_dir() / f"{chat_id}.json"
 
 
@@ -201,9 +211,19 @@ def recent_messages(chat: dict, max_turns: int = 8) -> list[dict]:
 
 
 def append_turn(chat_id: str, user_text: str, assistant_items: list[dict],
-                meta: dict) -> None:
+                meta: dict, attachments: "list[dict] | None" = None) -> None:
+    """`attachments`, if given, is `[{"name", "path", "mime"}, ...]` for real
+    files the user attached to THIS message (see pleiades/attachments.py and
+    webui/server.py's chats_message) -- persisted on the user message so a
+    later reload/replay (and eventually MessageBubble.tsx) can show what was
+    attached. Only added to the stored message when non-empty, so chats with
+    no attachments keep the exact same on-disk shape as before this existed.
+    """
     chat = load(chat_id)
-    chat["messages"].append({"role": "user", "content": user_text})
+    user_msg: dict = {"role": "user", "content": user_text}
+    if attachments:
+        user_msg["attachments"] = attachments
+    chat["messages"].append(user_msg)
     chat["messages"].append({"role": "assistant", "items": assistant_items,
                              "meta": meta})
     if not chat.get("title"):

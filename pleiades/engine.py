@@ -568,6 +568,31 @@ class Engine:
         return messages
 
     @staticmethod
+    def _attachments_note(attachments: list[dict]) -> str:
+        """Real absolute paths for files the user attached to THIS message
+        (see pleiades/attachments.py + webui/server.py's chats_message) --
+        injected into the turn's context the same way `_environment_note`
+        injects machine facts, so the character uses the REAL saved file
+        instead of asking the user to re-send it or inventing a path. This
+        is the whole "attach a logo, then say 'use it on the site'" trick:
+        no vision/captioning is involved, the model just gets a real path
+        its existing file/shell tools can read/copy directly.
+        """
+        lines = [
+            "The user attached the following file(s) to this message. These "
+            "are REAL files already saved on this machine -- use your "
+            "file/shell tools to read, copy, or otherwise act on them "
+            "directly by the exact path given. Do not ask the user to "
+            "re-upload them, and do not invent a different path.",
+        ]
+        for a in attachments:
+            name = a.get("name", "?")
+            path = a.get("path", "?")
+            mime = a.get("mime") or "unknown type"
+            lines.append(f"- {name} ({mime}): {path}")
+        return "\n".join(lines)
+
+    @staticmethod
     def _environment_note(profile: Profile) -> str:
         """Concrete machine facts so the character uses REAL paths (it otherwise
         invents Linux paths like /home/<name> that don't exist on this box)."""
@@ -649,6 +674,7 @@ class Engine:
     def stream_events(self, profile: Union[str, Profile], user_message: str,
                       *, system: Optional[str] = None,
                       history: Optional[list[dict]] = None,
+                      attachments_note: Optional[str] = None,
                       should_stop: Optional[Callable[[], bool]] = None,
                       poll_injections: Optional[Callable[[], list[str]]] = None):
         """The full turn as a stream of structured events.
@@ -669,6 +695,11 @@ class Engine:
         single blocking tool call already in flight (e.g. a slow browser
         action) — ponytail: add cooperative cancellation to tools if that
         turns out to matter in practice.
+
+        `attachments_note`, if given, is appended to the same environment-note
+        paragraph `_environment_note` already injects into the system prompt
+        (see `_attachments_note` above) -- real absolute file paths for
+        anything the user attached to this specific message.
 
         `poll_injections`, if given, returns any mid-turn user messages queued
         since it was last called (e.g. webui/server.py's chats_interject
@@ -708,9 +739,13 @@ class Engine:
         n_tokens = 0
         t_first = t_last = None
         try:
-            messages = self._base_messages(user_message, system,
-                                           self._environment_note(profile),
-                                           history)
+            env_note = self._environment_note(profile)
+            if attachments_note:
+                # Same system-prompt "note" slot _environment_note already
+                # uses, just appended -- one extra paragraph of real machine
+                # facts, not a separate injection mechanism.
+                env_note = f"{env_note}\n\n{attachments_note}"
+            messages = self._base_messages(user_message, system, env_note, history)
             tools = belt.openai_schema()
             import time as _time
 

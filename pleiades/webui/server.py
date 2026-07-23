@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover
     httpx = None  # type: ignore
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -148,6 +148,11 @@ class ChatCreate(BaseModel):
 class ChatMessage(BaseModel):
     message: str
     system: Optional[str] = None
+    # Ids returned by POST /api/chats/{chat_id}/attachments (see
+    # pleiades/attachments.py) -- files the user attached to THIS message.
+    # Resolved against THIS chat's own cache dir in chats_message(), never
+    # trusted as a raw filesystem path.
+    attachments: list[str] = []
 
 
 class ChatInterject(BaseModel):
@@ -1425,13 +1430,64 @@ def create_app() -> FastAPI:
         except (FileNotFoundError, ValueError):
             raise HTTPException(404, "No such chat.")
 
+    @app.post("/api/chats/{chat_id}/attachments")
+    async def chats_attachment_upload(chat_id: str, file: UploadFile = File(...)) -> dict:
+        """Save one uploaded file into THIS chat's own attachment cache dir
+        (see pleiades/attachments.py) and return {id, filename, path, mime,
+        size}. The composer sends the returned `id` back in a later POST
+        .../message's `attachments` list.
+
+        This is deliberately dumb about file *content* -- no image
+        captioning, no vision content-parts, no audio transcription happens
+        here (those are separate, parallel efforts). All this endpoint does
+        is give the model a REAL path on disk it can point its existing
+        file/shell tools at (see engine.py's `_attachments_note`) -- which is
+        exactly what makes "drop a logo, then say 'use it on the site'" work
+        even for a text-only model.
+
+        Scoped by chat_id, not a flat shared workspace dir -- see
+        attachments.py's module docstring for why (the existing character
+        workspace is shared across every chat AND every background/
+        scheduled-task job for that character, so same-named uploads could
+        collide there).
+        """
+        from .. import chats
+        from .. import attachments as chat_attachments
+        try:
+            chat = chats.load(chat_id)
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(404, "No such chat.")
+        data = await file.read()
+        try:
+            return chat_attachments.save_attachment(
+                chat["character"], chat_id, file.filename or "file", data)
+        except (ValueError, OSError) as e:
+            raise HTTPException(400, f"Could not save attachment: {e}")
+
     @app.delete("/api/chats/{chat_id}")
     def chats_delete(chat_id: str) -> dict:
         from .. import chats
+        from .. import attachments as chat_attachments
+        # Cache-lifecycle decision (see attachments.py's module docstring):
+        # the attachment cache is scoped by chat_id and is ONLY ever deleted
+        # here, on a real chat delete -- never on new-chat, because
+        # startNewChat() archives the outgoing chat into History rather than
+        # deleting it, and wiping a shared cache at that point would break
+        # image references still visible in that archived chat. Read the
+        # character BEFORE deleting the chat file so we know which
+        # profile's chat-cache/<chat_id>/ directory to remove.
+        character = None
         try:
-            return {"ok": chats.delete(chat_id)}
+            character = chats.load(chat_id).get("character")
+        except (FileNotFoundError, ValueError):
+            pass
+        try:
+            ok = chats.delete(chat_id)
         except ValueError:
             raise HTTPException(400, "Bad chat id.")
+        if character:
+            chat_attachments.delete_chat_cache(character, chat_id)
+        return {"ok": ok}
 
     # Pending tool approvals for chat turns. The NDJSON stream is stalled
     # while the engine waits inside the approve callback, so the frontend
@@ -1554,11 +1610,21 @@ def create_app() -> FastAPI:
         starting a second one.
         """
         from .. import chats
+        from .. import attachments as chat_attachments
         try:
             chat = chats.load(chat_id)
             p = pm.get(chat["character"])
         except (FileNotFoundError, ValueError):
             raise HTTPException(404, "No such chat (or its character is gone).")
+
+        # Resolve attachment ids (see POST .../attachments) against THIS
+        # chat's own cache dir up front -- never trust the ids as raw paths.
+        # Silently drops stale/bad ids rather than 400ing the whole turn
+        # (see attachments.resolve_attachments).
+        resolved_attachments = (
+            chat_attachments.resolve_attachments(chat["character"], chat_id, body.attachments)
+            if body.attachments else []
+        )
 
         lock = _lock_for(chat_id)
         if not lock.acquire(blocking=False):
@@ -1614,10 +1680,21 @@ def create_app() -> FastAPI:
                         # the subject on short pronoun follow-ups like
                         # "message him again").
                         hist = chats.recent_messages(chat)
-                        for _evt in engine.stream_events(p, body.message, system=body.system,
-                                                         history=hist,
-                                                         should_stop=stop_evt.is_set,
-                                                         poll_injections=_poll_injections):
+                        stream_kwargs = dict(
+                            system=body.system,
+                            history=hist,
+                            should_stop=stop_evt.is_set,
+                            poll_injections=_poll_injections,
+                        )
+                        if resolved_attachments:
+                            # Only ever passed when there's something to say --
+                            # keeps the kwarg absent for the common no-attachment
+                            # case, which is also what existing tests that
+                            # monkeypatch Engine.stream_events with a narrower
+                            # fake signature (no attachments_note param) expect.
+                            stream_kwargs["attachments_note"] = Engine._attachments_note(
+                                resolved_attachments)
+                        for _evt in engine.stream_events(p, body.message, **stream_kwargs):
                             evq.put(_evt)
                         evq.put(_END)
                     except Exception as ex:  # re-raised on the response thread
@@ -1705,7 +1782,8 @@ def create_app() -> FastAPI:
                 if text_acc:
                     items.append({"t": "text", "text": text_acc})
                 try:
-                    chats.append_turn(chat_id, body.message, items, meta)
+                    chats.append_turn(chat_id, body.message, items, meta,
+                                      attachments=resolved_attachments)
                 except Exception:
                     pass  # persistence must never kill the stream
             except Exception as e:

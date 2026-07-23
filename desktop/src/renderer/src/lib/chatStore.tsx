@@ -57,7 +57,10 @@ const EMPTY_SESSION: ChatSessionState = {
 interface ChatStoreContextValue {
   sessions: Record<string, ChatSessionState>
   ensureLiveChat: (base: string, character: string) => Promise<void>
-  send: (base: string, character: string, text: string) => Promise<void>
+  // `attachmentIds`, if given, are ids returned by uploadAttachment() (see
+  // lib/api.ts) for files already uploaded to this chat's own cache dir --
+  // threaded straight through to streamMessage's `options.attachments`.
+  send: (base: string, character: string, text: string, attachmentIds?: string[]) => Promise<void>
   // Weave a message into an ALREADY-IN-FLIGHT turn instead of starting a
   // second concurrent one (see api.ts's interjectMessage). Falls back to a
   // normal send() if there's no turn in flight (e.g. the turn just finished
@@ -159,7 +162,7 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
   )
 
   const send = useCallback(
-    async (base: string, character: string, text: string): Promise<void> => {
+    async (base: string, character: string, text: string, attachmentIds?: string[]): Promise<void> => {
       await ensureLiveChat(base, character)
       const chatId = sessionsRef.current[character]?.chatId
       if (!chatId) return
@@ -265,7 +268,7 @@ export function ChatSessionsProvider({ children }: { children: React.ReactNode }
             flushText()
             patchSession(character, { error: evt.error })
           }
-        })
+        }, { attachments: attachmentIds })
       } catch (e) {
         if ((e as Error).name !== 'AbortError') patchSession(character, { error: (e as Error).message })
       } finally {

@@ -104,6 +104,38 @@ export async function stopChat(base: string, chatId: string): Promise<void> {
   await fetch(`${base}/api/chats/${chatId}/stop`, { method: 'POST' })
 }
 
+export interface UploadedAttachment {
+  id: string
+  filename: string
+  path: string
+  mime: string
+  size: number
+}
+
+/**
+ * Uploads one file into THIS chat's own attachment cache (see
+ * pleiades/attachments.py + POST /api/chats/{chat_id}/attachments) and
+ * returns its id/path/mime/size. The composer calls this the moment a file
+ * is attached (click/drag-drop/paste), then sends the returned `id` back
+ * in a later `sendMessage`'s `attachments` list -- see chatStore.tsx's
+ * `send`. Scoped by chat_id on the backend, not a flat shared workspace
+ * dir, so uploading the same filename into two different chats (or racing
+ * a background scheduled-task job) never collides.
+ */
+export async function uploadAttachment(
+  base: string,
+  chatId: string,
+  file: File
+): Promise<UploadedAttachment> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${base}/api/chats/${chatId}/attachments`, {
+    method: 'POST',
+    body: form
+  })
+  return asJson(res)
+}
+
 /**
  * Weave a message into an ALREADY-IN-FLIGHT turn (see pleiades/webui/
  * server.py's chats_interject) instead of starting a second concurrent one.
@@ -203,20 +235,30 @@ export async function modelLogs(
 
 /**
  * Streams a chat turn, invoking `onEvent` for each NDJSON line as it arrives.
- * Resolves when the stream ends (naturally or via `signal` abort).
+ * Resolves when the stream ends (naturally or via `options.signal` abort).
+ *
+ * `options.attachments`, if given, is a list of attachment ids returned by
+ * `uploadAttachment` above -- the backend resolves them against THIS chat's
+ * own cache dir and injects their real paths into the turn's context (see
+ * pleiades/engine.py's `_attachments_note`). Omitted entirely from the
+ * request body when empty, matching what `pleiades/webui/server.py`'s
+ * `ChatMessage.attachments` already defaults to.
  */
 export async function streamMessage(
   base: string,
   chatId: string,
   message: string,
   onEvent: (evt: StreamEvent) => void,
-  signal?: AbortSignal
+  options?: { attachments?: string[]; signal?: AbortSignal }
 ): Promise<void> {
   const res = await fetch(`${base}/api/chats/${chatId}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
-    signal
+    body: JSON.stringify({
+      message,
+      ...(options?.attachments?.length ? { attachments: options.attachments } : {})
+    }),
+    signal: options?.signal
   })
   if (!res.ok || !res.body) {
     throw new Error(`HTTP ${res.status}`)

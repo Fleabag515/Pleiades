@@ -70,9 +70,22 @@ export interface TurnMeta {
   stopped?: boolean
 }
 
+// A real file the user attached to a message (see pleiades/attachments.py +
+// POST /api/chats/{id}/attachments) -- `path` is an absolute path on THIS
+// machine, injected into the turn's context so the character's file/shell
+// tools can act on it directly (see engine.py's `_attachments_note`). Not
+// rendered anywhere yet (MessageBubble.tsx doesn't show a chip for these) --
+// this type just describes what's already persisted, for a later pass.
+export interface MessageAttachment {
+  name: string
+  path: string
+  mime: string
+}
+
 export interface UserMessage {
   role: 'user'
   content: string
+  attachments?: MessageAttachment[]
 }
 
 export interface AssistantMessage {
