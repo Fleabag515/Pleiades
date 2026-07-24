@@ -1,0 +1,15 @@
+{
+  "name": "claude-mcp-server",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Claude subscription as MCP tool + OpenAI-compatible backend",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "watch": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.0.0"
+  }
+}
