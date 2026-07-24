@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { createServer } from "http";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { randomBytes } from "crypto";
@@ -59,25 +59,40 @@ function isAuthorized(req) {
   return auth === `Bearer ${config.token}`;
 }
 
-// ── Claude CLI call ───────────────────────────────────────────────────────────
+// ── Claude CLI ───────────────────────────────────────────────────────────
 
-// Resolve claude binary explicitly so it works when node is spawned without
-// the user's full PATH (e.g. Task Scheduler, background Start-Process)
+// IMPORTANT (Windows): point at the real claude.exe, NOT claude.cmd.
+// The .cmd wrapper npm installs requires shell:true to spawn at all, and
+// shell:true makes Node naively string-join argv into one command line
+// for cmd.exe to re-parse — which silently truncates/mangles any
+// multi-line argument (like a whole CLAUDE.md system prompt) at the
+// first newline. Calling the real .exe directly needs no shell, so argv
+// (including embedded newlines) passes through the Windows process API
+// intact. Confirmed via a marker-word test: a multi-line system prompt
+// with a planted secret word round-tripped correctly only after this fix.
+// Find it via the claude.cmd wrapper's own %dp0%\node_modules\...\bin\claude.exe reference.
 const CLAUDE_BIN = process.env.CLAUDE_BIN ||
   (process.platform === "win32"
-    ? `${process.env.APPDATA}\\npm\\claude.cmd`
+    ? `${process.env.APPDATA}\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`
     : "claude");
 
+console.log(`  Claude binary: ${CLAUDE_BIN}`);
+
+// Async (non-blocking) — spawnSync would freeze the whole event loop for
+// every other caller until claude.exe returns, which is unacceptable once
+// more than one person (Nyzkh, Fleagle, etc.) can hit this server at once.
 function askClaude(prompt, systemPrompt = SYSTEM_PROMPT) {
-  const args = ["-p", prompt];
-  if (systemPrompt) args.push("--system-prompt", systemPrompt);
-  const result = spawnSync(CLAUDE_BIN, args, {
-    encoding: "utf8",
-    shell: true,
-    env: { ...process.env, COMSPEC: "C:\\Windows\\System32\\cmd.exe" },
-    timeout: 120_000,
+  return new Promise((resolve) => {
+    const args = ["-p", prompt];
+    if (systemPrompt) args.push("--system-prompt", systemPrompt);
+
+    const child = spawn(CLAUDE_BIN, args, { timeout: 120_000 });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("error", (e) => resolve(`Error: ${e.message}`));
+    child.on("close", () => resolve(stdout.trim() || stderr.trim() || "No response"));
   });
-  return result.stdout?.trim() || result.stderr?.trim() || "No response";
 }
 
 // ── MCP server ──────────────────────────────────────────────────────────────
@@ -89,7 +104,7 @@ mcp.tool(
   "Ask Vern's Claude anything",
   { prompt: z.string().describe("Your question or task") },
   async ({ prompt }) => ({
-    content: [{ type: "text", text: askClaude(prompt) }],
+    content: [{ type: "text", text: await askClaude(prompt) }],
   })
 );
 
@@ -115,11 +130,11 @@ function handleChatCompletions(req, res) {
   }
   let body = "";
   req.on("data", c => body += c);
-  req.on("end", () => {
+  req.on("end", async () => {
     try {
       const { messages = [], model } = JSON.parse(body);
       const { prompt, system } = formatMessagesForClaude(messages);
-      const text = askClaude(prompt, system);
+      const text = await askClaude(prompt, system);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         id: `chatcmpl-${Date.now()}`,
