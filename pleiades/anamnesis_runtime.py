@@ -19,13 +19,16 @@ module only starts/stops the process; it never changes that contract.
 State (under PLEIADES_HOME, mirroring models-running.json):
   anamnesis-running.json   {"pid": int, "host": str, "port": int}
 
-NOT YET SUPPORTED: running from a packaged/frozen build (the desktop app's
-PyInstaller backend). The anamnesis/ directory isn't bundled there yet —
-that's phase 2 (per-platform native deps for node-llama-cpp/better-sqlite3/
-onnxruntime). start() raises a clear AnamnesisRuntimeError rather than
-pretending to work if the vendored directory can't be found relative to this
-file, so this fails loudly instead of silently in a packaged build until
-phase 2 lands.
+Packaged (desktop app) builds: the Electron main process sets
+PLEIADES_ANAMNESIS_DIR (see desktop/src/main/index.ts's spawnBackend()) to
+point at electron-builder's extraResources copy (<resources>/anamnesis/),
+and _node_bin() below looks for a bundled Node runtime as a sibling of
+wherever anamnesis_dir() resolves to (<resources>/anamnesis-node-runtime/
+node, from a *second* extraResources entry — see build-native/fetch-node.sh)
+before falling back to PATH. Dev/CLI installs still just use anamnesis/ at
+the repo root and whatever `node` is on PATH, same as phase 0/1. If neither
+the bundled dir nor a repo-root checkout exists, start() still raises a
+clear AnamnesisRuntimeError rather than pretending to work.
 """
 
 from __future__ import annotations
@@ -75,10 +78,22 @@ def daemon_script() -> Path:
 def _node_bin() -> str:
     """Resolve a `node` to run the daemon with.
 
-    Phase 1 relies on a system Node (same as the fork's own pre-vendoring
-    setup did) — a bundled, fetched-per-platform Node runtime is phase 2
-    scope (docs/specs/2026-07-25-...), not this one.
-    """
+    Resolution order: PLEIADES_ANAMNESIS_NODE_BIN (explicit override, for
+    testing/dev) -> a bundled runtime sibling to anamnesis_dir() (packaged
+    desktop builds — see build-native/fetch-node.sh's output layout and
+    electron-builder.yml's second extraResources entry) -> whatever `node`
+    is on PATH (dev/CLI installs, same as the fork's own pre-vendoring
+    setup)."""
+    override = os.environ.get("PLEIADES_ANAMNESIS_NODE_BIN")
+    if override:
+        return override
+
+    bundled = anamnesis_dir().parent / "anamnesis-node-runtime" / (
+        "node.exe" if os.name != "posix" else "node"
+    )
+    if bundled.is_file():
+        return str(bundled)
+
     node = shutil.which("node")
     if not node:
         raise AnamnesisRuntimeError(
@@ -176,9 +191,9 @@ class AnamnesisDaemon:
             raise AnamnesisRuntimeError(
                 f"Anamnesis source not found at {script}. Expected the "
                 "vendored copy from phase 0 of docs/specs/2026-07-25-"
-                "anamnesis-vendoring-and-installer-plan.md, or set "
-                "PLEIADES_ANAMNESIS_DIR to point at a checkout. (Running "
-                "from a packaged build? That needs phase 2 first.)"
+                "anamnesis-vendoring-and-installer-plan.md, a packaged "
+                "build's bundled copy, or set PLEIADES_ANAMNESIS_DIR to "
+                "point at a checkout."
             )
         node_modules = anamnesis_dir() / "node_modules"
         if not node_modules.is_dir():

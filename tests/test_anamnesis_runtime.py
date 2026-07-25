@@ -113,6 +113,39 @@ def test_node_bin_raises_clear_error_when_missing(monkeypatch):
         ar._node_bin()
 
 
+def test_node_bin_env_override_wins_over_everything(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLEIADES_ANAMNESIS_NODE_BIN", "/custom/node")
+    # Even with a bundled copy present and PATH available, the explicit
+    # override must win -- it exists for tests/dev to force a specific
+    # binary without needing to fake out the filesystem layout below.
+    monkeypatch.setattr(ar.shutil, "which", lambda _: "/usr/bin/node")
+    assert ar._node_bin() == "/custom/node"
+
+
+def test_node_bin_prefers_bundled_sibling_over_path(tmp_path, monkeypatch):
+    # Packaged-build layout: <resources>/anamnesis/ (source) and
+    # <resources>/anamnesis-node-runtime/node (fetched runtime) as siblings
+    # -- see build-native/fetch-node.sh + electron-builder.yml's second
+    # extraResources entry.
+    resources = tmp_path / "resources"
+    anamnesis_copy = resources / "anamnesis"
+    anamnesis_copy.mkdir(parents=True)
+    bundled_node_dir = resources / "anamnesis-node-runtime"
+    bundled_node_dir.mkdir(parents=True)
+    bundled_node = bundled_node_dir / "node"
+    bundled_node.write_text("#!/bin/sh\necho fake\n")
+
+    monkeypatch.setenv("PLEIADES_ANAMNESIS_DIR", str(anamnesis_copy))
+    monkeypatch.setattr(ar.shutil, "which", lambda _: "/usr/bin/node")  # must NOT be used
+    assert ar._node_bin() == str(bundled_node)
+
+
+def test_node_bin_falls_back_to_path_when_no_bundled_copy(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLEIADES_ANAMNESIS_DIR", str(tmp_path / "anamnesis"))
+    monkeypatch.setattr(ar.shutil, "which", lambda _: "/usr/bin/node")
+    assert ar._node_bin() == "/usr/bin/node"
+
+
 def test_host_port_parses_control_url(monkeypatch):
     monkeypatch.setattr(ar, "_control_url", lambda: "http://127.0.0.1:9123")
     assert ar._host_port() == ("127.0.0.1", 9123)

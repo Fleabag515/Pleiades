@@ -19,6 +19,22 @@ asarUnpack:
 extraResources:
   - from: backend-build/dist/pleiades-backend
     to: backend
+  # Vendored Anamnesis memory proxy, pruned to Linux x64 only (native
+  # node-llama-cpp/onnxruntime-node bindings for other platforms/GPUs
+  # stripped -- see anamnesis/build-native/build.sh). Copied to
+  # <resources>/anamnesis/ so pleiades/anamnesis_runtime.py's anamnesis_dir()
+  # resolution (via PLEIADES_ANAMNESIS_DIR, set in src/main/index.ts's
+  # spawnBackend()) finds it in packaged builds. TODO(windows/mac): build.sh
+  # is Linux x64-only today; this entry needs a per-platform equivalent
+  # before those targets can bundle Anamnesis at all.
+  - from: ../anamnesis/build-native/dist/anamnesis
+    to: anamnesis
+  # Pinned Node runtime (see anamnesis/build-native/fetch-node.sh) so the
+  # bundled Anamnesis daemon above doesn't depend on a system-installed
+  # `node`. Sibling of the anamnesis/ entry above -- see
+  # anamnesis_runtime.py's _node_bin() for the sibling-path resolution.
+  - from: ../anamnesis/build-native/dist/node-runtime/linux-x64
+    to: anamnesis-node-runtime
 win:
   executableName: pleiades-desktop
   # Explicit rather than relying on electron-builder's implicit per-platform

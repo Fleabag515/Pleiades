@@ -64,6 +64,27 @@ function bundledBackendPath(): string {
   return join(process.resourcesPath, 'backend', BACKEND_BIN_NAME)
 }
 
+/**
+ * Where the bundled Anamnesis payload (pruned source + node_modules, see
+ * anamnesis/build-native/build.sh) lives, in dev vs. packaged builds --
+ * mirrors bundledBackendPath() above.
+ *  - Packaged: electron-builder's `extraResources` (see electron-builder.yml)
+ *    copies anamnesis/build-native/dist/anamnesis/ to <resources>/anamnesis/.
+ *  - Dev: the same build-native output directly in the PLEIADES_ROOT
+ *    checkout, if it's been built.
+ * Only passed through to the backend (as PLEIADES_ANAMNESIS_DIR, see
+ * spawnBackend() below) when it actually exists --
+ * pleiades/anamnesis_runtime.py's anamnesis_dir() already falls back to a
+ * plain repo-root checkout when the env var is unset, which is the right
+ * behavior for ordinary dev/CLI use where nothing has been pruned/bundled.
+ */
+function bundledAnamnesisDir(): string {
+  if (is.dev) {
+    return join(PLEIADES_ROOT, 'anamnesis', 'build-native', 'dist', 'anamnesis')
+  }
+  return join(process.resourcesPath, 'anamnesis')
+}
+
 const BACKEND_READY_TIMEOUT_MS = 20_000
 const BACKEND_POLL_INTERVAL_MS = 400
 const SHUTDOWN_GRACE_MS = 5_000
@@ -157,9 +178,21 @@ function spawnBackend(port: number): void {
       `${command} ${spawnArgs.join(' ')} (cwd=${cwd})`
   )
 
+  // Pass PLEIADES_ANAMNESIS_DIR through only when a bundled/pruned Anamnesis
+  // payload actually exists (packaged builds, or a dev checkout that's run
+  // anamnesis/build-native/build.sh) -- see bundledAnamnesisDir() and
+  // pleiades/anamnesis_runtime.py's anamnesis_dir()/_node_bin(). Otherwise
+  // omit it entirely so the backend's own default (plain repo-root
+  // anamnesis/ checkout, system `node`) keeps working unmodified.
+  const bundledAnamnesis = bundledAnamnesisDir()
+  const env = existsSync(bundledAnamnesis)
+    ? { ...process.env, PLEIADES_ANAMNESIS_DIR: bundledAnamnesis }
+    : process.env
+
   const child = spawn(command, spawnArgs, {
     cwd,
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env
   }) as BackendProcess
 
   backendProcess = child
