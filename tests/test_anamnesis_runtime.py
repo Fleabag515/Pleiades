@@ -8,6 +8,8 @@ port first, or it'll observe production instead of a clean slate.
 """
 
 import os
+import subprocess
+import sys
 
 import pytest
 
@@ -50,12 +52,11 @@ def test_pid_alive_false_for_none_or_zero():
 
 
 def test_pid_alive_false_for_dead_pid():
-    # A pid that's (almost certainly) not in use: fork, let it exit, then check.
-    pid = os.fork()
-    if pid == 0:
-        os._exit(0)
-    os.waitpid(pid, 0)
-    assert ar._pid_alive(pid) is False
+    # A pid that's (almost certainly) not in use: os.fork() isn't available on
+    # Windows, so spawn+wait a real subprocess instead -- portable everywhere.
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    assert ar._pid_alive(proc.pid) is False
 
 
 def test_running_json_roundtrip():

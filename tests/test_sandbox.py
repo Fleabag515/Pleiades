@@ -326,13 +326,21 @@ def test_memwatchdog_kills_process_over_its_memory_budget():
 
 
 def test_run_sandboxed_reports_memory_kill():
+    # Two independent, both-correct enforcement layers race here (see
+    # sandbox.py's module docstring): the kernel-enforced RLIMIT_AS ceiling
+    # can raise MemoryError inside the child itself (rc=1, "MemoryError" in
+    # the traceback) before the psutil watchdog's next poll ever fires
+    # (rc=-9, "killed"/"memory" in its own message) -- which one wins is a
+    # real race, not a bug, and was a source of previously-documented
+    # flakiness here when the test only accepted the watchdog's signature.
     policy = sb.SandboxPolicy(enabled=True, mem_mb=50, watchdog_interval=0.1)
     code = "import time; b=bytearray(200*1024*1024); time.sleep(10)"
     proc = sb.run_sandboxed([sys.executable, "-c", code], shell=False,
                             timeout=15, policy=policy)
-    assert proc.returncode == -9
-    assert "killed" in proc.stdout.lower()
-    assert "memory" in proc.stdout.lower()
+    out = proc.stdout.lower()
+    watchdog_killed = proc.returncode == -9 and "killed" in out and "memory" in out
+    rlimit_killed = proc.returncode == 1 and "memoryerror" in out
+    assert watchdog_killed or rlimit_killed, proc.stdout
 
 
 def test_run_sandboxed_does_not_kill_well_behaved_process():
