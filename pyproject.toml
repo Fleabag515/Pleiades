@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["camoufox[geoip]>=0.4"]   # headed anti-fingerprint Firefox + Playwright
+browser = ["camoufox[geoip]>=0.5.4"]   # headed anti-fingerprint Firefox + Playwright
 discord = ["discord.py>=2.4"]
 # Workspace harness (pleiades.harness): optional cloud tiers for the agent loop.
 # Local llama.cpp inference (core) remains the primary backend; these only enable
@@ -31,7 +31,7 @@ ui = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12", "python-multipart>=0.
 # via CDP screencast — separate from the `browser` extra above (Camoufox),
 # see pleiades/webui/browser_view.py
 browser-view = ["playwright>=1.40"]
-all = ["camoufox[geoip]>=0.4", "discord.py>=2.4", "anthropic>=0.69", "fastapi>=0.110", "uvicorn>=0.29", "websockets>=12", "playwright>=1.40", "python-multipart>=0.0.9"]
+all = ["camoufox[geoip]>=0.5.4", "discord.py>=2.4", "anthropic>=0.69", "fastapi>=0.110", "uvicorn>=0.29", "websockets>=12", "playwright>=1.40", "python-multipart>=0.0.9"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
