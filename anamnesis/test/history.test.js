@@ -4,21 +4,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-// History tests depend on better-sqlite3's native bindings. CI builds them as
-// part of `npm ci`; locally on a fresh checkout `npm install` does the same.
-// If the addon isn't loadable (rare environments without a C++ toolchain),
-// skip the suite cleanly instead of failing the whole `npm test` run.
-let HistoryStore = null;
-let skipReason = null;
-try {
-  HistoryStore = require('../src/history.js');
-  // Force native binding load now so the skip decision is up-front.
-  const probe = new HistoryStore(path.join(os.tmpdir(), `anamnesis-probe-${process.pid}.db`));
-  probe.close();
-  fs.rmSync(path.join(os.tmpdir(), `anamnesis-probe-${process.pid}.db`), { force: true });
-} catch (e) {
-  skipReason = `better-sqlite3 native binding unavailable: ${e.message.split('\n')[0]}`;
-}
+// History used to run on better-sqlite3, whose native addon could fail to
+// load in rare environments (no prebuilt for the running Node ABI + no C++
+// toolchain to fall back to compiling one -- see the 2026-07-25 migration
+// to node:sqlite, which ships inside Node itself and can't hit that
+// failure mode). `maybeTest` is kept as a thin passthrough rather than
+// removed outright, so this file doesn't need a second pass if some other
+// environment-dependent skip reason ever comes up here again.
+const HistoryStore = require('../src/history.js');
+const skipReason = null;
 
 const maybeTest = (name, fn) => test(name, skipReason ? { skip: skipReason } : undefined, fn);
 
@@ -309,6 +303,78 @@ maybeTest('getLastTurnTimestamp: is per-session, not global', () => {
   try {
     h.insertTurn('s1', 'user', 'a', null, 5, 'm');
     assert.equal(h.getLastTurnTimestamp('s2'), null);
+  } finally {
+    h.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── node:sqlite migration safety (2026-07-25) ──────────────────────────────
+
+maybeTest('mergeSessions: rolls back cleanly if a mid-merge statement throws (atomicity)', () => {
+  const { dir, dbPath } = tmpDb();
+  const h = new HistoryStore(dbPath);
+  try {
+    h.insertTurn('old-key', 'user', 'a', null, 5, 'm');
+    h.insertTurn('old-key', 'assistant', 'b', null, 5, 'm');
+
+    // Force a failure partway through mergeSessions' per-table loop by
+    // dropping one of the tables it iterates (character_observations) --
+    // its UPDATE will throw "no such table", after turns/engrams/episodes/
+    // foresights have already been rewritten in the same transaction.
+    h.db.exec('DROP TABLE character_observations');
+
+    assert.throws(() => h.mergeSessions('new-key'));
+
+    // If the transaction wrapper actually rolled back, 'turns' must NOT
+    // have been re-keyed either, even though its own UPDATE succeeded
+    // before the later failure.
+    const stillOld = h.db.prepare("SELECT COUNT(*) as n FROM turns WHERE session_key='old-key'").get().n;
+    const nowNew = h.db.prepare("SELECT COUNT(*) as n FROM turns WHERE session_key='new-key'").get().n;
+    assert.equal(stillOld, 2, 'turns must still be under the original session_key after rollback');
+    assert.equal(nowNew, 0, 'no turns should have been re-keyed after rollback');
+  } finally {
+    h.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybeTest('mergeSessions: commits all five tables together on success', () => {
+  const { dir, dbPath } = tmpDb();
+  const h = new HistoryStore(dbPath);
+  try {
+    const turnId = h.insertTurn('old-key', 'user', 'a', null, 5, 'm');
+    h.insertMemcell('old-key', turnId, 'fact', null, 0.5, 'other', 'm');
+    h.insertForesight('old-key', turnId, 'do the thing', '', 'soon', 0.7);
+
+    const changed = h.mergeSessions('new-key');
+    assert.ok(changed >= 3, 'should report at least the 3 rows re-keyed above');
+    assert.equal(h.db.prepare("SELECT COUNT(*) as n FROM turns WHERE session_key='new-key'").get().n, 1);
+    assert.equal(h.db.prepare("SELECT COUNT(*) as n FROM engrams WHERE session_key='new-key'").get().n, 1);
+    assert.equal(h.db.prepare("SELECT COUNT(*) as n FROM foresights WHERE session_key='new-key'").get().n, 1);
+  } finally {
+    h.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybeTest('busy timeout: connection is configured to wait on lock contention, not fail immediately', () => {
+  // A same-thread test can't safely exercise *actual* cross-handle lock
+  // contention: node:sqlite's DatabaseSync is genuinely synchronous, so a
+  // second handle blocked waiting on a lock would block the one JS thread
+  // that would otherwise run the timer/callback releasing that lock --
+  // that's a real same-process deadlock risk, not a hypothetical one, and
+  // not worth introducing into the suite to test this. What's both correct
+  // and worth asserting: the connection actually has a non-zero busy
+  // timeout configured at all, since node:sqlite defaults this to 0
+  // (immediate SQLITE_BUSY on any contention) unlike better-sqlite3's
+  // 5000ms default -- see the constructor's `timeout` option and the
+  // PRAGMA busy_timeout call right after it in history.js.
+  const { dir, dbPath } = tmpDb();
+  const h = new HistoryStore(dbPath);
+  try {
+    const busyTimeout = h.db.prepare('PRAGMA busy_timeout').get().timeout;
+    assert.equal(busyTimeout, 5000, 'busy_timeout must not be left at node:sqlite\'s 0 default');
   } finally {
     h.close();
     fs.rmSync(dir, { recursive: true, force: true });
