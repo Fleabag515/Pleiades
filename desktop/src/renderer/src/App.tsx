@@ -31,10 +31,23 @@ function App(): React.JSX.Element {
     const backendUrl = await window.pleiades.getBackendUrl()
 
     // Poll main's view of backend readiness until it flips to ready/error.
-    const deadline = Date.now() + 25_000
+    // Deadline here is deliberately longer than main's own
+    // BACKEND_READY_TIMEOUT_MS (see index.ts) so main's more specific
+    // error message wins the race instead of this generic one.
+    const start = Date.now()
+    const deadline = start + 95_000
     let status: BackendStatus = await window.pleiades.getBackendStatus()
     while (!cancelled.current && status.phase === 'starting' && Date.now() < deadline) {
-      setView({ kind: 'connecting', detail: 'Waiting for Pleiades backend to come online…' })
+      const elapsed = Date.now() - start
+      // A cold first launch can sit here for a while (Windows Defender
+      // scanning the backend's DLLs the first time it sees them at a new
+      // install path -- not a hang). Say so once it's been long enough
+      // that "Starting backend…" alone would look broken.
+      const detail =
+        elapsed > 15_000
+          ? 'Still starting… this can take up to a minute on first launch (antivirus scanning new files is normal).'
+          : 'Waiting for Pleiades backend to come online…'
+      setView({ kind: 'connecting', detail })
       await new Promise((r) => setTimeout(r, 500))
       status = await window.pleiades.getBackendStatus()
     }

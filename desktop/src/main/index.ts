@@ -82,7 +82,17 @@ function bundledAnamnesisDir(): string {
   return join(process.resourcesPath, 'anamnesis')
 }
 
-const BACKEND_READY_TIMEOUT_MS = 20_000
+// 20s was fine on a warmed-up dev machine but too short for a real first
+// launch: verified live (2026-07-25, real Windows 11 install) that a fresh
+// NSIS install's pleiades-backend.exe -- a PyInstaller onedir bundle with
+// hundreds of DLLs/pyds Windows Defender has never seen at that install
+// path before -- can sit well past 20s with real-time AV scanning each
+// file as the Python import machinery touches it, despite the process
+// itself being alive and not crashed (confirmed via the real backend.log:
+// spawned fine, no crash, just never reached "ready" before the old
+// deadline). Subsequent launches are fast once Defender has cached the
+// hashes; this timeout only needs to cover the cold case.
+const BACKEND_READY_TIMEOUT_MS = 90_000
 const BACKEND_POLL_INTERVAL_MS = 400
 const SHUTDOWN_GRACE_MS = 5_000
 
