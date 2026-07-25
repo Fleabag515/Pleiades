@@ -366,7 +366,21 @@ install_desktop_app() {
     && "$INSTALL_DIR/anamnesis/build-native/build.sh" \
     || { warn "Anamnesis native build failed — skipping the desktop app. Build it later: see desktop/README."; return 0; }
 
-  say "Building the desktop app (Electron + bundled backend)"
+  # electron-builder.yml's own `linux.target` always lists both AppImage and
+  # deb (that config is meant to be portable to a real Debian/Ubuntu build
+  # host too) -- but a .deb built HERE is only useful if this host can also
+  # install one. electron-builder downloads a prebuilt Ruby `fpm` to build
+  # .deb packages, and on a non-Debian host that binary can flat-out fail
+  # (e.g. Arch: fpm's Ruby is linked against libcrypt.so.1, which modern
+  # Arch's libxcrypt doesn't ship by default -- the compat symlink is a
+  # separate libxcrypt-compat package). Even a successfully-built .deb is a
+  # dead end on a host with no dpkg to install it with (the install step
+  # below already has to gracefully no-op in that case) -- so skip the
+  # attempt entirely rather than special-case one distro's missing lib.
+  LINUX_TARGETS="AppImage"
+  have dpkg && LINUX_TARGETS="AppImage deb"
+
+  say "Building the desktop app (Electron + bundled backend; targets: $LINUX_TARGETS)"
   (
     set -e
     VENV_PY="$INSTALL_DIR/.venv/bin/python3.12"
@@ -376,12 +390,20 @@ install_desktop_app() {
     PLEIADES_BACKEND_PY="$VENV_PY" "$INSTALL_DIR/desktop/backend-build/build.sh"
     cd "$INSTALL_DIR/desktop"
     npm install
-    npm run dist:linux
+    # `-- $LINUX_TARGETS` appends to dist:linux's own `electron-builder
+    # --linux` (npm's standard passthrough), overriding electron-builder.yml's
+    # configured target list for just this invocation.
+    npm run dist:linux -- $LINUX_TARGETS
   ) || { warn "Desktop app build failed — CLI/webui install is unaffected. Build it later: cd desktop && npm install && npm run dist:linux"; return 0; }
 
+  APPIMAGE="$(find "$INSTALL_DIR/desktop/dist" -maxdepth 1 -name '*.AppImage' -print -quit 2>/dev/null || true)"
   DEB="$(find "$INSTALL_DIR/desktop/dist" -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)"
   if [ -z "$DEB" ]; then
-    warn "Desktop app built but no .deb found under desktop/dist — install the AppImage manually instead."
+    if [ -n "$APPIMAGE" ]; then
+      info "Built $APPIMAGE — no .deb on this host (needs dpkg), run the AppImage directly (it's already executable)."
+    else
+      warn "Desktop app built but no AppImage/.deb found under desktop/dist — check the build output above."
+    fi
     return 0
   fi
 
