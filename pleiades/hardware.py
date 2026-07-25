@@ -279,6 +279,12 @@ class GGUFMeta:
     ssm_d_inner: int = 0
     ssm_d_state: int = 0
     ssm_n_group: int = 0
+    # Count of recurrent (non-attention) layers for hybrid archs — GGUF key
+    # {arch}.attention.recurrent_layers (an array; only its length is read,
+    # see read_gguf_meta/_read_scalar's want_array_len path). 0 = not present
+    # (older GGUF, or a hybrid arch that doesn't publish this key) — callers
+    # fall back to the existing conservative all-layers-are-attention math.
+    recurrent_layer_count: int = 0
 
     @property
     def is_moe(self) -> bool:
@@ -294,11 +300,25 @@ class GGUFMeta:
     # layers (llama.cpp calls this llm_arch_is_hybrid) — the retained attention
     # layers still have a normal, unbounded-by-default KV cache unless bounded
     # separately, so a hybrid model is NOT automatically context-free (see the
-    # design doc); treated conservatively (dense KV math) until per-layer
-    # attention-layer accounting is added. Architecture-name strings match
+    # design doc). Per-layer attention-layer accounting (2026-07-24): when a
+    # model's GGUF publishes {arch}.attention.recurrent_layers, kv_bytes_per_token
+    # scales the dense formula down to just the true attention layers instead
+    # of charging KV for all of them; falls back to the conservative all-layers
+    # estimate when the key is absent. Architecture-name strings match
     # llama.cpp's LLM_ARCH_NAMES exactly (src/llama-arch.cpp).
     _RECURRENT_ARCHS = frozenset({"mamba", "mamba2", "rwkv6", "rwkv7"})
-    _HYBRID_ARCHS = frozenset({"jamba", "qwen3next", "rwkv6qwen2"})
+    # Full real list, verified 2026-07-24 directly against llama.cpp's own
+    # llm_arch_is_hybrid() (src/llama-arch.cpp) on the pinned production
+    # build — the previous 3-entry set silently missed qwen35moe (Ornith's
+    # own architecture), which was causing kv_bytes_per_token() to treat it
+    # as dense and mis-plan its placement (see pleiades-project memory,
+    # 2026-07-24 hybrid-arch KV accounting entry). Two non-underscore
+    # spellings come straight from LLM_ARCH_NAMES: "falcon-h1", "kimi-linear".
+    _HYBRID_ARCHS = frozenset({
+        "jamba", "qwen3next", "rwkv6qwen2", "qwen35", "qwen35moe",
+        "falcon-h1", "plamo2", "granitehybrid", "lfm2", "lfm2moe",
+        "nemotron_h", "nemotron_h_moe", "kimi-linear",
+    })
 
     @property
     def memory_arch(self) -> str:
@@ -329,7 +349,7 @@ class GGUFMeta:
         return self.n_layers * (conv_state + ssm_state) * 4  # f32
 
 
-def _read_scalar(f: BinaryIO, vtype: int):
+def _read_scalar(f: BinaryIO, vtype: int, want_array_len: bool = False):
     if vtype in _SCALARS:
         fmt = _SCALARS[vtype]
         return struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
@@ -347,8 +367,26 @@ def _read_scalar(f: BinaryIO, vtype: int):
                 f.seek(n, 1)
         else:
             raise ValueError(f"nested arrays unsupported (etype={etype})")
-        return None  # arrays are never needed for planning
+        # Arrays are never otherwise needed for planning — except the
+        # element COUNT for {arch}.attention.recurrent_layers, which the
+        # hybrid-arch KV accounting fix needs (see read_gguf_meta) and which
+        # is free to capture since we've already walked/skipped the array.
+        return count if want_array_len else None
     raise ValueError(f"unknown GGUF value type {vtype}")
+
+
+# qwen35 / qwen35moe / qwen3next fall back to this EXACT computed pattern
+# (verified directly, 2026-07-24, in the pinned production build's
+# src/models/qwen35.cpp, qwen35moe.cpp, qwen3next.cpp — all three identical)
+# whenever their GGUF omits both {arch}.attention.recurrent_layers and
+# {arch}.full_attention_interval: interval defaults to 4, and
+# is_recr_impl[i] = (i+1) % interval != 0 — i.e. every 4th layer (1-indexed)
+# is full attention, the rest are recurrent/linear (DeltaNet). This is the
+# real reason Ornith (qwen35moe, no explicit metadata for either key) has
+# 30 recurrent + 10 attention layers out of 40, not "40 unknown, assume
+# dense" — see pleiades-project memory, 2026-07-24 hybrid-arch KV entry.
+_QWEN35_FAMILY_DEFAULT_INTERVAL = frozenset({"qwen35", "qwen35moe", "qwen3next"})
+_QWEN35_FAMILY_DEFAULT_FULL_ATTN_INTERVAL = 4
 
 
 def read_gguf_meta(path: "str | Path") -> GGUFMeta:
@@ -373,7 +411,8 @@ def read_gguf_meta(path: "str | Path") -> GGUFMeta:
                 (klen,) = struct.unpack("<Q", f.read(8))
                 key = f.read(klen).decode("utf-8", errors="replace")
                 (vtype,) = struct.unpack("<I", f.read(4))
-                val = _read_scalar(f, vtype)
+                want_len = key.endswith(".attention.recurrent_layers")
+                val = _read_scalar(f, vtype, want_array_len=want_len)
                 if val is not None:
                     kvs[key] = val
         arch = str(kvs.get("general.architecture", ""))
@@ -397,6 +436,12 @@ def read_gguf_meta(path: "str | Path") -> GGUFMeta:
         meta.ssm_d_inner = _i("ssm.inner_size")
         meta.ssm_d_state = _i("ssm.state_size")
         meta.ssm_n_group = _i("ssm.group_count")
+        meta.recurrent_layer_count = _i("attention.recurrent_layers")
+        if not meta.recurrent_layer_count and arch in _QWEN35_FAMILY_DEFAULT_INTERVAL and meta.n_layers:
+            full_attn_interval = _i("full_attention_interval") or _QWEN35_FAMILY_DEFAULT_FULL_ATTN_INTERVAL
+            full_attn_layers = sum(1 for i in range(meta.n_layers)
+                                    if (i + 1) % full_attn_interval == 0)
+            meta.recurrent_layer_count = meta.n_layers - full_attn_layers
         ftype = kvs.get("general.file_type")
         if isinstance(ftype, int):
             meta.quant = _FILE_TYPES.get(ftype, f"ftype-{ftype}")
@@ -668,7 +713,7 @@ _START_GEAR_TARGET = 16384
 
 
 def kv_bytes_per_token(meta: GGUFMeta, bytes_per_elem: int = 2) -> int:
-    """KV cache cost of ONE context token (K+V, all layers), f16 by default.
+    """KV cache cost of ONE context token (K+V, attention layers), f16 by default.
 
     Pure-recurrent architectures (Mamba/Mamba2/RWKV) genuinely have ZERO
     per-token KV growth — their memory is a fixed recurrent state, already
@@ -677,8 +722,11 @@ def kv_bytes_per_token(meta: GGUFMeta, bytes_per_elem: int = 2) -> int:
     ceiling logic (which is entirely driven by kv_bytes_per_token × n_ctx)
     correctly recognize these models as context-free with NO other changes
     needed — see docs/specs/2026-07-21-context-free-model-architecture-design.md
-    Phase 0.A. Hybrid architectures keep the dense formula below (conservative
-    — see memory_arch's docstring for why hybrid != automatically context-free).
+    Phase 0.A. Hybrid architectures scale the dense formula down to just the
+    true attention layers when meta.recurrent_layer_count is known (parsed
+    from {arch}.attention.recurrent_layers — see read_gguf_meta), falling
+    back to the original conservative all-layers estimate otherwise (see
+    memory_arch's docstring for why hybrid != automatically context-free).
     """
     if meta.memory_arch == "recurrent":
         return 0
@@ -686,7 +734,15 @@ def kv_bytes_per_token(meta: GGUFMeta, bytes_per_elem: int = 2) -> int:
         # order-of-magnitude fallback: ~1 KiB per layer per token
         return (meta.n_layers or _DEFAULT_LAYERS) * 1024
     head_dim = meta.n_embd // meta.n_head
-    return meta.n_layers * meta.n_head_kv * head_dim * 2 * bytes_per_elem
+    attention_layers = meta.n_layers
+    if meta.memory_arch == "hybrid" and meta.recurrent_layer_count:
+        # max(..., 0) guards a malformed/inconsistent GGUF where the published
+        # count exceeds n_layers; `or meta.n_layers` then falls back to the
+        # original conservative (never-under-provisions) all-layers estimate
+        # rather than silently returning 0 attention layers for a model
+        # classified hybrid rather than pure-recurrent.
+        attention_layers = max(meta.n_layers - meta.recurrent_layer_count, 0) or meta.n_layers
+    return attention_layers * meta.n_head_kv * head_dim * 2 * bytes_per_elem
 
 
 @dataclass

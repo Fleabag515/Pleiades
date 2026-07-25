@@ -23,16 +23,29 @@ def _kv_u32(key: str, val: int) -> bytes:
     return struct.pack("<Q", len(k)) + k + struct.pack("<I", 4) + struct.pack("<I", val)
 
 
+def _kv_arr_u32(key: str, values: list) -> bytes:
+    """A GGUF array-of-u32 value (vtype=9/_ARRAY, etype=4/u32) — used to test
+    the {arch}.attention.recurrent_layers array-count path in _read_scalar's
+    want_array_len branch."""
+    k = key.encode()
+    body = struct.pack("<I", 4) + struct.pack("<Q", len(values))
+    for v in values:
+        body += struct.pack("<I", v)
+    return struct.pack("<Q", len(k)) + k + struct.pack("<I", 9) + body
+
+
 def make_gguf(path, n_layers=32, n_embd=4096, n_head=32, n_head_kv=8,
-              pad_to=1024) -> str:
-    kvs = (_kv_str("general.architecture", "llama")
-           + _kv_u32("llama.block_count", n_layers)
-           + _kv_u32("llama.embedding_length", n_embd)
-           + _kv_u32("llama.attention.head_count", n_head)
-           + _kv_u32("llama.attention.head_count_kv", n_head_kv)
-           + _kv_u32("general.file_type", 15))
+              pad_to=1024, architecture="llama", extra_kvs: bytes = b"",
+              n_extra_kvs: int = 0) -> str:
+    kvs = (_kv_str("general.architecture", architecture)
+           + _kv_u32(f"{architecture}.block_count", n_layers)
+           + _kv_u32(f"{architecture}.embedding_length", n_embd)
+           + _kv_u32(f"{architecture}.attention.head_count", n_head)
+           + _kv_u32(f"{architecture}.attention.head_count_kv", n_head_kv)
+           + _kv_u32("general.file_type", 15)
+           + extra_kvs)
     blob = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
-        struct.pack("<Q", 6) + kvs
+        struct.pack("<Q", 6 + n_extra_kvs) + kvs
     blob += b"\0" * max(0, pad_to - len(blob))
     path.write_bytes(blob)
     return str(path)
@@ -243,3 +256,106 @@ def test_find_mmproj_sibling_picks_the_largest_when_multiple_present(tmp_path):
 
 def test_find_mmproj_sibling_nonexistent_model_path():
     assert hardware.find_mmproj_sibling("/no/such/dir/model.gguf") == ""
+
+
+
+# --------------------------------------------------------------------------- #
+# hybrid-arch KV accounting (2026-07-24 fix: qwen35moe/qwen35/qwen3next were
+# missing from _HYBRID_ARCHS entirely, so kv_bytes_per_token() charged full
+# dense KV for Ornith's 40 layers instead of just its ~10 real attention
+# layers -- see pleiades-project memory for the live-verified production
+# impact). Verified directly against llama.cpp's own llm_arch_is_hybrid()
+# and the qwen35{,moe}/qwen3next model-build sources (src/models/*.cpp).
+# --------------------------------------------------------------------------- #
+def test_qwen35moe_recognized_as_hybrid_not_dense():
+    p_meta = GGUFMeta(path="x", file_size=1, architecture="qwen35moe")
+    assert p_meta.memory_arch == "hybrid"
+
+
+def test_new_real_hybrid_archs_all_recognized():
+    # Every one of these is a real llm_arch_is_hybrid() entry in the pinned
+    # production llama.cpp (verified 2026-07-24) -- including the two
+    # non-underscore spellings straight from LLM_ARCH_NAMES.
+    for arch in ("qwen35", "qwen35moe", "falcon-h1", "plamo2", "granitehybrid",
+                 "lfm2", "lfm2moe", "nemotron_h", "nemotron_h_moe", "kimi-linear"):
+        assert GGUFMeta(path="x", file_size=1, architecture=arch).memory_arch == "hybrid", arch
+
+
+def test_qwen35moe_falls_back_to_full_attention_interval_default(tmp_path):
+    # No {arch}.attention.recurrent_layers, no {arch}.full_attention_interval
+    # in the GGUF (Ornith's real-world case) -- must fall back to the
+    # llama.cpp-internal default interval of 4: every 4th layer (1-indexed)
+    # is full attention, the rest recurrent. 40 layers -> 10 attention / 30
+    # recurrent, matching the real production model exactly.
+    p = make_gguf(tmp_path / "m.gguf", n_layers=40, n_embd=2048, n_head=16,
+                  n_head_kv=2, architecture="qwen35moe")
+    meta = hardware.read_gguf_meta(p)
+    assert meta.memory_arch == "hybrid"
+    assert meta.recurrent_layer_count == 30
+
+
+def test_qwen35moe_honors_explicit_full_attention_interval(tmp_path):
+    extra = _kv_u32("qwen35moe.full_attention_interval", 8)
+    p = make_gguf(tmp_path / "m.gguf", n_layers=40, n_embd=2048, n_head=16,
+                  n_head_kv=2, architecture="qwen35moe", extra_kvs=extra, n_extra_kvs=1)
+    meta = hardware.read_gguf_meta(p)
+    # interval=8 -> full-attn layers at i=7,15,23,31,39 -> 5 attention / 35 recurrent
+    assert meta.recurrent_layer_count == 35
+
+
+def test_qwen35moe_honors_explicit_recurrent_layers_array(tmp_path):
+    # When the GGUF DOES publish the explicit array (llama.cpp reads it via
+    # get_key_or_arr before ever consulting full_attention_interval), its
+    # length wins outright over the family-default interval computation.
+    extra = _kv_arr_u32("qwen35moe.attention.recurrent_layers", [0, 1, 2, 4, 5])
+    p = make_gguf(tmp_path / "m.gguf", n_layers=40, n_embd=2048, n_head=16,
+                  n_head_kv=2, architecture="qwen35moe", extra_kvs=extra, n_extra_kvs=1)
+    meta = hardware.read_gguf_meta(p)
+    assert meta.recurrent_layer_count == 5
+
+
+def test_hybrid_arch_without_known_pattern_stays_conservative(tmp_path):
+    # jamba is a real hybrid arch but NOT in the qwen35-family interval-
+    # fallback set, and this synthetic GGUF publishes neither metadata key
+    # -- recurrent_layer_count must stay 0 (unknown), and kv_bytes_per_token
+    # must keep charging the full conservative all-layers estimate rather
+    # than guessing. This is the safety net the fix must not remove.
+    p = make_gguf(tmp_path / "m.gguf", n_layers=40, n_embd=2048, n_head=16,
+                  n_head_kv=2, architecture="jamba")
+    meta = hardware.read_gguf_meta(p)
+    assert meta.memory_arch == "hybrid"
+    assert meta.recurrent_layer_count == 0
+    dense_equivalent = GGUFMeta(path="x", file_size=1, architecture="llama",
+                                n_layers=40, n_embd=2048, n_head=16, n_head_kv=2)
+    assert hardware.kv_bytes_per_token(meta) == hardware.kv_bytes_per_token(dense_equivalent)
+
+
+def test_kv_bytes_per_token_scales_down_for_known_hybrid_split(tmp_path):
+    p = make_gguf(tmp_path / "m.gguf", n_layers=40, n_embd=2048, n_head=16,
+                  n_head_kv=2, architecture="qwen35moe")
+    meta = hardware.read_gguf_meta(p)
+    dense_equivalent = GGUFMeta(path="x", file_size=1, architecture="llama",
+                                n_layers=40, n_embd=2048, n_head=16, n_head_kv=2)
+    hybrid_kv = hardware.kv_bytes_per_token(meta)
+    dense_kv = hardware.kv_bytes_per_token(dense_equivalent)
+    # 10/40 attention layers -> exactly 4x less KV per token than treating
+    # all 40 as attention.
+    assert hybrid_kv == dense_kv // 4
+
+
+def test_kv_bytes_per_token_respects_bytes_per_elem_for_quantized_kv_cache(tmp_path):
+    p = make_gguf(tmp_path / "m.gguf", n_layers=40, n_embd=2048, n_head=16,
+                  n_head_kv=2, architecture="qwen35moe")
+    meta = hardware.read_gguf_meta(p)
+    assert hardware.kv_bytes_per_token(meta, bytes_per_elem=1) == \
+        hardware.kv_bytes_per_token(meta, bytes_per_elem=2) // 2
+
+
+def test_dense_arch_kv_math_completely_unaffected(tmp_path):
+    # Regression guard: ordinary dense models must produce byte-identical
+    # kv_bytes_per_token output before and after this fix.
+    p = make_gguf(tmp_path / "m.gguf", n_layers=32, n_embd=4096, n_head=32, n_head_kv=8)
+    meta = hardware.read_gguf_meta(p)
+    assert meta.memory_arch == "dense"
+    assert meta.recurrent_layer_count == 0
+    assert hardware.kv_bytes_per_token(meta) == 32 * 8 * (4096 // 32) * 2 * 2
