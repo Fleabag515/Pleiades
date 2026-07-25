@@ -59,14 +59,12 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
 
 import pleiades.harness.builtins  # noqa: F401  registers all builtin tools
 import pleiades.harness.agent as agent_mod
-from pleiades.agents import AgentManager, BLOCKED_TOOL_NAMES, _safe_tools
+from pleiades.agents import AgentManager, BLOCKED_TOOL_NAMES
 from pleiades.harness import subagent as subagent_mod
 from pleiades.harness import toolsearch
-from pleiades.harness.agent import Agent
 from pleiades.harness.config import Config as HarnessConfig
 from pleiades.harness.llm import Reply, ToolCall
 from pleiades.harness.tools import registry

@@ -7,7 +7,7 @@ See docs/specs/2026-07-21-context-free-model-architecture-design.md.
 import struct
 
 from pleiades import hardware
-from pleiades.hardware import GGUFMeta, GPU, Hardware, kv_bytes_per_token, plan_context
+from pleiades.hardware import GPU, Hardware, kv_bytes_per_token, plan_context
 
 GiB = 1024 ** 3
 
@@ -34,13 +34,17 @@ def make_gguf(path, arch="llama", n_layers=32, n_embd=4096, n_head=32,
         + _kv_u32("general.file_type", 15)
     n = 6
     if ssm_d_conv:
-        kvs += _kv_u32(f"{arch}.ssm.conv_kernel", ssm_d_conv); n += 1
+        kvs += _kv_u32(f"{arch}.ssm.conv_kernel", ssm_d_conv)
+        n += 1
     if ssm_d_inner:
-        kvs += _kv_u32(f"{arch}.ssm.inner_size", ssm_d_inner); n += 1
+        kvs += _kv_u32(f"{arch}.ssm.inner_size", ssm_d_inner)
+        n += 1
     if ssm_d_state:
-        kvs += _kv_u32(f"{arch}.ssm.state_size", ssm_d_state); n += 1
+        kvs += _kv_u32(f"{arch}.ssm.state_size", ssm_d_state)
+        n += 1
     if ssm_n_group:
-        kvs += _kv_u32(f"{arch}.ssm.group_count", ssm_n_group); n += 1
+        kvs += _kv_u32(f"{arch}.ssm.group_count", ssm_n_group)
+        n += 1
     blob = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
         struct.pack("<Q", n) + kvs
     blob += b"\0" * max(0, pad_to - len(blob))

@@ -142,8 +142,10 @@ def test_current_job_id_is_thread_local():
 
     t1 = threading.Thread(target=worker, args=("thread-a",))
     t2 = threading.Thread(target=worker, args=("thread-b",))
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
     assert seen == {"thread-a": "thread-a", "thread-b": "thread-b"}
     clear_job("thread-a")

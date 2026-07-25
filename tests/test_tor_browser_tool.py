@@ -9,7 +9,6 @@ from __future__ import annotations
 import socket
 import types
 
-import pytest
 
 from pleiades.tools import tor_browser as tb
 import pleiades.harness.builtins.browser as hb

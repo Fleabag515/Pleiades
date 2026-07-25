@@ -247,7 +247,7 @@ def test_agents_enabled_gate_on_chat_belt_tool():
     """build_default_belt only adds spawn_agents when the character has
     agents_enabled=True -- mirrors how EmailTool is gated on has_email."""
     from pleiades.profiles import Profile
-    from pleiades.tools import ToolBelt, ToolContext, build_default_belt
+    from pleiades.tools import ToolContext, build_default_belt
 
     ctx_off = ToolContext(profile=Profile(name="off", agents_enabled=False),
                           vault=None, settings=None)

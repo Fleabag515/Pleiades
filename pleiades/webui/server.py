@@ -2548,7 +2548,9 @@ def create_app() -> FastAPI:
     # ── Anamnesis control ──────────────────────────────────────────────────────
     @app.post("/api/anamnesis/{action}")
     async def anamnesis_control(action: str):
-        import psutil, subprocess, signal as _signal
+        import psutil
+        import subprocess
+        import signal as _signal
         if action not in ("start", "stop"):
             raise HTTPException(status_code=400, detail="action must be start or stop")
         procs = []
@@ -2557,14 +2559,18 @@ def create_app() -> FastAPI:
                 cmdline = ' '.join(proc.info.get('cmdline') or [])
                 if 'node' in (proc.info.get('name') or '').lower() and 'anamnesis' in cmdline:
                     procs.append(proc)
-            except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
         if action == "stop":
             for proc in procs:
-                try: proc.send_signal(_signal.SIGTERM)
-                except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+                try:
+                    proc.send_signal(_signal.SIGTERM)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
             return {"ok": True, "action": "stop", "killed": len(procs)}
         daemon = os.path.expanduser("~/.local/share/anamnesis/src/daemon.js")
-        if procs: return {"ok": True, "action": "start", "status": "already_running"}
+        if procs:
+            return {"ok": True, "action": "start", "status": "already_running"}
         if not os.path.exists(daemon):
             raise HTTPException(status_code=404, detail=f"daemon not found: {daemon}")
         subprocess.Popen(["node", daemon], stdout=subprocess.DEVNULL,
@@ -2572,16 +2578,21 @@ def create_app() -> FastAPI:
         return {"ok": True, "action": "start", "status": "starting"}
 
     # ── Rules & guidelines ─────────────────────────────────────────────────────
-    import json as _json, uuid as _uuid
+    import json as _json
+    import uuid as _uuid
     _RULES_FILE = os.path.expanduser("~/.pleiades/rules.json")
     def _load_rules():
         try:
-            with open(_RULES_FILE) as _f: return _json.load(_f)
-        except FileNotFoundError: return []
-        except Exception: return []
+            with open(_RULES_FILE) as _f:
+                return _json.load(_f)
+        except FileNotFoundError:
+            return []
+        except Exception:
+            return []
     def _save_rules(rules):
         os.makedirs(os.path.dirname(_RULES_FILE), exist_ok=True)
-        with open(_RULES_FILE, 'w') as _f: _json.dump(rules, _f, indent=2)
+        with open(_RULES_FILE, 'w') as _f:
+            _json.dump(rules, _f, indent=2)
     @app.get("/api/rules")
     async def get_rules():
         return {"rules": _load_rules()}
@@ -2590,15 +2601,19 @@ def create_app() -> FastAPI:
         rules = _load_rules()
         rule = {"id": _uuid.uuid4().hex[:8], "text": body.get("text",""),
                 "enabled": True, "pending": bool(body.get("pending", False))}
-        rules.append(rule); _save_rules(rules); return rule
+        rules.append(rule)
+        _save_rules(rules)
+        return rule
     @app.put("/api/rules/{rule_id}")
     async def update_rule(rule_id: str, body: dict):
         rules = _load_rules()
         for r in rules:
             if r["id"] == rule_id:
                 for k in ("text","enabled","pending"):
-                    if k in body: r[k] = body[k]
-                _save_rules(rules); return r
+                    if k in body:
+                        r[k] = body[k]
+                _save_rules(rules)
+                return r
         raise HTTPException(status_code=404, detail="rule not found")
     @app.delete("/api/rules/{rule_id}")
     async def delete_rule_ep(rule_id: str):

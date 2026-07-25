@@ -5,7 +5,6 @@ deliberately excluded)."""
 
 import os
 
-import pytest
 
 from pleiades import launch, runtime
 from pleiades.autofit import RuntimeCaps

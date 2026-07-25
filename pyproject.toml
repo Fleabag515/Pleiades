@@ -46,3 +46,17 @@ packages = ["pleiades"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# third_party/llama.cpp is a vendored upstream submodule -- not our code, never lint it.
+exclude = ["third_party"]
+
+[tool.ruff.lint]
+# Pinned to ruff's classic correctness-only set (syntax errors, pyflakes, a few
+# pycodestyle checks) rather than leaving `select` unset. An unset `select` means
+# "whatever ruff considers its default recommended set this release" -- that set
+# has grown release over release (style/modernization/opinionated categories),
+# so CI silently started failing on hundreds of pre-existing style findings with
+# no code change and no warning. Correctness bugs belong in CI; style opinions
+# are a separate, deliberate cleanup project if ever wanted.
+select = ["E4", "E7", "E9", "F"]
