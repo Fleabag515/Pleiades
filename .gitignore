@@ -22,6 +22,10 @@ master.key
 *.db
 *.sqlite
 *.sqlite3
+# extension-less character DBs and stray local browser profiles at repo root
+# (a real one was committed by accident -- see the 2026-07-25 ponytail audit)
+/browser_profile/
+/Mark
 
 # Model weights
 *.gguf
