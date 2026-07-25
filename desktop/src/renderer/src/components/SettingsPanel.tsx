@@ -4,18 +4,20 @@ import type { Profile } from '../lib/types'
 import ModelsSection from './settings/ModelsSection'
 import CharactersTab from './settings/CharactersTab'
 import HardwareTab from './settings/HardwareTab'
+import UpdatesSection from './settings/UpdatesSection'
 
 interface SettingsPanelProps {
   base: string
   onClose: () => void
 }
 
-type Section = 'characters' | 'hardware' | 'models'
+type Section = 'characters' | 'hardware' | 'models' | 'updates'
 
 const SECTIONS: { key: Section; label: string }[] = [
   { key: 'characters', label: 'Characters' },
   { key: 'hardware', label: 'Hardware' },
-  { key: 'models', label: 'Models' }
+  { key: 'models', label: 'Models' },
+  { key: 'updates', label: 'Updates' }
 ]
 
 /** Gear-icon modal, restructured onto a left vertical nav (replacing the old
@@ -31,6 +33,7 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
   const [section, setSection] = useState<Section>('characters')
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [updateReady, setUpdateReady] = useState(false)
 
   useEffect(() => {
     listProfiles(base)
@@ -38,8 +41,26 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
       .catch((e) => setError((e as Error).message))
   }, [base])
 
+  useEffect(() => {
+    // Small nav-item dot only -- UpdatesSection itself owns the full status
+    // detail/actions. 'available'/'downloading' means autoUpdater found one
+    // and is still fetching it; 'ready' means it's fully downloaded and
+    // installUpdateAndRestart() will work right now.
+    window.pleiades
+      .getUpdateStatus()
+      .then((s) =>
+        setUpdateReady(s.phase === 'available' || s.phase === 'downloading' || s.phase === 'ready')
+      )
+    return window.pleiades.onUpdateStatusChanged((s) =>
+      setUpdateReady(s.phase === 'available' || s.phase === 'downloading' || s.phase === 'ready')
+    )
+  }, [])
+
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-6" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-6"
+      onClick={onClose}
+    >
       <div
         className="flex h-[680px] max-h-[calc(100vh-3rem)] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-border bg-bg-100 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -60,13 +81,16 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
               <button
                 key={s.key}
                 onClick={() => setSection(s.key)}
-                className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
                   section === s.key
                     ? 'bg-bg-300 text-ink-bright'
                     : 'text-ink-dim hover:bg-bg-surface-hover hover:text-ink'
                 }`}
               >
                 {s.label}
+                {s.key === 'updates' && updateReady && (
+                  <span className="h-1.5 w-1.5 flex-none rounded-full bg-accent" aria-hidden />
+                )}
               </button>
             ))}
           </nav>
@@ -81,6 +105,7 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
             {section === 'characters' && <CharactersTab base={base} profiles={profiles} />}
             {section === 'hardware' && <HardwareTab base={base} />}
             {section === 'models' && <ModelsSection base={base} />}
+            {section === 'updates' && <UpdatesSection />}
           </div>
         </div>
       </div>

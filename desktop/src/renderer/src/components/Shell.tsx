@@ -44,6 +44,7 @@ function Shell({ base }: ShellProps): React.JSX.Element {
   const [createOpen, setCreateOpen] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [updateReady, setUpdateReady] = useState(false)
   const { startNewChat } = useChatStoreActions()
   const activeSession = useChatSession(activeCharacter)
 
@@ -60,6 +61,19 @@ function Shell({ base }: ShellProps): React.JSX.Element {
   useEffect(() => {
     refreshProfiles()
   }, [refreshProfiles])
+
+  useEffect(() => {
+    // Gear-button badge: same three "there's something to look at in
+    // Settings > Updates" phases SettingsPanel's own nav-dot uses.
+    window.pleiades
+      .getUpdateStatus()
+      .then((s) =>
+        setUpdateReady(s.phase === 'available' || s.phase === 'downloading' || s.phase === 'ready')
+      )
+    return window.pleiades.onUpdateStatusChanged((s) =>
+      setUpdateReady(s.phase === 'available' || s.phase === 'downloading' || s.phase === 'ready')
+    )
+  }, [])
 
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-bg-app text-ink">
@@ -85,11 +99,17 @@ function Shell({ base }: ShellProps): React.JSX.Element {
 
       <button
         onClick={() => setSettingsOpen(true)}
-        title="Settings"
+        title={updateReady ? 'Settings — update ready' : 'Settings'}
         aria-label="Settings"
         className="absolute bottom-4 left-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-border bg-bg-200 text-lg text-ink-dim shadow-lg transition hover:bg-bg-300 hover:text-ink"
       >
         <span aria-hidden>&#9881;</span>
+        {updateReady && (
+          <span
+            className="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full border-2 border-bg-200 bg-accent"
+            aria-hidden
+          />
+        )}
       </button>
 
       {/* Owner feedback round 4: the right-panel toggle that used to live

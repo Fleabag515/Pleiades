@@ -7,6 +7,7 @@ import { createWriteStream, mkdirSync, existsSync, WriteStream } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { autoUpdater } from 'electron-updater'
 import icon from '../../resources/icon.png?asset'
 import trayIconAsset from '../../resources/tray-icon.png?asset'
 // TODO(windows): Windows' system tray convention is a much smaller icon
@@ -75,6 +76,21 @@ interface BackendState {
 }
 
 const backendState: BackendState = { phase: 'starting', port: null, url: null, error: null }
+
+// See the "Auto-update" section further down for how this gets populated.
+interface UpdateStatus {
+  phase: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error'
+  version: string | null // the version being downloaded/ready, once known
+  progressPercent: number | null
+  error: string | null
+}
+
+let updateStatus: UpdateStatus = {
+  phase: 'idle',
+  version: null,
+  progressPercent: null,
+  error: null
+}
 
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>
 
@@ -276,6 +292,7 @@ function stopBackend(): Promise<void> {
 function registerIpcHandlers(): void {
   ipcMain.handle('pleiades:get-backend-url', () => backendState.url)
   ipcMain.handle('pleiades:get-backend-status', () => ({ ...backendState }))
+  ipcMain.handle('pleiades:get-app-version', () => app.getVersion())
 
   // Custom title bar window controls (see createWindow's frame: false).
   ipcMain.handle('pleiades:window-minimize', () => mainWindow?.minimize())
@@ -286,6 +303,80 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('pleiades:window-close', () => mainWindow?.close())
   ipcMain.handle('pleiades:window-is-maximized', () => mainWindow?.isMaximized() ?? false)
+
+  // Auto-update (see the "Auto-update" section below for the full flow).
+  ipcMain.handle('pleiades:check-for-updates', () => {
+    autoUpdater.checkForUpdates().catch((e) => logLine(`[update] manual check failed: ${e}`))
+  })
+  ipcMain.handle('pleiades:get-update-status', () => updateStatus)
+  ipcMain.handle('pleiades:install-update-and-restart', () => {
+    // quitAndInstall's own 'before-quit'-equivalent path bypasses our normal
+    // before-quit handler (which stops the backend first) -- stop it
+    // ourselves before handing off, so the update doesn't land on top of a
+    // still-running backend process on the next launch.
+    stopBackend().finally(() => autoUpdater.quitAndInstall())
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update
+//
+// electron-updater's GitHub provider (see electron-builder.yml's `publish`
+// block) compares this build's own version against the newest GitHub
+// Release on Fleabag515/Pleiades that has electron-builder's latest*.yml
+// metadata attached -- `electron-builder --publish always` produces both
+// the installers AND that metadata in one pass; a release built without
+// `--publish` needs the latest*.yml files from dist/ uploaded to the
+// release by hand alongside the installers, or updates will never be seen.
+//
+// Flow: check on startup (packaged builds only -- checking against a real
+// GitHub release from an unpackaged dev run would either 404 confusingly or
+// offer to "update" a dev checkout, neither useful) -- autoDownload is on,
+// so once a newer release is found it fetches it in the background with no
+// user action needed. The renderer gets every state change broadcast via
+// 'pleiades:update-status-changed' (Settings' Updates section renders it;
+// Shell puts a small dot on the gear icon the instant it's anything other
+// than idle/checking/not-available, so an update doesn't sit undiscovered
+// behind a panel nobody happened to open). The ONE click the owner asked
+// for is installUpdateAndRestart's IPC handler above, which is
+// autoUpdater.quitAndInstall() after stopping the backend cleanly first.
+// ---------------------------------------------------------------------------
+
+function setUpdateStatus(patch: Partial<UpdateStatus>): void {
+  updateStatus = { ...updateStatus, ...patch }
+  mainWindow?.webContents.send('pleiades:update-status-changed', updateStatus)
+}
+
+function setupAutoUpdater(): void {
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = false // only via the explicit one-click action, never a surprise quit
+
+  autoUpdater.on('checking-for-update', () => setUpdateStatus({ phase: 'checking', error: null }))
+  autoUpdater.on('update-available', (info) =>
+    setUpdateStatus({ phase: 'available', version: info.version, error: null })
+  )
+  autoUpdater.on('update-not-available', () =>
+    setUpdateStatus({ phase: 'not-available', version: null, progressPercent: null })
+  )
+  autoUpdater.on('download-progress', (p) =>
+    setUpdateStatus({ phase: 'downloading', progressPercent: Math.round(p.percent) })
+  )
+  autoUpdater.on('update-downloaded', (info) =>
+    setUpdateStatus({ phase: 'ready', version: info.version, progressPercent: 100 })
+  )
+  autoUpdater.on('error', (err) => {
+    logLine(`[update] ${err}`)
+    setUpdateStatus({ phase: 'error', error: String(err?.message ?? err) })
+  })
+
+  if (app.isPackaged) {
+    // A few seconds after launch, not immediately -- startBackend() is
+    // already doing real work in this same window; no need to compete
+    // with it for the very first moments of startup.
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((e) => logLine(`[update] startup check failed: ${e}`))
+    }, 10_000)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +627,7 @@ app.whenReady().then(() => {
   createAppMenu()
   createWindow()
   createTray()
+  setupAutoUpdater()
   void startBackend()
 
   app.on('activate', function () {

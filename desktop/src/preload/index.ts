@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+interface UpdateStatus {
+  phase: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'not-available' | 'error'
+  version: string | null
+  progressPercent: number | null
+  error: string | null
+}
+
 /**
  * Minimal, explicit bridge for the renderer. Intentionally does NOT expose
  * ipcRenderer, require, process, or any other Node/Electron primitive —
@@ -26,6 +33,19 @@ const pleiadesApi = {
     const listener = (_event: unknown, maximized: boolean): void => cb(maximized)
     ipcRenderer.on('pleiades:window-maximized-changed', listener)
     return () => ipcRenderer.removeListener('pleiades:window-maximized-changed', listener)
+  },
+
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke('pleiades:get-app-version'),
+
+  // Auto-update (see main/index.ts's "Auto-update" section for the full flow).
+  checkForUpdates: (): Promise<void> => ipcRenderer.invoke('pleiades:check-for-updates'),
+  getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('pleiades:get-update-status'),
+  installUpdateAndRestart: (): Promise<void> =>
+    ipcRenderer.invoke('pleiades:install-update-and-restart'),
+  onUpdateStatusChanged: (cb: (status: UpdateStatus) => void): (() => void) => {
+    const listener = (_event: unknown, status: UpdateStatus): void => cb(status)
+    ipcRenderer.on('pleiades:update-status-changed', listener)
+    return () => ipcRenderer.removeListener('pleiades:update-status-changed', listener)
   }
 }
 

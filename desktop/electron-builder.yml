@@ -68,6 +68,15 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
+# electron-updater checks this repo's GitHub Releases for a newer published
+# version than package.json's own -- see src/main/index.ts's auto-updater
+# wiring. Release artifacts must include the per-platform files
+# electron-builder already produces here (the .deb/.AppImage/.exe/.dmg) PLUS
+# the latest*.yml files electron-builder generates alongside them (that's
+# what electron-updater actually reads to know a new version exists and
+# where to fetch it) -- `electron-builder --publish always` (or uploading
+# dist/'s full contents to a GitHub Release by hand) covers both.
 publish:
-  provider: generic
-  url: https://example.com/auto-updates
+  provider: github
+  owner: Fleabag515
+  repo: Pleiades
