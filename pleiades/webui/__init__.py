@@ -68,8 +68,8 @@ def run(host: str = "127.0.0.1", port: "int | None" = None,
     _state["host"] = host
     _state["enforce"] = not is_wildcard(host)
     if is_wildcard(host):
-        print("  !  Binding to a wildcard address exposes the control panel — and\n"
-              "     POST /api/work (which runs shell/file tools) — to your network.\n"
+        print("  !  Binding to a wildcard address exposes the control panel -- and\n"
+              "     POST /api/work (which runs shell/file tools) -- to your network.\n"
               "     The loopback guard is OFF for this bind; put it behind a trusted\n"
               "     reverse proxy with auth, or bind to 127.0.0.1 instead.\n")
     _raw_run(host=host, port=port, open_browser=open_browser)

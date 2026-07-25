@@ -2682,5 +2682,5 @@ def run(host: str = "127.0.0.1", port: Optional[int] = None,
                 pass
         threading.Thread(target=_open, daemon=True).start()
 
-    print(f"\n  Pleiades control panel → {url}\n  (Ctrl-C to stop)\n")
+    print(f"\n  Pleiades control panel -> {url}\n  (Ctrl-C to stop)\n")
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
