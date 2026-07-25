@@ -73,7 +73,13 @@ $AfterSize = "{0:N0} MB" -f ((Get-ChildItem $NodeModules -Recurse | Measure-Obje
 Write-Host "==> Verifying the pruned copy still boots and answers a real health check"
 $ScratchHome = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path (Join-Path $ScratchHome ".anamnesis") -Force | Out-Null
-'{ "controlPort": 19898 }' | Set-Content -Path (Join-Path $ScratchHome ".anamnesis\daemon.json") -Encoding UTF8
+# Set-Content -Encoding UTF8 writes a BOM by default in Windows PowerShell
+# -- confirmed live this breaks Node's JSON.parse() on this exact file,
+# which daemon.js swallows silently and falls back to its default port
+# (9000), colliding with any already-running real Anamnesis daemon rather
+# than using this scratch verification's own 19898. WriteAllText with no
+# explicit encoding defaults to UTF-8 *without* a BOM.
+[System.IO.File]::WriteAllText((Join-Path $ScratchHome ".anamnesis\daemon.json"), '{ "controlPort": 19898 }')
 
 $logPath = Join-Path $BuildDir "last-verify-boot.log"
 $daemonJs = Join-Path $DistDir "src\daemon.js"
