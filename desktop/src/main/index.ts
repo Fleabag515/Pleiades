@@ -525,7 +525,24 @@ function createWindow(): void {
   // Never let the renderer navigate to or open remote content.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     logLine(`[window] blocked window.open to ${url}`)
-    void shell.openExternal(url).catch(() => {})
+    // shell.openExternal hands the URL straight to the OS's default handler
+    // for its scheme -- fine for http(s), but a file://, an OS-registered
+    // custom scheme, or something like a vulnerable installed app's own
+    // URL-handler protocol could do a lot more than open a browser tab.
+    // Requires the renderer to already be rendering an attacker-controlled
+    // link (contextIsolation/sandbox/nodeIntegration are hardened above),
+    // but there's no reason to trust the scheme unchecked on top of that.
+    let scheme = ''
+    try {
+      scheme = new URL(url).protocol
+    } catch {
+      return { action: 'deny' }
+    }
+    if (scheme === 'http:' || scheme === 'https:') {
+      void shell.openExternal(url).catch(() => {})
+    } else {
+      logLine(`[window] refused to open non-http(s) scheme: ${scheme}`)
+    }
     return { action: 'deny' }
   })
   mainWindow.webContents.on('will-navigate', (event, url) => {
