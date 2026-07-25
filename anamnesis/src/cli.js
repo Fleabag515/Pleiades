@@ -367,8 +367,8 @@ const commands = {
           // Embedding model mismatch
           const dbPath = cfg.history?.dbPath?.replace(/^~/, os.homedir());
           if (dbPath && fs.existsSync(dbPath)) {
-            const Database = require('better-sqlite3');
-            const db = new Database(dbPath, { readonly: true });
+            const { DatabaseSync } = require('node:sqlite');
+            const db = new DatabaseSync(dbPath, { readOnly: true, enableForeignKeyConstraints: false });
             const rows = db.prepare(
               'SELECT DISTINCT embedding_model FROM engrams WHERE embedding_model IS NOT NULL LIMIT 5'
             ).all();
@@ -414,7 +414,7 @@ const commands = {
     const dbPath = (cfg.history?.dbPath || '').replace(/^~/, os.homedir());
     if (!fs.existsSync(dbPath)) die(`no database found at ${dbPath}`);
 
-    const Database = require('better-sqlite3');
+    const { DatabaseSync } = require('node:sqlite');
     const brain = require('./lib/brain.js');
     brain.init(cfg);
     // Wait for embedder to load
@@ -430,8 +430,9 @@ const commands = {
     const currentModel = brain.embeddingModel();
     console.log(`re-embedding with model: ${currentModel}`);
 
-    const db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
+    const db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false, timeout: 5000 });
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 5000');
     const rows = db.prepare(
       'SELECT id, content FROM engrams WHERE embedding_model != ? OR embedding_model IS NULL'
     ).all(currentModel);

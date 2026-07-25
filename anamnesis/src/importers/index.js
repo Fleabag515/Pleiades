@@ -109,24 +109,27 @@ function writeToDb(characterName, { profile, directData }) {
     console.warn('import data was not written; re-run after starting the character.');
     return;
   }
-  const Database = require('better-sqlite3');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
+  const { DatabaseSync } = require('node:sqlite');
+  const { runInTransaction } = require('../lib/sqlite-tx.js');
+  const db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false, timeout: 5000 });
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA busy_timeout = 5000');
   const insert = db.prepare(`
     INSERT OR IGNORE INTO engrams (session_key, content, category, decay_score, created_at)
     VALUES (?, ?, ?, ?, ?)
   `);
-  const importMany = db.transaction((cells) => {
-    for (const cell of cells) {
-      insert.run(
-        cell.session_key || 'imported',
-        cell.content,
-        cell.category || 'other',
-        cell.decay_score || 1.0,
-        cell.created_at || Math.floor(Date.now() / 1000)
-      );
-    }
-  });
+  const importMany = (cells) =>
+    runInTransaction(db, () => {
+      for (const cell of cells) {
+        insert.run(
+          cell.session_key || 'imported',
+          cell.content,
+          cell.category || 'other',
+          cell.decay_score || 1.0,
+          cell.created_at || Math.floor(Date.now() / 1000)
+        );
+      }
+    });
   for (const d of directData) {
     if (d.engrams) importMany(d.engrams);
   }

@@ -14,9 +14,10 @@
  *   foresights  — extracted intentions / future plans.
  */
 
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
+const { runInTransaction } = require('./lib/sqlite-tx.js');
 
 const CATEGORIES = ['technical', 'decision', 'preference', 'personal', 'context', 'other'];
 const TIMEFRAMES = ['soon', 'days', 'weeks', 'months', 'ongoing'];
@@ -27,9 +28,28 @@ class HistoryStore {
 
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
+    this.db = new DatabaseSync(dbPath, {
+      // better-sqlite3 (what this replaced) left FK enforcement off, matching
+      // SQLite's own default -- and nothing here has ever set `PRAGMA
+      // foreign_keys`, so the schema's `ON DELETE CASCADE` refs have been
+      // inert in production the whole time. node:sqlite defaults this to
+      // true; flipping it on as a side effect of this migration would make
+      // prune() start cascade-deleting engrams/foresights of any pruned
+      // turn -- a real behavior change, not something to do silently.
+      enableForeignKeyConstraints: false,
+      // node:sqlite's busy-timeout default is 0 (immediate SQLITE_BUSY on
+      // lock contention); better-sqlite3 defaulted to 5000ms. cli.js opens
+      // its own separate handle for repair commands (reembed/status) while
+      // the daemon may be writing, so cross-process WAL contention is real
+      // -- without this, a busy write can silently fail to persist instead
+      // of waiting. Also set via PRAGMA below as a version-independent
+      // belt-and-suspenders (this constructor option's availability isn't
+      // guaranteed on every Node build this ever runs on).
+      timeout: 5000,
+    });
+    this.db.exec('PRAGMA journal_mode = WAL');
+    this.db.exec('PRAGMA synchronous = NORMAL');
+    this.db.exec('PRAGMA busy_timeout = 5000');
     this._init();
   }
 
@@ -349,7 +369,7 @@ class HistoryStore {
       .prepare('SELECT id, created_at, recall_count, importance FROM engrams WHERE session_key=?')
       .all(sessionKey);
     const update = this.db.prepare('UPDATE engrams SET decay_score=? WHERE id=?');
-    this.db.transaction(() => {
+    runInTransaction(this.db, () => {
       for (const c of cells) {
         const ageDays = (now - c.created_at) / 86400;
         const halfLife = 30 + (c.importance ?? 0.5) * 60;
@@ -357,7 +377,7 @@ class HistoryStore {
         const recall = Math.log1p(c.recall_count) / 5;
         update.run(Math.min(1.0, recency + recall), c.id);
       }
-    })();
+    });
   }
 
   pruneDecayedMemcells(sessionKey, threshold = 0.05) {
@@ -561,7 +581,7 @@ class HistoryStore {
   mergeSessions(intoKey, fromKeys = null) {
     const tables = ['turns', 'engrams', 'episodes', 'foresights', 'character_observations'];
     let total = 0;
-    this.db.transaction(() => {
+    runInTransaction(this.db, () => {
       for (const t of tables) {
         if (fromKeys && fromKeys.length) {
           const ph = fromKeys.map(() => '?').join(',');
@@ -574,7 +594,7 @@ class HistoryStore {
             .run(intoKey, intoKey).changes;
         }
       }
-    })();
+    });
     return total;
   }
 
