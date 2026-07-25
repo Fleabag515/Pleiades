@@ -87,8 +87,9 @@ pm_install() {
 
 # ---- prerequisites (auto-installed runtimes: Python, Node, native deps) ---
 ensure_base() {
-  have git  || { say "Installing git";  pm_install git  || die "Please install git and re-run."; }
-  have curl || pm_install curl || true
+  have git   || { say "Installing git";   pm_install git   || die "Please install git and re-run."; }
+  have curl  || pm_install curl  || true
+  have rsync || pm_install rsync || true  # needed by anamnesis/build-native/build.sh (desktop app)
 }
 
 PYBIN=""
