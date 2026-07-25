@@ -54,6 +54,9 @@ build-sw/
 engine/build-sw/
 third_party/llama.cpp/build-sw/
 
+# Claude Code's own local worktree/session state -- never project code
+.claude/
+
 # SearXNG: fetched at install time (pinned commit, not vendored in-repo --
 # see pleiades/searxng_runtime.py's module docstring and install.sh's
 # install_searxng()). Own venv lives inside it too.

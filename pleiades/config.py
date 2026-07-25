@@ -115,21 +115,9 @@ def _int(env: str, default: int) -> int:
         return default
 
 
-def _ctx(env: str, default: "int | str") -> "int | str":
-    """n_ctx from the environment: an int, or 'auto' (hardware-planned, elastic)."""
-    raw = os.environ.get(env, "").strip()
-    if not raw:
-        return default
-    if raw.lower() == "auto":
-        return "auto"
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _layers(env: str, default: "int | str") -> "int | str":
-    """n_gpu_layers from the environment: an int, or 'auto' (hardware-planned)."""
+def _auto_or_int(env: str, default: "int | str") -> "int | str":
+    """An env var that's an int, or 'auto' (hardware-planned) -- the shape
+    both n_ctx (elastic context) and n_gpu_layers (offload) take."""
     raw = os.environ.get(env, "").strip()
     if not raw:
         return default
@@ -347,8 +335,8 @@ class Settings:
         s.model_path = os.environ.get("PLEIADES_MODEL_PATH", s.model_path)
         s.inference_host = os.environ.get("PLEIADES_INFERENCE_HOST", s.inference_host)
         s.inference_port = _int("PLEIADES_INFERENCE_PORT", s.inference_port)
-        s.n_ctx = _ctx("PLEIADES_N_CTX", s.n_ctx)
-        s.n_gpu_layers = _layers("PLEIADES_N_GPU_LAYERS", s.n_gpu_layers)
+        s.n_ctx = _auto_or_int("PLEIADES_N_CTX", s.n_ctx)
+        s.n_gpu_layers = _auto_or_int("PLEIADES_N_GPU_LAYERS", s.n_gpu_layers)
         s.chat_format = os.environ.get("PLEIADES_CHAT_FORMAT", s.chat_format)
         s.flash_attn = os.environ.get("PLEIADES_FLASH_ATTN", s.flash_attn)
         s.kv_cache_type = os.environ.get("PLEIADES_KV_CACHE_TYPE", s.kv_cache_type)
