@@ -315,9 +315,35 @@ function Install-Searxng {
     git remote add origin https://github.com/searxng/searxng.git
     git fetch --depth 1 origin $script:SearxngPin
     if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
-    git checkout -q FETCH_HEAD
-    git branch -f master HEAD
-    git checkout -q master
+    # SearXNG's utils/ tree (deployment configs/scripts for running it behind
+    # httpd/nginx/uwsgi/Docker -- none of which Pleiades uses; searxng_runtime.py
+    # launches it directly via `python -m searx.webapp`) contains filenames like
+    # "searxng.conf:socket" -- a real Linux-only filename (a colon-suffixed
+    # unit-style name). NTFS reserves ':' for alternate-data-stream syntax, and
+    # `git checkout` refuses to materialize such a path on Windows ("invalid
+    # path") -- confirmed live on real Windows/NTFS. Critically, `git sparse-
+    # checkout` does NOT help here: sparse-checkout's exclusion is consulted
+    # AFTER git validates every path in the tree for filesystem-safety, so
+    # excluding utils/ via sparse-checkout still hits the same "invalid path"
+    # error during a `git checkout FETCH_HEAD` of the whole tree (verified
+    # live -- it fails identically with or without sparse-checkout enabled).
+    # What actually works: checkout an explicit pathspec instead of the whole
+    # tree. Given an explicit list of paths, git only ever looks at THOSE
+    # paths -- utils/ (and its illegal filenames) is never enumerated, let
+    # alone validated. This is everything setup.py below actually needs:
+    # searx/ (the package + its package_data), and the four root files
+    # setup.py's own `open(...)` calls read directly.
+    #
+    # No "git branch -f master HEAD; git checkout master" afterward (unlike
+    # Clone-Repo's real, ongoing checkout below): a pathspec checkout never
+    # moves HEAD or creates a commit -- there's nothing for HEAD to resolve
+    # to yet on a fresh `git init`, so that would just fail ("not a valid
+    # object name: 'HEAD'"), confirmed live. This directory only exists to
+    # feed the pip install below and gets fully deleted and re-fetched from
+    # scratch on the next run anyway (see the top of this function) -- it
+    # was never a real ongoing checkout that needed a named branch.
+    git checkout -q FETCH_HEAD -- searx setup.py README.rst LICENSE requirements.txt requirements-dev.txt
+    if ($LASTEXITCODE -ne 0) { throw "git checkout failed" }
   } catch {
     Warn "Could not fetch SearXNG: $($_.Exception.Message)"
     Pop-Location
@@ -327,10 +353,15 @@ function Install-Searxng {
   try {
     Say "Installing SearXNG's dependencies into its own venv"
     & $py -m venv .venv
-    $venvPip = Join-Path $searxngDir ".venv\Scripts\pip.exe"
-    & $venvPip install -q -U pip setuptools wheel
-    & $venvPip install -q -U pyyaml msgspec typing-extensions pybind11
-    & $venvPip install -q --use-pep517 --no-build-isolation -e .
+    # python.exe -m pip, not pip.exe directly: pip.exe can't overwrite its own
+    # running executable on Windows ("To modify pip, please run ... python.exe
+    # -m pip install ...", confirmed live) -- the exact pattern Install-Pkg
+    # above this function already uses correctly for Pleiades' own venv; this
+    # one just hadn't matched it.
+    $venvPy2 = Join-Path $searxngDir ".venv\Scripts\python.exe"
+    & $venvPy2 -m pip install -q -U pip setuptools wheel
+    & $venvPy2 -m pip install -q -U pyyaml msgspec typing-extensions pybind11
+    & $venvPy2 -m pip install -q --use-pep517 --no-build-isolation -e .
     if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
     Info "SearXNG installed at $searxngDir (own venv, no Docker)."
   } catch {
