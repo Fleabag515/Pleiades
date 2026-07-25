@@ -217,21 +217,30 @@ install_python_pkg() {
 
 # ---- external services -----------------------------------------------------
 install_anamnesis() {
-  if ! have npm; then warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g anamnesis'."; return; fi
-  installed="$(npm ls -g --depth=0 anamnesis 2>/dev/null | grep -o 'anamnesis@[0-9][^ ]*' | head -n1 | cut -d@ -f2 || true)"
-  latest="$(npm view anamnesis version 2>/dev/null || true)"
-  if [ -n "$installed" ] && [ -n "$latest" ] && [ "$installed" = "$latest" ]; then
-    say "Anamnesis $installed already installed and current — skipping"
+  # Anamnesis is vendored in-repo at $INSTALL_DIR/anamnesis (git subtree from
+  # Fleabag515/anamnesis -- see docs/specs/2026-07-25-anamnesis-vendoring-
+  # and-installer-plan.md). It used to be installed via `npm i -g anamnesis`,
+  # which pulled the *unrelated upstream npm package* of the same name, not
+  # this fork -- a real bug (every fresh install got the wrong Anamnesis).
+  # That step is gone; this only installs the vendored copy's own deps.
+  if ! have npm; then warn "npm missing; skipping Anamnesis. Install Node, then re-run this installer."; return; fi
+  local anamnesis_dir="$INSTALL_DIR/anamnesis"
+  if [ ! -f "$anamnesis_dir/package.json" ]; then
+    warn "No anamnesis/ found under $INSTALL_DIR -- skipping (expected the vendored copy to already be checked out)."
     return
   fi
-  if [ -n "$installed" ]; then
-    say "Updating Anamnesis $installed -> ${latest:-latest}"
-  else
-    say "Installing Anamnesis (memory proxy)"
-  fi
+  say "Installing Anamnesis's dependencies (vendored copy, not a separate package)"
   info "npm pulls large native deps here (node-llama-cpp, transformers) — a few minutes of output is normal."
-  npm install -g anamnesis --no-audit --no-fund || $SUDO npm install -g anamnesis --no-audit --no-fund || { warn "Could not install anamnesis globally; run 'npm i -g anamnesis' yourself."; return; }
-  have anamnesis && anamnesis status >/dev/null 2>&1 || true
+  ( cd "$anamnesis_dir" && npm install --omit=dev --no-audit --no-fund ) || {
+    warn "Could not install Anamnesis's dependencies; run 'npm install --omit=dev' inside $anamnesis_dir yourself."
+    return
+  }
+  # NOTE: this does not yet start or supervise the daemon -- Pleiades-owned
+  # supervision (replacing the old hand-set-up systemd unit) is a separate,
+  # larger follow-up (phase 1 of the plan doc above). For now, run it
+  # manually: `node "$anamnesis_dir/src/daemon.js"`, or set up your own
+  # service pointed at that path.
+  info "Anamnesis's deps are installed at $anamnesis_dir. Automatic startup/supervision is coming in a follow-up update; for now, run it with: node \"$anamnesis_dir/src/daemon.js\""
 }
 
 fetch_browser() {
