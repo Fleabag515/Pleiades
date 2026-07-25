@@ -2403,6 +2403,34 @@ def create_app() -> FastAPI:
         scheduler.start_scheduler_thread()
 
     @app.on_event("startup")
+    async def _ensure_anamnesis_running() -> None:
+        """Best-effort: bring up the vendored Anamnesis daemon if nothing is
+        already answering at Settings.anamnesis_control_url. Phase 1 of
+        docs/specs/2026-07-25-anamnesis-vendoring-and-installer-plan.md --
+        see pleiades/anamnesis_runtime.py's module docstring for the full
+        story (vendored source, ~/.anamnesis untouched, systemd migration).
+
+        Safe on a pre-phase-1 machine: is_running() checks the real health
+        endpoint, not just its own pid file, so this correctly no-ops against
+        an existing systemd-managed instance already serving :9000 instead
+        of spawning a duplicate -- nothing changes for Minty today until
+        `pleiades anamnesis adopt` is actually run.
+
+        Never blocks startup or crashes the webui on failure (no Node
+        installed, anamnesis/ not vendored on this machine yet, port
+        conflict, etc.) -- Anamnesis has always been optional infrastructure
+        pleiades/anamnesis.py's client tolerates being unreachable.
+        """
+        import sys
+        from ..anamnesis_runtime import AnamnesisDaemon, AnamnesisRuntimeError
+        try:
+            await asyncio.to_thread(AnamnesisDaemon().start, wait=False)
+        except AnamnesisRuntimeError as e:
+            print(f"[pleiades] Anamnesis daemon not started (non-fatal): {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"[pleiades] unexpected error starting Anamnesis daemon (non-fatal): {e}", file=sys.stderr)
+
+    @app.on_event("startup")
     async def _bind_browser_view_loop() -> None:
         """Capture this process's running asyncio loop so tools/browser.py
         (the chat-path model tool, which runs synchronously on a per-turn

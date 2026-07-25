@@ -627,6 +627,65 @@ def runtime_status() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# anamnesis — Pleiades-owned supervision of the vendored memory-proxy daemon
+# (phase 1 of docs/specs/2026-07-25-anamnesis-vendoring-and-installer-plan.md)
+# --------------------------------------------------------------------------- #
+@cli.group()
+def anamnesis() -> None:
+    """Manage the vendored Anamnesis memory-proxy daemon."""
+
+
+@anamnesis.command("start")
+def anamnesis_start() -> None:
+    """Start the Anamnesis daemon if it isn't already running."""
+    from .anamnesis_runtime import AnamnesisDaemon, AnamnesisRuntimeError
+    try:
+        url = AnamnesisDaemon().start()
+    except AnamnesisRuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Anamnesis running at {url}[/green]")
+
+
+@anamnesis.command("stop")
+def anamnesis_stop() -> None:
+    """Stop the Anamnesis daemon (only if this supervisor started it)."""
+    from .anamnesis_runtime import AnamnesisDaemon
+    stopped = AnamnesisDaemon().stop()
+    console.print("[green]Stopped.[/green]" if stopped
+                  else "[yellow]Not running (under this supervisor).[/yellow]")
+
+
+@anamnesis.command("status")
+def anamnesis_status() -> None:
+    """Show whether Anamnesis is reachable and where its source/data live."""
+    from .anamnesis_runtime import AnamnesisDaemon
+    st = AnamnesisDaemon().status()
+    if st["running"]:
+        console.print(f"[green]running[/green] at {st['control_url']} (pid {st['pid']})")
+    else:
+        console.print(f"[yellow]not running[/yellow] (expected at {st['control_url']})")
+    console.print(f"source: {st['source_dir']}")
+
+
+@anamnesis.command("adopt")
+@click.option("--keep-systemd", is_flag=True,
+              help="Don't stop/disable the old systemd unit — just start the "
+                   "supervisor alongside it (not recommended; they'll fight "
+                   "over the same port).")
+def anamnesis_adopt(keep_systemd: bool) -> None:
+    """Migrate a pre-phase-1 machine (systemd-managed daemon) onto this
+    supervisor. Never touches ~/.anamnesis (runtime data, unaffected)."""
+    from .anamnesis_runtime import AnamnesisRuntimeError, adopt_existing_systemd
+    try:
+        summary = adopt_existing_systemd(keep_systemd=keep_systemd)
+    except AnamnesisRuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(summary)
+
+
+# --------------------------------------------------------------------------- #
 # hw — what this machine has and how models will be placed on it
 # --------------------------------------------------------------------------- #
 @cli.command()
