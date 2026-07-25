@@ -281,9 +281,9 @@ class EmailTool(Tool):
         host, port = ctx.profile.smtp_host, ctx.profile.smtp_port
         try:
             if port == 465:
-                server = smtplib.SMTP_SSL(host, port)
+                server = smtplib.SMTP_SSL(host, port, timeout=20.0)
             else:
-                server = smtplib.SMTP(host, port)
+                server = smtplib.SMTP(host, port, timeout=20.0)
                 server.starttls()
             with server:
                 server.login(address, password)
