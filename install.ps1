@@ -34,7 +34,20 @@ param(
   [switch]$NoDiscord,
   [switch]$NoNativeRuntime
 )
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+# NOT "Stop" -- verified live on real Windows PowerShell 5.1 (the built-in
+# powershell.exe every Windows machine has, and what `irm ... | iex` actually
+# runs under): with "Stop", ANY native command that writes to stderr on a
+# genuinely successful run -- git printing "Cloning into '...'", pip's own
+# routine warnings, npm's routine notices, all completely normal -- gets
+# converted into a terminating NativeCommandError and kills the whole
+# installer before a single dependency is installed. This script already
+# does its own explicit success/failure checking throughout (Die, `if
+# ($LASTEXITCODE -ne 0)`, try/catch) for exactly this reason; "Stop" was
+# fighting that design, not supporting it. Confirmed via PowerShell's own
+# Language.Parser + a full real run on real Windows/AMD hardware: the first
+# native call in the whole script (git clone) reliably killed the installer
+# under "Stop" and the exact same run completes normally under "Continue".
 
 if ($Core) { $NoBrowser = $true; $NoSearxng = $true; $NoDiscord = $true }
 
@@ -158,7 +171,8 @@ function Clone-Repo {
     if ($LASTEXITCODE -ne 0) { git -C $Dir pull --ff-only 2>&1 | Out-Null }
   } else {
     Say "Cloning Pleiades into $Dir"
-    git clone --branch $Branch $Repo $Dir
+    git clone --branch $Branch $Repo $Dir 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Die "git clone failed (branch '$Branch' from $Repo)." }
   }
 }
 
