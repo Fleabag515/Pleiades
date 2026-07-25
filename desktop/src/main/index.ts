@@ -10,13 +10,10 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import icon from '../../resources/icon.png?asset'
 import trayIconAsset from '../../resources/tray-icon.png?asset'
-// TODO(windows): Windows' system tray convention is a much smaller icon
-// (16x16, traditionally .ico) than Linux's SNI/AppIndicator convention
-// (which reads fine at 32-48px, verified on this machine). tray-icon-16.png
-// exists in resources/ for this but isn't wired up/tested anywhere -- no
-// Windows machine available in this environment. If the tray icon looks
-// oversized/blurry on Windows, switch to it there, e.g.:
-//   trayIconAsset (Linux/macOS) vs. a 16px asset on win32.
+// Windows' system tray convention is a much smaller icon (16x16,
+// traditionally .ico) than Linux's SNI/AppIndicator convention (which reads
+// fine at 32-48px). Wired up conditionally below (see the tray icon
+// creation call); visual sizing on a real Windows tray not yet confirmed.
 import trayIconWin from '../../resources/tray-icon-16.png?asset'
 
 // ---------------------------------------------------------------------------
@@ -44,7 +41,7 @@ const PYTHON_BIN =
     ? join(PLEIADES_ROOT, '.venv', 'Scripts', 'python.exe')
     : join(PLEIADES_ROOT, '.venv', 'bin', 'python3.12')
 
-const BACKEND_BIN_NAME = 'pleiades-backend'
+const BACKEND_BIN_NAME = process.platform === 'win32' ? 'pleiades-backend.exe' : 'pleiades-backend'
 
 /**
  * Where the bundled backend lives, in dev vs. packaged builds.
@@ -270,7 +267,14 @@ async function startBackend(): Promise<void> {
   }
 }
 
-/** SIGTERM the backend, escalate to SIGKILL after a grace period. */
+/** SIGTERM the backend, escalate to SIGKILL after a grace period.
+ * Windows note: Node's ChildProcess.kill() has no real signal semantics
+ * there (no POSIX signals exist) -- any call, including the 'SIGTERM' one
+ * below, forcefully terminates the process immediately. The grace-period/
+ * SIGKILL escalation is therefore a no-op in practice on Windows (the
+ * process is already gone), which just means shutdown there is always the
+ * forceful path rather than a clean one. Accepted tradeoff, not a bug to
+ * chase -- see Node's own child_process docs on Windows signal support. */
 function stopBackend(): Promise<void> {
   return new Promise((resolve) => {
     if (!backendProcess) {

@@ -21,6 +21,7 @@
     -NoSearxng      skip SearXNG (local web search)
     -NoDiscord      skip the Discord extra
     -NoNativeRuntime  skip 'pleiades runtime install' (native llama-server)
+    -NoDesktopApp   skip building the Electron desktop app
 #>
 [CmdletBinding()]
 param(
@@ -32,7 +33,8 @@ param(
   [switch]$NoBrowser,
   [switch]$NoSearxng,
   [switch]$NoDiscord,
-  [switch]$NoNativeRuntime
+  [switch]$NoNativeRuntime,
+  [switch]$NoDesktopApp
 )
 $ErrorActionPreference = "Continue"
 # NOT "Stop" -- verified live on real Windows PowerShell 5.1 (the built-in
@@ -336,6 +338,70 @@ function Install-Searxng {
   } finally { Pop-Location }
 }
 
+function Install-DesktopApp {
+  # Windows counterpart of install.sh's install_desktop_app() -- builds the
+  # Electron desktop app + its self-contained PyInstaller backend bundle.
+  # Ported (2026-07-25) from the Linux-only version using real Windows 11/
+  # AMD hardware access for the first time -- see anamnesis/build-native/
+  # {build,fetch-node}.ps1 and desktop/backend-build/build.ps1, all new.
+  #
+  # Unlike Linux's .deb (which install_desktop_app() installs automatically
+  # via dpkg/apt), the NSIS installer this produces is unsigned (no cert
+  # available in this environment -- see electron-builder.yml's own note)
+  # and Windows SmartScreen gates running an unsigned installer behind an
+  # interactive "More info -> Run anyway" click that a script can't safely
+  # automate (a scripted silent run risks hanging on a prompt nobody sees).
+  # So this builds the installer and tells the user where it is, rather
+  # than trying to silently run it the way the Linux path installs its .deb.
+  if ($NoDesktopApp) { return }
+  if (-not (Have npm)) { Warn "Skipping desktop app (no npm) — build it later: cd desktop && npm install && npm run dist:win"; return }
+  if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+    Info "Desktop app auto-build needs Windows x64 (anamnesis/build-native has no build for this platform yet); see desktop/README."
+    return
+  }
+
+  Say "Building Anamnesis's pruned native payload for the desktop app"
+  try {
+    & (Join-Path $Dir "anamnesis\build-native\fetch-node.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "fetch-node.ps1 exited $LASTEXITCODE" }
+    & (Join-Path $Dir "anamnesis\build-native\build.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "build.ps1 exited $LASTEXITCODE" }
+  } catch {
+    Warn "Anamnesis native build failed: $($_.Exception.Message) — skipping the desktop app. Build it later: see desktop/README."
+    return
+  }
+
+  Say "Building the desktop app (Electron + bundled backend)"
+  $venvPy = Join-Path $Dir ".venv\Scripts\python.exe"
+  Push-Location (Join-Path $Dir "desktop")
+  try {
+    & $venvPy -m pip show pyinstaller *> $null
+    if ($LASTEXITCODE -ne 0) { & $venvPy -m pip install pyinstaller }
+    $env:PLEIADES_BACKEND_PY = $venvPy
+    & (Join-Path $Dir "desktop\backend-build\build.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "backend build.ps1 exited $LASTEXITCODE" }
+    npm install
+    if ($LASTEXITCODE -ne 0) { throw "npm install exited $LASTEXITCODE" }
+    npm run dist:win
+    if ($LASTEXITCODE -ne 0) { throw "npm run dist:win exited $LASTEXITCODE" }
+  } catch {
+    Warn "Desktop app build failed: $($_.Exception.Message) — CLI/webui install is unaffected. Build it later: cd desktop && npm install && npm run dist:win"
+    return
+  } finally {
+    $env:PLEIADES_BACKEND_PY = ""
+    Pop-Location
+  }
+
+  $installer = Get-ChildItem (Join-Path $Dir "desktop\dist") -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($installer) {
+    Info "Built $($installer.FullName)"
+    Info "This installer is unsigned -- Windows SmartScreen will warn on first run; click 'More info' -> 'Run anyway' to install."
+  } else {
+    Warn "Desktop app built but no installer found under desktop\dist -- check the build output above."
+  }
+}
+
 function Start-Searxng {
   if ($NoSearxng) { return }
   Say "Starting SearXNG"
@@ -371,6 +437,7 @@ Install-Searxng
 Fetch-Browser $py
 Make-Env
 Start-Searxng
+Install-DesktopApp
 
 Write-Host ""
 Say "Pleiades installed at $Dir  ($($gpuPlan.Desc))"

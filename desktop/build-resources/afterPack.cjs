@@ -30,18 +30,21 @@ exports.default = async function afterPack(context) {
   const src = path.join(repoRoot, 'anamnesis', 'build-native', 'dist', 'anamnesis')
   const dest = path.join(context.appOutDir, 'resources', 'anamnesis')
 
-  if (context.electronPlatformName !== 'linux') {
-    // build.sh only produces a Linux x64 payload today -- see its own
-    // platform guard. Nothing to do (and nothing to break) on other
-    // platforms until a matching build script exists for them.
-    console.log(`[afterPack] skipping Anamnesis bundling for ${context.electronPlatformName} (Linux x64 only for now)`)
+  if (context.electronPlatformName !== 'linux' && context.electronPlatformName !== 'win32') {
+    // build.sh/build.ps1 only produce Linux x64 / Windows x64 payloads today
+    // -- see their own platform guards. Nothing to do (and nothing to
+    // break) on other platforms until a matching build script exists.
+    console.log(`[afterPack] skipping Anamnesis bundling for ${context.electronPlatformName} (Linux/Windows x64 only for now)`)
     return
   }
 
   if (!fs.existsSync(src)) {
+    const script = context.electronPlatformName === 'win32'
+      ? 'anamnesis\\build-native\\build.ps1'
+      : 'anamnesis/build-native/build.sh'
     throw new Error(
       `afterPack: expected a pruned Anamnesis build at ${src} but it doesn't exist. ` +
-        'Run anamnesis/build-native/build.sh first.'
+        `Run ${script} first.`
     )
   }
 
