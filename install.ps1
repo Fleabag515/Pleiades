@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
   Pleiades one-line installer  (Windows)
 
@@ -122,11 +122,11 @@ function Get-GpuVendor {
 }
 
 function Resolve-Gpu {
-  # Returns @{ Args; Desc; NativeFirst } — Args drives the llama-cpp-python
+  # Returns @{ Args; Desc; NativeFirst } - Args drives the llama-cpp-python
   # (CMAKE) build; NativeFirst additionally installs the prebuilt native
   # llama-server runtime ('pleiades runtime install'), which is how AMD/Intel
   # GPUs get acceleration on Windows: the official Vulkan binaries need no
-  # SDK and no ROCm — they just use the GPU driver. Autofit prefers the
+  # SDK and no ROCm - they just use the GPU driver. Autofit prefers the
   # native runtime automatically once it is installed.
   switch ($Gpu) {
     "cpu"    { return @{ Args = "";                Desc = "CPU (forced)";   NativeFirst = $false } }
@@ -146,7 +146,7 @@ function Resolve-Gpu {
         "nvidia" { return @{ Args = "-DGGML_CUDA=on"; Desc = "NVIDIA CUDA (auto)"; NativeFirst = $false } }
         "amd"    {
           Info "AMD GPU detected: $($det.Names)"
-          Info "ROCm on Windows isn't a practical llama.cpp target — using the native Vulkan runtime instead."
+          Info "ROCm on Windows isn't a practical llama.cpp target - using the native Vulkan runtime instead."
           return @{ Args = ""; Desc = "AMD via native Vulkan runtime (python engine on CPU)"; NativeFirst = $true }
         }
         "intel"  {
@@ -198,7 +198,7 @@ function Install-Pkg($py, $plan) {
 
   $extras = Get-Extras
   $spec = if ($extras) { ".[$extras]" } else { "." }
-  Say "Installing Pleiades — $($plan.Desc) build of llama-cpp-python (this can take several minutes)"
+  Say "Installing Pleiades - $($plan.Desc) build of llama-cpp-python (this can take several minutes)"
   Push-Location $Dir
   try {
     $env:CMAKE_ARGS = $plan.Args
@@ -219,7 +219,7 @@ function Install-Pkg($py, $plan) {
 
 function Install-NativeRuntime($plan) {
   if ($NoNativeRuntime -or -not $plan.NativeFirst) { return }
-  Say "Installing the native llama-server runtime (prebuilt, GPU via Vulkan/CUDA — no SDK needed)"
+  Say "Installing the native llama-server runtime (prebuilt, GPU via Vulkan/CUDA - no SDK needed)"
   $venvPleiades = Join-Path $Dir ".venv\Scripts\pleiades.exe"
   $venvPy = Join-Path $Dir ".venv\Scripts\python.exe"
   try {
@@ -248,7 +248,7 @@ function Install-Anamnesis {
     return
   }
   Say "Installing Anamnesis's dependencies (vendored copy, not a separate package)"
-  Info "npm pulls large native deps here (node-llama-cpp, transformers) — a few minutes of progress output is normal."
+  Info "npm pulls large native deps here (node-llama-cpp, transformers) - a few minutes of progress output is normal."
   Push-Location $anamnesisDir
   try {
     npm install --omit=dev --no-audit --no-fund
@@ -281,7 +281,7 @@ function Make-Env {
   $example = Join-Path $Dir ".env.example"
   if ((-not (Test-Path $envFile)) -and (Test-Path $example)) {
     Copy-Item $example $envFile
-    Say "Created .env — set PLEIADES_MODEL_PATH to your .gguf before chatting"
+    Say "Created .env - set PLEIADES_MODEL_PATH to your .gguf before chatting"
   }
 }
 
@@ -354,7 +354,7 @@ function Install-DesktopApp {
   # So this builds the installer and tells the user where it is, rather
   # than trying to silently run it the way the Linux path installs its .deb.
   if ($NoDesktopApp) { return }
-  if (-not (Have npm)) { Warn "Skipping desktop app (no npm) — build it later: cd desktop && npm install && npm run dist:win"; return }
+  if (-not (Have npm)) { Warn "Skipping desktop app (no npm) - build it later: cd desktop && npm install && npm run dist:win"; return }
   if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
     Info "Desktop app auto-build needs Windows x64 (anamnesis/build-native has no build for this platform yet); see desktop/README."
     return
@@ -367,7 +367,7 @@ function Install-DesktopApp {
     & (Join-Path $Dir "anamnesis\build-native\build.ps1")
     if ($LASTEXITCODE -ne 0) { throw "build.ps1 exited $LASTEXITCODE" }
   } catch {
-    Warn "Anamnesis native build failed: $($_.Exception.Message) — skipping the desktop app. Build it later: see desktop/README."
+    Warn "Anamnesis native build failed: $($_.Exception.Message) - skipping the desktop app. Build it later: see desktop/README."
     return
   }
 
@@ -385,7 +385,7 @@ function Install-DesktopApp {
     npm run dist:win
     if ($LASTEXITCODE -ne 0) { throw "npm run dist:win exited $LASTEXITCODE" }
   } catch {
-    Warn "Desktop app build failed: $($_.Exception.Message) — CLI/webui install is unaffected. Build it later: cd desktop && npm install && npm run dist:win"
+    Warn "Desktop app build failed: $($_.Exception.Message) - CLI/webui install is unaffected. Build it later: cd desktop && npm install && npm run dist:win"
     return
   } finally {
     $env:PLEIADES_BACKEND_PY = ""
@@ -423,7 +423,7 @@ Say "Pleiades installer  (Windows)"
 Ensure-Git
 $py = Ensure-Python
 Ensure-Node
-# NOTE: deliberately NOT named $gpu — PowerShell variable names are case-
+# NOTE: deliberately NOT named $gpu - PowerShell variable names are case-
 # insensitive, so $gpu IS the [ValidateSet(...)]$Gpu parameter. Validation
 # attributes stay bound to the variable for the whole scope, so assigning
 # Resolve-Gpu's hashtable to it re-triggers ValidateSet and aborts the install
