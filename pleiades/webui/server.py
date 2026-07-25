@@ -437,12 +437,22 @@ def _memory_stats(name: str) -> dict:
 def create_app() -> FastAPI:
     app = FastAPI(title="Pleiades Control Panel", version="2.0.0")
     # Desktop app (Electron renderer, served from a Vite dev-server origin or
-    # file://) talks to this loopback-only server cross-origin. Scope CORS to
-    # localhost/127.0.0.1 only — this server never leaves the machine anyway.
+    # file://, which browsers report as the opaque Origin "null") talks to
+    # this loopback-only server cross-origin. Scope CORS to localhost/
+    # 127.0.0.1/null/file:// only — this server never leaves the machine
+    # anyway, and webui/__init__.py's loopback guard (installed as an outer
+    # middleware around this app, so it runs first) is the actual
+    # authorization layer; it rejects "null"/foreign Origins itself
+    # (hostname("null") isn't in its loopback allowlist). allow_credentials
+    # is deliberately False, not True: nothing in this app uses cookies, so
+    # there's nothing for a credentialed cross-origin request to carry — no
+    # reason to combine "any null-origin page" with "send credentials" even
+    # as defense-in-depth, in case the guard is ever disabled (an explicit
+    # wildcard-bind opt-out) or removed later.
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^(http://(localhost|127\.0\.0\.1)(:\d+)?|file://|null)$",
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
