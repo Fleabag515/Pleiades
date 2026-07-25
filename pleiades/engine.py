@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Callable, Optional, Union
 
 from . import config
+from .agent_common import REFLECTION as _REFLECTION
+from .agent_common import synthetic_tool_round as _synthetic_tool_round_impl
 from .anamnesis import Anamnesis
 from .inference import ensure_inference
 from .profiles import Profile, ProfileManager
@@ -111,65 +113,11 @@ def _retryable_key_error_status(exc: Exception) -> Optional[int]:
     return status if status in (429, 402, 403) else None
 
 
-_REFLECTION = (
-    "\n\n[Self-check after {n} steps] Before continuing, genuinely evaluate — this is "
-    "not a formality:\n"
-    "- Progress: what concrete, verifiable progress have you made since the last check? "
-    "If you can't point to any, that's a real signal, not a reason to push harder the "
-    "same way.\n"
-    "- Looping: are you repeating the same actions/tool calls without new information? "
-    "If so, you must change approach now — a different tool, a different angle, breaking "
-    "the task into smaller pieces, or gathering missing info — before your next action.\n"
-    "- Blocked/impossible: if you've made several genuinely different attempts and the "
-    "goal is still not achievable (missing access or permissions, a contradiction in the "
-    "request, a tool or resource that doesn't exist), STOP here. Say plainly that you're "
-    "blocked, explain what you tried, and end your turn — do not keep repeating attempts "
-    "that already failed.\n"
-    "Otherwise, take one concrete next step toward the goal."
-)
-
-
 def _synthetic_tool_round(name: str, content: str, call_id: str) -> list[dict]:
-    """A fabricated assistant tool_calls message + its role:"tool" result —
-    used to splice a machine-generated notice (the self-reflection check
-    above, a background-task-completion notice) into `messages` WITHOUT a
-    role:"user" entry.
-
-    Why not role:"user": Anamnesis's proxy (proxy.js) persists "the new user
-    turn" by reversing the messages array and taking the first role=='user'
-    entry it finds. A role:"user" injection is indistinguishable from real
-    user speech to that scan and gets written into the character's
-    long-term memory as if the user had actually said it — confirmed live by
-    reading proxy.js's dedup logic (see fix/anamnesis-reflection-injection
-    branch notes). role:"tool" messages are invisible to that scan (it
-    filters on role=='user' only) and are never persisted or extracted by
-    Anamnesis at all — history.js only ever inserts 'user'/'assistant' rows,
-    and the extractor only ever reads rows already inserted that way — so a
-    synthetic tool round is safe from both the dedup bug and any secondary
-    leak through the extraction pipeline.
-
-    The model never actually emitted this tool_calls entry; it's a
-    fabricated round the engine constructs so the notice arrives through a
-    channel the model already knows how to read (a tool result) instead of
-    as fake user speech. engine.py only ever speaks the OpenAI wire format
-    (see _client_for), so this shape is unconditional here — contrast with
-    harness/agent.py's twin copy of this helper, which is backend-aware
-    because that loop also supports the Anthropic backend.
-    """
-    return [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": name, "arguments": "{}"},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": call_id, "content": content},
-    ]
+    """engine.py only ever speaks the OpenAI wire format (see _client_for),
+    so this is always backend="openai" -- see agent_common.synthetic_tool_round
+    for the shared implementation and why not role:"user"."""
+    return _synthetic_tool_round_impl("openai", name, content, call_id)
 
 
 # Persona-agnostic operating contract injected into the chat path when the caller

@@ -18,6 +18,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from ..agent_common import REFLECTION as _REFLECTION
+from ..agent_common import synthetic_tool_round as _synthetic_tool_round
 from .config import Config
 from .llm import LLM, ToolCall, Reply
 from .tools import registry, Tool
@@ -116,70 +118,6 @@ _WARN_NOTICE = (
     "key findings into working memory (set_section) or long-term memory "
     "(remember) soon, and keep tool outputs small (use line ranges/filters)."
 )
-
-_REFLECTION = (
-    "\n\n[Self-check after {n} steps] Before continuing, genuinely evaluate — this is "
-    "not a formality:\n"
-    "- Progress: what concrete, verifiable progress have you made since the last check? "
-    "If you can't point to any, that's a real signal, not a reason to push harder the "
-    "same way.\n"
-    "- Looping: are you repeating the same actions/tool calls without new information? "
-    "If so, you must change approach now — a different tool, a different angle, breaking "
-    "the task into smaller pieces, or gathering missing info — before your next action.\n"
-    "- Blocked/impossible: if you've made several genuinely different attempts and the "
-    "goal is still not achievable (missing access or permissions, a contradiction in the "
-    "request, a tool or resource that doesn't exist), STOP here. Say plainly that you're "
-    "blocked, explain what you tried, and end your turn — do not keep repeating attempts "
-    "that already failed.\n"
-    "Otherwise, take one concrete next step toward the goal."
-)
-
-
-def _synthetic_tool_round(backend: str, name: str, content: str, call_id: str) -> list[dict]:
-    """A fabricated assistant tool_use/tool_calls message + its result, in
-    whichever wire shape `backend` expects — mirrors _assistant_turn /
-    _result_turns' existing backend branching for REAL tool calls below.
-    Used to splice a machine-generated notice (the self-reflection check
-    above, the failed-model-call retry notice in run()) into `messages`
-    WITHOUT a role:"user" entry.
-
-    Why not role:"user": when this agent is bound to a character
-    (identity.bind_character), the "openai" backend's requests are routed
-    through that character's Anamnesis proxy (memory injection +
-    persistence — see identity.py's route_inference). Anamnesis persists
-    "the new user turn" by reversing `messages` and taking the first
-    role=='user' entry it finds (proxy.js) — a role:"user" injection here is
-    indistinguishable from real user speech to that scan and gets written
-    into the character's long-term memory as if the user had said it.
-    role:"tool" (openai/ollama) and a tool_result content block (anthropic)
-    are both invisible to that scan, and Anamnesis never persists or
-    extracts either shape (history.js only ever inserts 'user'/'assistant'
-    rows) — confirmed against Anamnesis's src/proxy.js + src/extractor.js on
-    fix/anamnesis-reflection-injection.
-
-    The "anthropic" backend never routes through Anamnesis (it talks to the
-    Anthropic API directly — see llm.py's _chat_anthropic), so this branch
-    exists for wire-format correctness (Anthropic has no "tool" role; a real
-    tool result there is a role:"user" message with a tool_result content
-    block, same as _result_turns already does), not because that backend
-    can hit the Anamnesis bug.
-    """
-    if backend == "anthropic":
-        return [
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": call_id, "name": name, "input": {}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": call_id, "content": content},
-            ]},
-        ]
-    return [
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": call_id, "type": "function",
-                        "function": {"name": name, "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": call_id, "content": content},
-    ]
-
 
 def squeeze_messages(messages: list[dict], keep_last: int = 4,
                      clip: int = 400) -> int:
