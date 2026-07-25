@@ -166,10 +166,31 @@ def _close() -> None:
     try:
         if _TB["ctx"] is not None:
             _TB["ctx"].close()  # type: ignore[union-attr]
-        if _TB["backend"] == "playwright-tor" and _TB["pw"] is not None:
-            _TB["pw"].stop()  # type: ignore[union-attr]
     except Exception:
         pass
+    # Tear down whatever launched the browser -- NOT just the "playwright-tor"
+    # fallback. The "camoufox-tor" backend's `pw` is the raw Camoufox
+    # (PlaywrightContextManager subclass) instance itself, which only exposes
+    # `__exit__`, not `.stop()` -- calling `.stop()` unconditionally on it was
+    # skipped by the old `backend == "playwright-tor"` check, so the
+    # Camoufox path NEVER released its event loop here. Since the sync
+    # Playwright/Camoufox API keeps that thread's asyncio loop marked
+    # "running" for as long as the object is alive, a never-closed Camoufox
+    # instance means every later goto in this same thread -- for the rest of
+    # this process's life -- fails with Playwright's "Sync API inside the
+    # asyncio loop" error instead of doing anything useful. Try both shapes,
+    # best-effort, regardless of which backend was actually in use.
+    pw = _TB["pw"]
+    if pw is not None:
+        for method in ("stop", "__exit__"):
+            fn = getattr(pw, method, None)
+            if fn is None:
+                continue
+            try:
+                fn(None, None, None) if method == "__exit__" else fn()
+                break
+            except Exception:
+                continue
     _TB.update(page=None, ctx=None, pw=None, backend=None)
 
 
@@ -202,9 +223,9 @@ def _ensure_page(ctx: ToolContext):
         Path(profile).mkdir(parents=True, exist_ok=True)
         last_exc: Exception | None = None
         for _attempt in range(2):  # first-run profile setup can outrun a 30s launch timeout
+            cam = Camoufox(headless=headless, persistent_context=True,
+                           user_data_dir=profile, proxy=proxy, timeout=60000)
             try:
-                cam = Camoufox(headless=headless, persistent_context=True,
-                               user_data_dir=profile, proxy=proxy, timeout=60000)
                 c = cam.start() if hasattr(cam, "start") else cam.__enter__()
                 page = c.pages[0] if c.pages else c.new_page()
                 _TB.update(page=page, ctx=c, pw=cam, backend="camoufox-tor")
@@ -214,6 +235,26 @@ def _ensure_page(ctx: ToolContext):
                 raise
             except Exception as e:
                 last_exc = e
+                # A failed launch can still leave this thread's asyncio loop
+                # marked "running" (Playwright's sync context manager creates
+                # and starts pumping it before the failure surfaces) -- if we
+                # don't tear it down here, EVERY later call in this same
+                # thread (this retry's second pass, and every future 'goto'
+                # for the life of this process) hits Playwright's own "Sync
+                # API inside the asyncio loop" guard instead of the real
+                # error, forever, because the thread never gets a clean
+                # loop again. Best-effort close before looping/raising so a
+                # transient failure stays transient instead of permanently
+                # wedging the tool.
+                try:
+                    exit_fn = getattr(cam, "__exit__", None) or getattr(cam, "close", None)
+                    if exit_fn is not None:
+                        try:
+                            exit_fn(type(e), e, e.__traceback__)
+                        except TypeError:
+                            exit_fn()
+                except Exception:
+                    pass
         raise last_exc  # type: ignore[misc]
     except ImportError:
         pass  # fall through to plain Playwright Firefox
