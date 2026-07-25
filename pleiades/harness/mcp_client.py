@@ -23,8 +23,10 @@ Pass safe_tools=[...] to whitelist read-only ones.
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
 import threading
+import time
 from typing import Any
 
 from .tools import Tool, registry
@@ -35,10 +37,11 @@ class MCPServer:
 
     def __init__(self, name: str, command: str, args: list[str] | None = None,
                  cwd: str | None = None, env: dict | None = None,
-                 init_timeout: float = 30.0) -> None:
+                 init_timeout: float = 30.0, call_timeout: float = 60.0) -> None:
         self.name = name
         self._id = 0
         self._lock = threading.Lock()
+        self.call_timeout = call_timeout
         self.proc = subprocess.Popen(
             [command, *(args or [])],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -47,6 +50,17 @@ class MCPServer:
         )
         # drain stderr so the pipe never blocks the server
         threading.Thread(target=self._drain_stderr, daemon=True).start()
+        # stdout.readline() itself has no timeout parameter, and select()
+        # doesn't work on pipes on Windows -- so a plain blocking read on
+        # the caller's own thread can never be bounded. Instead a
+        # dedicated thread does the blocking read and hands lines off via
+        # a queue, which DOES support a timeout on get() cross-platform.
+        # This is what makes a hung/deadlocked MCP server (bad interpreter
+        # path, a missing dep that prints to stderr and stalls, etc.) a
+        # bounded, recoverable error instead of hanging this call --
+        # and mount_mcp_server(), which calls the handshake below -- forever.
+        self._out_q: "queue.Queue[str | None]" = queue.Queue()
+        threading.Thread(target=self._read_stdout_loop, daemon=True).start()
         self._handshake(init_timeout)
 
     # -- JSON-RPC plumbing ---------------------------------------------
@@ -56,6 +70,15 @@ class MCPServer:
                 pass
         except Exception:
             pass
+
+    def _read_stdout_loop(self) -> None:
+        try:
+            for line in self.proc.stdout:  # type: ignore[union-attr]
+                self._out_q.put(line)
+        except Exception:
+            pass
+        finally:
+            self._out_q.put(None)  # sentinel: pipe closed / process exited
 
     def _send(self, method: str, params: dict | None = None,
               notify: bool = False) -> int | None:
@@ -72,11 +95,21 @@ class MCPServer:
         self.proc.stdin.flush()          # type: ignore[union-attr]
         return rid
 
-    def _read_result(self, rid: int) -> dict:
-        """Read lines until the response with id==rid arrives (skip notifications)."""
+    def _read_result(self, rid: int, timeout: float) -> dict:
+        """Read queued lines until the response with id==rid arrives (skip
+        notifications), or raise TimeoutError once `timeout` elapses."""
+        deadline = time.monotonic() + timeout
         while True:
-            line = self.proc.stdout.readline()  # type: ignore[union-attr]
-            if not line:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"MCP server '{self.name}' did not respond within {timeout}s")
+            try:
+                line = self._out_q.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError(
+                    f"MCP server '{self.name}' did not respond within {timeout}s") from None
+            if line is None:
                 raise RuntimeError(f"MCP server '{self.name}' closed the connection.")
             line = line.strip()
             if not line:
@@ -86,15 +119,17 @@ class MCPServer:
             except json.JSONDecodeError:
                 continue  # server log noise on stdout — ignore
             if msg.get("id") != rid:
-                continue  # a notification or an unrelated response
+                continue  # a notification or an unrelated (e.g. timed-out) response
             if "error" in msg:
                 raise RuntimeError(f"MCP error from '{self.name}': {msg['error']}")
             return msg.get("result", {})
 
-    def _request(self, method: str, params: dict | None = None) -> dict:
+    def _request(self, method: str, params: dict | None = None,
+                 timeout: float | None = None) -> dict:
         with self._lock:
             rid = self._send(method, params)
-            return self._read_result(rid)  # type: ignore[arg-type]
+            return self._read_result(rid, timeout if timeout is not None  # type: ignore[arg-type]
+                                      else self.call_timeout)
 
     # -- protocol -------------------------------------------------------
     def _handshake(self, timeout: float) -> None:
@@ -102,7 +137,7 @@ class MCPServer:
             "protocolVersion": "2024-11-05",
             "capabilities": {},
             "clientInfo": {"name": "pleiades", "version": "0.1.0"},
-        })
+        }, timeout=timeout)
         self._send("notifications/initialized", notify=True)
 
     def list_tools(self) -> list[dict]:
