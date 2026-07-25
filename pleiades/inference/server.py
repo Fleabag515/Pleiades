@@ -124,7 +124,12 @@ class EngineState:
     def chat(self, body: dict):
         """Run a chat completion; auto-upshift once on prompt overflow.
 
-        Returns (payload, stream_iter): exactly one is non-None.
+        Returns (payload, stream_iter): exactly one is non-None. For a
+        streaming response the lock is held for the generator's entire
+        lifetime, not just until this method returns -- llama.cpp is
+        single-stream per context, so a second caller (or a concurrent
+        resize()/load()) must block until this stream is fully consumed or
+        closed, not just until chat() hands the generator back.
         """
         allowed = {"messages", "tools", "tool_choice", "temperature", "top_p",
                    "top_k", "min_p", "max_tokens", "stream", "stop", "seed",
@@ -135,30 +140,43 @@ class EngineState:
         self.metrics["requests"] += 1
 
         for attempt in (0, 1):
-            with self.lock:
+            self.lock.acquire()
+            commit_stream = False
+            try:
+                if not stream:
+                    return self.llama.create_chat_completion(stream=False, **kw), None
+                it = self.llama.create_chat_completion(stream=True, **kw)
+                first = next(it, None)  # prompt eval happens here
+                self.metrics["streamed"] += 1
+                commit_stream = True
+            except ValueError as e:
+                msg = str(e).lower()
+                overflow = any(m in msg for m in self._OVERFLOW_MARKERS)
+                nxt = self.next_gear()
+                if not (overflow and attempt == 0 and nxt):
+                    raise
+                print(f"[engine] prompt overflow at n_ctx={self.n_ctx} — "
+                      f"upshifting to {nxt} and retrying", flush=True)
+                self.load(nxt)
+                self.metrics["overflow_upshifts"] += 1
+                continue
+            finally:
+                if not commit_stream:
+                    self.lock.release()
+
+            # Committed to streaming: the generator now owns the lock and
+            # releases it in `finally` -- on normal completion, on the
+            # caller closing/abandoning the generator early (GeneratorExit),
+            # or on an error from `rest`. Never released back here.
+            def gen(first_chunk=first, rest=it):
                 try:
-                    if not stream:
-                        return self.llama.create_chat_completion(stream=False, **kw), None
-                    it = self.llama.create_chat_completion(stream=True, **kw)
-                    first = next(it, None)  # prompt eval happens here
-                    self.metrics["streamed"] += 1
+                    if first_chunk is not None:
+                        yield first_chunk
+                    yield from rest
+                finally:
+                    self.lock.release()
 
-                    def gen(first_chunk=first, rest=it):
-                        if first_chunk is not None:
-                            yield first_chunk
-                        yield from rest
-
-                    return None, gen()
-                except ValueError as e:
-                    msg = str(e).lower()
-                    overflow = any(m in msg for m in self._OVERFLOW_MARKERS)
-                    nxt = self.next_gear()
-                    if not (overflow and attempt == 0 and nxt):
-                        raise
-                    print(f"[engine] prompt overflow at n_ctx={self.n_ctx} — "
-                          f"upshifting to {nxt} and retrying", flush=True)
-                    self.load(nxt)
-                    self.metrics["overflow_upshifts"] += 1
+            return None, gen()
         raise RuntimeError("unreachable")
 
     def props(self) -> dict:
