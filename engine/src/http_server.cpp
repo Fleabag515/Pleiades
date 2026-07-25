@@ -66,6 +66,7 @@
 // pre-this-pass behavior). New callers should use flags.
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -73,6 +74,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "httplib.h"
@@ -147,6 +149,43 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     int n_predict = body.value("max_tokens", 512);
     bool stream = body.value("stream", false);
 
+    // -- sampling parameters (parity with pleiades/inference/server.py, which
+    // forwards these straight to llama-cpp-python's create_chat_completion).
+    // Defaults below are that function's OWN defaults (llama-cpp-python
+    // 0.3.x) so a request that omits a knob samples identically on both
+    // engines. A present-but-null value is treated as "omitted" (the Python
+    // server filters `None` out of the kwargs), and is read null-safely --
+    // nlohmann's value() would throw type_error on a present JSON null. See
+    // SamplingParams for how temperature <= 0 collapses to greedy.
+    SamplingParams sampling;
+    auto num = [&](const char* key, double fallback) -> double {
+        return (body.contains(key) && body[key].is_number()) ? body[key].get<double>() : fallback;
+    };
+    sampling.temperature = static_cast<float>(num("temperature", 0.2));
+    sampling.top_p = static_cast<float>(num("top_p", 0.95));
+    sampling.top_k = static_cast<int>(num("top_k", 40));
+    sampling.min_p = static_cast<float>(num("min_p", 0.05));
+    sampling.typical_p = static_cast<float>(num("typical_p", 1.0));
+    sampling.repeat_penalty = static_cast<float>(num("repeat_penalty", 1.0));
+    sampling.presence_penalty = static_cast<float>(num("presence_penalty", 0.0));
+    sampling.frequency_penalty = static_cast<float>(num("frequency_penalty", 0.0));
+    if (body.contains("seed") && body["seed"].is_number_integer()) {
+        sampling.seed = static_cast<uint32_t>(body["seed"].get<long long>());
+    }
+    // `stop` may be a single string or an array of strings (OpenAI allows both).
+    if (body.contains("stop")) {
+        const json& st = body["stop"];
+        if (st.is_string()) {
+            sampling.stop.push_back(st.get<std::string>());
+        } else if (st.is_array()) {
+            for (const auto& s : st) {
+                if (s.is_string()) {
+                    sampling.stop.push_back(s.get<std::string>());
+                }
+            }
+        }
+    }
+
     std::vector<json> tools;
     if (body.contains("tools") && body["tools"].is_array()) {
         for (const auto& t : body["tools"]) {
@@ -170,7 +209,7 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
 
     if (!stream) {
         std::lock_guard<std::mutex> lock(s.mu);
-        GenerationResult r = s.engine.complete(prompt, n_predict);
+        GenerationResult r = s.engine.complete(prompt, n_predict, sampling);
         // Prove-it-fires observability (Phase 6): report how much of the
         // prompt was served from the KV prefix cache vs. re-decoded. On a
         // pure-attention model a repeated persona/system prefix shows a high
@@ -247,18 +286,122 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         return;
     }
 
-    // Streaming: one provider call runs the whole generation, writing an
-    // SSE chunk per token via the on_token callback, then [DONE]. Tool-call
-    // OUTPUT parsing is intentionally NOT wired in here -- the harness
-    // always requests stream:false for tool-capable calls (see
-    // pleiades/harness/llm.py::_chat_openai's `"stream": False`), so a
-    // streamed response never needs its <tool_call> tags parsed out of raw
-    // token deltas (which would also require handling a tag split across
-    // SSE chunks -- out of scope, never exercised). The PROMPT is still
-    // built tool-dialect-aware above, so history still round-trips
-    // correctly even for a streamed turn.
+    // Formats one SSE `data: {chat.completion.chunk}\n\n` frame. Used only
+    // synchronously below to PRE-BUILD the buffered-tool-stream frames before
+    // any is written -- deliberately NOT reused inside the raw-stream
+    // content-provider lambda, which runs after handle_chat() returns and
+    // would capture this local by dangling reference.
+    auto sse_chunk = [&](const json& delta, const char* finish_reason) -> std::string {
+        json chunk = {
+            {"id", id},         {"object", "chat.completion.chunk"}, {"created", created},
+            {"model", s.alias}, {"choices", json::array({{{"index", 0}, {"delta", delta},
+                                                           {"finish_reason", finish_reason ? json(finish_reason) : json(nullptr)}}})},
+        };
+        return "data: " + chunk.dump() + "\n\n";
+    };
+
+    // -- Phase A: buffered tool-capable streaming --------------------------- //
+    //
+    // The SSE token path streams delta.content only; it can't emit structured
+    // delta.tool_calls. Streaming raw <tool_call> markup as visible content
+    // is the specific silent failure this guards against: the streamed
+    // interactive path (pleiades/engine.py::stream_events) reconstructs tool
+    // calls from delta.tool_calls and never raises on plain content, so raw
+    // markup there executes NO tool while looking like a normal answer.
+    //
+    // So when this request both offers tools AND the model has a known
+    // dialect, run the whole turn buffered (reusing the exact non-streaming
+    // complete() + parse_tool_calls() machinery), then replay the parsed
+    // result as SSE: content first, then a SINGLE delta carrying the whole
+    // tool_calls array (the OpenAI SDK the caller uses accumulates a
+    // one-chunk tool_call fine via tc.index -- partial argument deltas are
+    // not required). dialect == NONE or no tools offered falls through to the
+    // unchanged raw token-streaming path below.
+    if (!tools.empty() && dialect != ToolDialect::NONE) {
+        GenerationResult r;
+        {
+            std::lock_guard<std::mutex> lock(s.mu);
+            r = s.engine.complete(prompt, n_predict, sampling);
+        }
+        std::fprintf(stderr,
+                     "[pleiades-engine-server] chat(stream,tools): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
+                     r.n_prompt_tokens, r.n_prompt_cached, r.n_prompt_tokens - r.n_prompt_cached);
+
+        ParsedToolCalls parsed = parse_tool_calls(r.text, dialect, tools);
+        if (!parsed.ok) {
+            // Fail loud with the SAME 422/tool_call_parse_error as the
+            // non-streaming path -- possible here precisely because generation
+            // finished BEFORE any SSE byte was sent, so nothing is committed
+            // yet. The caller's OpenAI client raises on the 422 and
+            // engine.py's streamed branch falls back to a non-streamed
+            // request (its existing `except Exception: streamed = False`).
+            // A 200 that narrates the malformed markup as content is the one
+            // outcome this must never produce (Pleiades often runs exec_policy
+            // "allow" -- a real intended action must never silently not fire).
+            res.status = 422;
+            res.set_content(
+                json{{"error",
+                      {{"message", "model produced a malformed or incomplete tool call: " + parsed.error},
+                       {"type", "tool_call_parse_error"}}}}
+                    .dump(),
+                "application/json");
+            return;
+        }
+
+        std::vector<std::string> chunks;
+        chunks.push_back(sse_chunk({{"role", "assistant"}}, nullptr));
+        if (!parsed.reasoning_content.empty()) {
+            chunks.push_back(sse_chunk({{"reasoning_content", parsed.reasoning_content}}, nullptr));
+        }
+        const char* finish_reason = "stop";
+        if (!parsed.calls.empty()) {
+            if (!parsed.content.empty()) {
+                chunks.push_back(sse_chunk({{"content", parsed.content}}, nullptr));
+            }
+            json tc_array = json::array();
+            for (size_t i = 0; i < parsed.calls.size(); ++i) {
+                // Streaming delta tool_calls REQUIRE `index` (the field
+                // engine.py accumulates on); the non-streaming message shape
+                // does not. Otherwise identical to the non-streaming path.
+                tc_array.push_back({
+                    {"index", i},
+                    {"id", "call_" + std::to_string(i)},
+                    {"type", "function"},
+                    {"function", {{"name", parsed.calls[i].name}, {"arguments", parsed.calls[i].arguments.dump()}}},
+                });
+            }
+            chunks.push_back(sse_chunk({{"tool_calls", tc_array}}, nullptr));
+            finish_reason = "tool_calls";
+        } else if (!parsed.content.empty()) {
+            chunks.push_back(sse_chunk({{"content", parsed.content}}, nullptr));
+        }
+        chunks.push_back(sse_chunk(json::object(), finish_reason));
+
+        res.set_chunked_content_provider(
+            "text/event-stream", [chunks = std::move(chunks)](size_t /*offset*/, httplib::DataSink& sink) {
+                for (const std::string& c : chunks) {
+                    if (!sink.write(c.data(), c.size())) {
+                        return false;
+                    }
+                }
+                static const std::string done = "data: [DONE]\n\n";
+                sink.write(done.data(), done.size());
+                sink.done();
+                return true;
+            });
+        return;
+    }
+
+    // -- Raw token streaming (dialect == NONE or no tools offered) ---------- //
+    //
+    // Unchanged in spirit: one provider call runs the whole generation,
+    // writing an SSE chunk per token (or per held-back chunk when `stop`
+    // strings are set -- see Engine::generate) via the on_token callback,
+    // then [DONE]. No tool_call parsing is needed on this path (no dialect or
+    // no tools), and the PROMPT was still built tool-dialect-aware above, so
+    // any assistant tool_calls history still round-trips for a streamed turn.
     res.set_chunked_content_provider(
-        "text/event-stream", [&s, messages, prompt, n_predict, id, created](size_t /*offset*/, httplib::DataSink& sink) {
+        "text/event-stream", [&s, prompt, n_predict, id, created, sampling](size_t /*offset*/, httplib::DataSink& sink) {
             std::lock_guard<std::mutex> lock(s.mu);
             auto write_chunk = [&](const json& delta, const char* finish_reason) {
                 json chunk = {
@@ -270,9 +413,9 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                 return sink.write(data.data(), data.size());
             };
             write_chunk({{"role", "assistant"}}, nullptr);
-            GenerationResult sr = s.engine.generate(prompt, n_predict, [&](const std::string& piece) {
-                return write_chunk({{"content", piece}}, nullptr);
-            });
+            GenerationResult sr = s.engine.generate(
+                prompt, n_predict, [&](const std::string& piece) { return write_chunk({{"content", piece}}, nullptr); },
+                sampling);
             std::fprintf(stderr, "[pleiades-engine-server] chat(stream): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
                          sr.n_prompt_tokens, sr.n_prompt_cached, sr.n_prompt_tokens - sr.n_prompt_cached);
             write_chunk(json::object(), "stop");

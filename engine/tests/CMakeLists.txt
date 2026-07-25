@@ -55,3 +55,32 @@ pleiades_add_test(test_model_manager)
 pleiades_add_test(test_context_governor)
 pleiades_add_test(test_engine)
 pleiades_add_test(test_prefix_cache)
+
+# Phase C: end-to-end HTTP tool-calling test against a REAL Qwen model.
+#
+# Unlike test_tool_calls (parser-only) this boots the actual
+# pleiades-engine-server binary as a subprocess and drives it over real HTTP,
+# asserting a correctly-parsed tool_calls response BOTH streaming and
+# non-streaming, plus the fail-loud 422 on a forced-malformed generation --
+# the evidence a default-engine flip needs (streamed tool calls used to
+# silently drop every tool; see the test's own header).
+#
+# This needs a Qwen-family GGUF that carries a tool chat_template (dialect
+# != NONE) -- NOT the tiny stories15M llama fixture the tests above download
+# (that model has no tool dialect). It deliberately does NOT download a
+# multi-hundred-MB model: it points at PLEIADES_TEST_QWEN_GGUF if that file
+# exists and SKIPs cleanly (SKIP_RETURN_CODE below) otherwise, so it runs for
+# real where a suitable model is resident and never fails a bare checkout.
+# Override with -DPLEIADES_TEST_QWEN_GGUF=/path/to/qwen.gguf.
+set(PLEIADES_TEST_QWEN_GGUF "$ENV{HOME}/.anamnesis/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+    CACHE FILEPATH "Qwen-family GGUF (with a tool chat_template) for the end-to-end HTTP tool-call test; SKIPs if absent")
+
+add_executable(test_http_tool_calls test_http_tool_calls.cpp)
+# pleiades_httplib gives httplib::Client (+ Threads); pleiades_engine
+# propagates the vendored nlohmann/json include. Both targets are defined in
+# the parent CMakeLists before add_subdirectory(tests), so they're in scope.
+target_link_libraries(test_http_tool_calls PRIVATE pleiades_engine pleiades_httplib)
+add_test(NAME test_http_tool_calls
+  COMMAND test_http_tool_calls $<TARGET_FILE:pleiades-engine-server> "${PLEIADES_TEST_QWEN_GGUF}")
+# 77 == the kSkip the test returns when the fixture model isn't present.
+set_tests_properties(test_http_tool_calls PROPERTIES SKIP_RETURN_CODE 77)

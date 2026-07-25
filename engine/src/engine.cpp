@@ -1,7 +1,10 @@
 #include "pleiades_engine/engine.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace pleiades_engine {
@@ -37,6 +40,85 @@ std::string token_to_piece(const llama_vocab* vocab, llama_token token) {
     return std::string(buf, n);
 }
 
+// Builds the sampler chain for one generation from a SamplingParams. Ordering
+// mirrors llama.cpp's own canonical default chain (common/sampling.cpp):
+// penalties first, then the truncation samplers (top_k -> typical -> top_p ->
+// min_p), then temperature, then the seeded final distribution sampler. Each
+// stage is only added when it would actually do something, so a
+// default-constructed SamplingParams (temperature 0) collapses to exactly the
+// single greedy sampler engine.cpp built before this function existed --
+// keeping the deterministic bench/test paths byte-identical.
+//
+// temperature <= 0 is llama.cpp's own "greedy" convention (llama_sampler_init_temp's
+// own doc: t <= 0 keeps the max logit and -inf's the rest); we short-circuit
+// to a pure argmax greedy sampler so temp==0 requests are deterministic
+// regardless of the other knobs, matching llama-cpp-python.
+llama_sampler* build_sampler_chain(const SamplingParams& sp) {
+    llama_sampler_chain_params cparams = llama_sampler_chain_default_params();
+    llama_sampler* chain = llama_sampler_chain_init(cparams);
+
+    if (sp.temperature <= 0.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+        return chain;
+    }
+
+    if (sp.repeat_penalty != 1.0f || sp.frequency_penalty != 0.0f || sp.presence_penalty != 0.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(sp.penalty_last_n, sp.repeat_penalty,
+                                                                     sp.frequency_penalty, sp.presence_penalty));
+    }
+    if (sp.top_k > 0) {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_k(sp.top_k));
+    }
+    if (sp.typical_p < 1.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_typical(sp.typical_p, /*min_keep=*/1));
+    }
+    if (sp.top_p < 1.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(sp.top_p, /*min_keep=*/1));
+    }
+    if (sp.min_p > 0.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_min_p(sp.min_p, /*min_keep=*/1));
+    }
+    llama_sampler_chain_add(chain, llama_sampler_init_temp(sp.temperature));
+    llama_sampler_chain_add(chain, llama_sampler_init_dist(sp.seed));
+    return chain;
+}
+
+// Earliest byte offset at which any complete stop string occurs in `text`, or
+// std::string::npos if none does.
+size_t earliest_stop_pos(const std::string& text, const std::vector<std::string>& stops) {
+    size_t best = std::string::npos;
+    for (const std::string& s : stops) {
+        if (s.empty()) {
+            continue;
+        }
+        size_t p = text.find(s);
+        if (p != std::string::npos && p < best) {
+            best = p;
+        }
+    }
+    return best;
+}
+
+// Length of the longest suffix of `text` that is a PROPER prefix of some stop
+// string -- i.e. the tail that must be held back from a stream because the
+// next token could still complete a stop match. 0 when no such overlap exists
+// (the whole text is safe to emit). Never returns a length that would match a
+// COMPLETE stop (that case is handled by earliest_stop_pos before this is
+// consulted), so at most len(stop)-1 bytes are ever withheld.
+size_t stop_overlap_suffix(const std::string& text, const std::vector<std::string>& stops) {
+    size_t held = 0;
+    for (const std::string& s : stops) {
+        size_t max_l = std::min(s.size() > 0 ? s.size() - 1 : 0, text.size());
+        for (size_t l = max_l; l > held; --l) {
+            if (text.compare(text.size() - l, l, s, 0, l) == 0) {
+                held = l;
+                break;
+            }
+        }
+    }
+    return held;
+}
+
 }  // namespace
 
 Engine::Engine(ModelManager& models, ContextGovernor& ctx) : models_(models), ctx_(ctx) {}
@@ -51,12 +133,13 @@ void Engine::reset_prefix_cache() {
     prefix_.invalidate(ctx_.epoch());
 }
 
-GenerationResult Engine::complete(const std::string& prompt, int n_predict) {
-    return generate(prompt, n_predict, nullptr);
+GenerationResult Engine::complete(const std::string& prompt, int n_predict, const SamplingParams& sampling) {
+    return generate(prompt, n_predict, nullptr, sampling);
 }
 
 GenerationResult Engine::generate(const std::string& prompt, int n_predict,
-                                   const std::function<bool(const std::string&)>& on_token) {
+                                   const std::function<bool(const std::string&)>& on_token,
+                                   const SamplingParams& sampling) {
     if (!models_.is_loaded()) {
         throw std::runtime_error("pleiades_engine: no model loaded");
     }
@@ -136,13 +219,21 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     auto t1 = std::chrono::steady_clock::now();
     result.prompt_seconds = std::chrono::duration<double>(t1 - t0).count();
 
-    // -- greedy generation --------------------------------------------------
-    llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
-    llama_sampler* chain = llama_sampler_chain_init(sparams);
-    llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    // -- generation ---------------------------------------------------------
+    // Sampler chain per the request (greedy by default -- see
+    // build_sampler_chain / SamplingParams). llama_sampler_sample() accepts
+    // each sampled token into the chain, so the penalties sampler tracks the
+    // generation window on its own; the prompt tokens are not fed to it (the
+    // pre-sampling engine didn't either, and greedy needs no history).
+    llama_sampler* chain = build_sampler_chain(sampling);
 
-    std::string text;
+    const bool have_stops = !sampling.stop.empty();
+    std::string text;      // full generated text (already stop-truncated once a stop hits)
+    size_t emitted = 0;    // bytes of `text` handed to on_token so far (stop path only)
     int generated = 0;
+    bool stopped_on_stop = false;
+    bool client_cancelled = false;
+
     for (; generated < n_predict; ++generated) {
         llama_token next = llama_sampler_sample(chain, ctx, -1);
         if (llama_vocab_is_eog(vocab, next)) {
@@ -150,9 +241,43 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         }
         std::string piece = token_to_piece(vocab, next);
         text += piece;
-        bool keep_going = on_token ? on_token(piece) : true;
+
+        // Stop-string detection: if a complete stop string is now present,
+        // trim the output at its first occurrence and halt (the stop text
+        // itself is never surfaced -- matches llama-cpp-python).
+        if (have_stops) {
+            size_t pos = earliest_stop_pos(text, sampling.stop);
+            if (pos != std::string::npos) {
+                text.erase(pos);
+                stopped_on_stop = true;
+            }
+        }
+
+        // Emission. With no stop strings this is byte-for-byte the old
+        // behavior: one on_token(piece) per token. With stop strings we hold
+        // back any tail that could still grow into a stop match, so the stop
+        // text is never leaked mid-stream.
+        bool keep_going = true;
+        if (on_token) {
+            if (!have_stops) {
+                keep_going = on_token(piece);
+            } else {
+                size_t safe = stopped_on_stop ? text.size()
+                                              : text.size() - stop_overlap_suffix(text, sampling.stop);
+                if (safe > emitted) {
+                    keep_going = on_token(text.substr(emitted, safe - emitted));
+                    emitted = safe;
+                }
+            }
+        }
+
+        if (stopped_on_stop) {
+            ++generated;  // count the token that completed the stop match
+            break;
+        }
         if (!keep_going) {
             ++generated;  // count the token we just emitted before stopping
+            client_cancelled = true;
             break;
         }
 
@@ -166,9 +291,18 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         // the KV exactly so the next request can reuse it too.
         prefix_.append(next);
     }
+
+    // Flush any held-back (but safe) tail on a clean end -- EOG or n_predict
+    // reached without a stop match. Skipped when a stop halted us (the tail
+    // was the stop text, already trimmed) or the client cancelled.
+    if (on_token && have_stops && !stopped_on_stop && !client_cancelled && emitted < text.size()) {
+        on_token(text.substr(emitted));
+    }
+
     auto t2 = std::chrono::steady_clock::now();
     result.generate_seconds = std::chrono::duration<double>(t2 - t1).count();
     result.n_generated_tokens = generated;
+    result.stopped_on_stop_string = stopped_on_stop;
     result.text = std::move(text);
 
     llama_sampler_free(chain);
