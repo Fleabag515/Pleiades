@@ -330,3 +330,69 @@ def test_start_does_not_call_slot_restore_when_wait_is_false(tmp_path, monkeypat
         run.pop("norestoretest", None)
         mm._save_running(run)
         mm.remove("norestoretest")
+
+
+def test_concurrent_start_does_not_spawn_duplicate_processes(tmp_path, monkeypatch):
+    """Two characters sharing one model both taking their first turn in the
+    same instant must not both spawn a llama-server. See HANDOFF's
+    2026-07-25 correctness audit, finding #4."""
+    import threading
+    import time
+
+    import pleiades.models as models_mod
+
+    g = tmp_path / "race.gguf"
+    g.write_bytes(b"x")
+    mm = ModelManager()
+    mm.add("racetest", str(g))
+
+    spawn_count = {"n": 0}
+    spawn_lock = threading.Lock()
+
+    class FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+    def fake_popen(cmd, **kw):
+        if "pleiades.inference.server" not in cmd and not any(
+                str(c).endswith(("llama-server", "llama-server.exe")) for c in cmd):
+            raise OSError("blocked in test")  # hardware-detection probes etc.
+        with spawn_lock:
+            spawn_count["n"] += 1
+            pid = 5000 + spawn_count["n"]
+        time.sleep(0.05)  # widen the window a real race would need
+        return FakeProc(pid)
+
+    monkeypatch.setattr(models_mod.subprocess, "Popen", fake_popen)
+    # A real spawned pid is alive immediately (still loading, not crashed) --
+    # FakeProc's made-up pid isn't a real process, so without this the
+    # second thread's is_running() check sees state()=="crashed" (correctly,
+    # for a pid that really doesn't exist) and legitimately retries. This
+    # simulates "the process really did start" the same way the sibling
+    # test_stop_calls_slot_save_before_sending_the_kill_signal does.
+    monkeypatch.setattr(models_mod, "_pid_alive", lambda pid: True)
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def worker():
+        try:
+            barrier.wait(timeout=5)
+            mm.start("racetest", wait=False)
+        except Exception as e:  # pragma: no cover
+            errors.append(e)
+
+    try:
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+        assert not errors
+        assert spawn_count["n"] == 1, "exactly one llama-server should be spawned"
+        run = mm._load_running()
+        assert run["racetest"]["pid"] == 5001
+    finally:
+        run = mm._load_running()
+        run.pop("racetest", None)
+        mm._save_running(run)
+        mm.remove("racetest")

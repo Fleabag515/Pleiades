@@ -20,6 +20,8 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -36,6 +38,25 @@ def _models_json() -> Path:
 
 def _running_json() -> Path:
     return config.PLEIADES_HOME / "models-running.json"
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """write_text() truncates in place -- a reader hitting the file mid-write
+    can see a torn/partial JSON body. Write to a sibling temp file and
+    os.replace() it in, which is atomic on both POSIX and Windows (same
+    pattern as scheduler.py's registry writes)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2))
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 @dataclass
@@ -216,6 +237,15 @@ class ModelManager:
 
     def __init__(self) -> None:
         config.ensure_home()
+        # Guards models.json/models-running.json read-modify-write sequences.
+        # The webui runs sync endpoints in a threadpool (many threads in one
+        # process), and add()/start() each do read -> compute -> write with
+        # no protection -- two characters starting the same shared model in
+        # the same second could both see is_running()==False and both spawn
+        # a llama-server on the same port. RLock (not Lock): start() and
+        # add() call the already-lock-wrapped _load()/_save() etc. from
+        # inside their own `with self._lock:` section, on the same thread.
+        self._lock = threading.RLock()
 
     # -- registry ----------------------------------------------------------- #
     def _load(self) -> dict:
@@ -226,16 +256,17 @@ class ModelManager:
         the library forever. Every read goes through here so list()/get()/
         add() all see the reconciled state, not a stale in-memory picture.
         """
-        p = _models_json()
-        reg: dict = {}
-        if p.is_file():
-            try:
-                reg = json.loads(p.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                reg = {}
-        if self._prune_missing(reg):
-            self._save(reg)
-        return reg
+        with self._lock:
+            p = _models_json()
+            reg: dict = {}
+            if p.is_file():
+                try:
+                    reg = json.loads(p.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    reg = {}
+            if self._prune_missing(reg):
+                self._save(reg)
+            return reg
 
     def _prune_missing(self, reg: dict) -> bool:
         """Drop registry entries whose GGUF no longer exists on disk.
@@ -260,7 +291,8 @@ class ModelManager:
         return changed
 
     def _save(self, data: dict) -> None:
-        _models_json().write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with self._lock:
+            _atomic_write_json(_models_json(), data)
 
     def add(self, name: str, path: str, *, n_ctx: "int | str" = "auto",
             n_gpu_layers: "int | str" = "auto",
@@ -269,30 +301,36 @@ class ModelManager:
         p = Path(path).expanduser()
         if not p.is_file():
             raise ModelError(f"No such model file: {p}")
-        reg = self._load()
-        port = port or self._free_port(reg)
-        if not mmproj:
-            # Auto-detect a sibling mmproj-*.gguf next to this model (the
-            # foundry's download pipeline used to just discard this file --
-            # see hardware.is_mmproj()'s docstring and fetch.py's
-            # fetch_model(), which now downloads it alongside the model
-            # specifically so this detection has something to find).
-            from .hardware import find_mmproj_sibling
-            mmproj = find_mmproj_sibling(str(p))
-        reg[name] = asdict(Model(name=name, path=str(p), n_ctx=n_ctx,
-                                 n_gpu_layers=n_gpu_layers, chat_format=chat_format,
-                                 port=port, mmproj=mmproj, capabilities=capabilities))
-        self._save(reg)
-        return reg[name]
+        # Locked end to end: _free_port() reads the current registry to pick
+        # an unused port, and that choice is only valid until it's committed
+        # below. Without the lock, two concurrent add() calls can both read
+        # the same "used" set and both pick the same free port.
+        with self._lock:
+            reg = self._load()
+            port = port or self._free_port(reg)
+            if not mmproj:
+                # Auto-detect a sibling mmproj-*.gguf next to this model (the
+                # foundry's download pipeline used to just discard this file --
+                # see hardware.is_mmproj()'s docstring and fetch.py's
+                # fetch_model(), which now downloads it alongside the model
+                # specifically so this detection has something to find).
+                from .hardware import find_mmproj_sibling
+                mmproj = find_mmproj_sibling(str(p))
+            reg[name] = asdict(Model(name=name, path=str(p), n_ctx=n_ctx,
+                                     n_gpu_layers=n_gpu_layers, chat_format=chat_format,
+                                     port=port, mmproj=mmproj, capabilities=capabilities))
+            self._save(reg)
+            return reg[name]
 
     def remove(self, name: str, *, delete_file: bool = True) -> bool:
-        reg = self._load()
-        if name not in reg:
-            return False
-        self.stop(name)
-        path = Path(reg[name].get("path", "")).expanduser()
-        del reg[name]
-        self._save(reg)
+        with self._lock:
+            reg = self._load()
+            if name not in reg:
+                return False
+            self.stop(name)
+            path = Path(reg[name].get("path", "")).expanduser()
+            del reg[name]
+            self._save(reg)
         if delete_file:
             self._delete_model_files(path)
         return True
@@ -350,16 +388,18 @@ class ModelManager:
 
     # -- running state ------------------------------------------------------ #
     def _load_running(self) -> dict:
-        p = _running_json()
-        if p.is_file():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                return {}
-        return {}
+        with self._lock:
+            p = _running_json()
+            if p.is_file():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    return {}
+            return {}
 
     def _save_running(self, data: dict) -> None:
-        _running_json().write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with self._lock:
+            _atomic_write_json(_running_json(), data)
 
     def base_url(self, name: str) -> str:
         m = self.get(name)
@@ -415,73 +455,83 @@ class ModelManager:
         return plan.cmd, plan.why, plan.env or {}
 
     def start(self, name: str, *, wait: bool = True, timeout: float = 180.0) -> str:
-        m = self.get(name)
-        if not m:
-            raise ModelError(
-                f"unknown model '{name}'. Add it first: pleiades model add {name} <path.gguf>"
-            )
-        if self.is_running(name):
-            return self.base_url(name)
+        # Locked from the is_running() check through committing the spawned
+        # process to running.json: that's the exact window where two
+        # concurrent start() calls for the same model (two characters
+        # sharing it, both taking their first turn at once) could otherwise
+        # both see "not running" and both spawn a server on the same port.
+        # NOT held through _wait_ready below -- that can take up to
+        # `timeout` seconds and has nothing to do with this model's own
+        # registry entry, so holding the lock there would serialize starting
+        # totally unrelated models too.
+        with self._lock:
+            m = self.get(name)
+            if not m:
+                raise ModelError(
+                    f"unknown model '{name}'. Add it first: pleiades model add {name} <path.gguf>"
+                )
+            if self.is_running(name):
+                return self.base_url(name)
 
-        # The registered port may be occupied by an ORPHAN OF OURSELVES: if
-        # running.json went stale (crash/manual kill) the old server keeps
-        # serving while is_running() says dead — relocating would then spawn
-        # a duplicate per chat. If whatever holds the port answers /v1/models
-        # with our alias, adopt it instead of spawning another.
-        if not _port_free(m["host"], int(m["port"])) and self._is_our_server(m):
+            # The registered port may be occupied by an ORPHAN OF OURSELVES: if
+            # running.json went stale (crash/manual kill) the old server keeps
+            # serving while is_running() says dead — relocating would then spawn
+            # a duplicate per chat. If whatever holds the port answers /v1/models
+            # with our alias, adopt it instead of spawning another.
+            if not _port_free(m["host"], int(m["port"])) and self._is_our_server(m):
+                run = self._load_running()
+                run[name] = {"pid": _pid_on_port(m["host"], int(m["port"])) or 0,
+                             "host": m["host"], "port": m["port"]}
+                self._save_running(run)
+                return self.base_url(name)
+
+            # The registered port may have been taken by another app since add()
+            # (e.g. a Docker service). Detect it now and relocate instead of letting
+            # llama.cpp load the whole model and then die on bind.
+            port_note = ""
+            if not _port_free(m["host"], int(m["port"])):
+                reg = self._load()
+                old_port = m["port"]
+                new_port = self._free_port(reg, host=m["host"])
+                reg[name]["port"] = new_port
+                self._save(reg)
+                m = reg[name]
+                port_note = (f"[pleiades] port {old_port} is in use by another "
+                             f"application — moved '{name}' to port {new_port}\n")
+
+            cmd, why, plan_env = self._build_launch(m)
+
+            logdir = config.PLEIADES_HOME / "logs"
+            logdir.mkdir(parents=True, exist_ok=True)
+            logf = open(logdir / f"model-{name}.log", "ab")
+            if port_note:
+                logf.write(port_note.encode())
+            if getattr(self, "_last_ctx_why", ""):
+                logf.write(f"[pleiades] ctx plan: {self._last_ctx_why}\n".encode())
+            logf.write(f"[pleiades] {why}\n".encode())
+            logf.flush()
+
+            kwargs: dict = {}
+            if os.name == "posix":
+                kwargs["start_new_session"] = True          # survive the CLI exiting
+            else:
+                kwargs["creationflags"] = 0x00000200        # CREATE_NEW_PROCESS_GROUP
+
+            if plan_env:
+                kwargs["env"] = {**os.environ, **plan_env}
+            try:
+                proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, **kwargs)
+            except FileNotFoundError as e:
+                raise ModelError(
+                    "llama_cpp.server not available. Install with "
+                    "`pip install 'llama-cpp-python[server]'`."
+                ) from e
+
             run = self._load_running()
-            run[name] = {"pid": _pid_on_port(m["host"], int(m["port"])) or 0,
-                         "host": m["host"], "port": m["port"]}
+            n_ctx_run, n_ctx_max_run = getattr(self, "_last_ctx", (None, None))
+            run[name] = {"pid": proc.pid, "host": m["host"], "port": m["port"],
+                         "n_ctx": n_ctx_run, "n_ctx_max": n_ctx_max_run}
             self._save_running(run)
-            return self.base_url(name)
-
-        # The registered port may have been taken by another app since add()
-        # (e.g. a Docker service). Detect it now and relocate instead of letting
-        # llama.cpp load the whole model and then die on bind.
-        port_note = ""
-        if not _port_free(m["host"], int(m["port"])):
-            reg = self._load()
-            old_port = m["port"]
-            new_port = self._free_port(reg, host=m["host"])
-            reg[name]["port"] = new_port
-            self._save(reg)
-            m = reg[name]
-            port_note = (f"[pleiades] port {old_port} is in use by another "
-                         f"application — moved '{name}' to port {new_port}\n")
-
-        cmd, why, plan_env = self._build_launch(m)
-
-        logdir = config.PLEIADES_HOME / "logs"
-        logdir.mkdir(parents=True, exist_ok=True)
-        logf = open(logdir / f"model-{name}.log", "ab")
-        if port_note:
-            logf.write(port_note.encode())
-        if getattr(self, "_last_ctx_why", ""):
-            logf.write(f"[pleiades] ctx plan: {self._last_ctx_why}\n".encode())
-        logf.write(f"[pleiades] {why}\n".encode())
-        logf.flush()
-
-        kwargs: dict = {}
-        if os.name == "posix":
-            kwargs["start_new_session"] = True          # survive the CLI exiting
-        else:
-            kwargs["creationflags"] = 0x00000200        # CREATE_NEW_PROCESS_GROUP
-
-        if plan_env:
-            kwargs["env"] = {**os.environ, **plan_env}
-        try:
-            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, **kwargs)
-        except FileNotFoundError as e:
-            raise ModelError(
-                "llama_cpp.server not available. Install with "
-                "`pip install 'llama-cpp-python[server]'`."
-            ) from e
-
-        run = self._load_running()
-        n_ctx_run, n_ctx_max_run = getattr(self, "_last_ctx", (None, None))
-        run[name] = {"pid": proc.pid, "host": m["host"], "port": m["port"],
-                     "n_ctx": n_ctx_run, "n_ctx_max": n_ctx_max_run}
-        self._save_running(run)
 
         if wait:
             self._wait_ready(name, proc, timeout)
@@ -556,8 +606,16 @@ class ModelManager:
                 os.kill(port_pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
-        del run[name]
-        self._save_running(run)
+        # Re-fetch right before the delete+save rather than reusing the
+        # `run` snapshot from the top of this method: _slot_save above can
+        # take up to 120s, and holding the lock for that whole window would
+        # block unrelated models' start()/stop() calls for no reason. This
+        # keeps the actual read-modify-write atomic without penalizing
+        # concurrent operations on other models.
+        with self._lock:
+            run = self._load_running()
+            run.pop(name, None)
+            self._save_running(run)
         return True
 
     def resize(self, name: str, n_ctx: int) -> dict:
