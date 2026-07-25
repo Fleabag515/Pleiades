@@ -12,7 +12,7 @@
 #   --cpu                 force CPU build of llama-cpp-python
 #   --gpu                 force GPU build of llama-cpp-python
 #   --core                core only (skip browser, SearXNG, Discord, native runtime)
-#   --no-browser          skip Camoufox
+#   --no-browser          skip browser automation (Camoufox + desktop panel's Playwright/Chromium)
 #   --no-searxng          skip SearXNG (local web search)
 #   --no-discord          skip the Discord extra
 #   --no-native-runtime   skip 'pleiades runtime install' (native llama-server)
@@ -179,7 +179,15 @@ clone_repo() {
 EXTRAS=""
 build_extras() {
   local e="ui"   # the control panel (pleiades ui) is always available
-  [ "$WITH_BROWSER" = "1" ] && e="$e,browser"
+  # browser-view (Playwright+Chromium, for the desktop app's embedded live
+  # browser panel -- webui/browser_view.py) is bundled under the same
+  # --no-browser flag as Camoufox (the harness's own agent-driven browsing
+  # tool): from the installer's perspective these are both "browser stuff",
+  # and a real prior gap was that browser-view was never installed by this
+  # script at all -- only pulled in transitively (and with no version pin)
+  # via camoufox's own dependency on playwright. Phase 4 of docs/specs/
+  # 2026-07-25-anamnesis-vendoring-and-installer-plan.md.
+  [ "$WITH_BROWSER" = "1" ] && e="$e,browser,browser-view"
   [ "$WITH_DISCORD" = "1" ] && e="$e,discord"
   EXTRAS="$e"
 }
@@ -233,9 +241,23 @@ install_anamnesis() {
 }
 
 fetch_browser() {
+  # One pass for both browser automation backends this install needs:
+  # Camoufox (stealth Firefox -- the harness's own agent-driven browsing
+  # tool, pleiades/harness/builtins/browser.py) and Playwright's Chromium
+  # (the desktop app's embedded live browser panel, webui/browser_view.py).
+  # Playwright-Firefox (tor_browser.py's fallback when Camoufox itself
+  # isn't preferred) is deliberately NOT fetched here -- it's a fallback
+  # for an explicit, occasional-use tool, not something every install
+  # needs; tor_browser.py's own error message already tells the user
+  # exactly what to run if that path is ever hit.
   [ "$WITH_BROWSER" = "1" ] || return 0
-  say "Fetching Camoufox browser"
-  ( cd "$INSTALL_DIR" && . .venv/bin/activate && python -m camoufox fetch ) || warn "camoufox fetch failed; run 'python -m camoufox fetch' later."
+  say "Fetching browsers (Camoufox + Playwright Chromium)"
+  (
+    cd "$INSTALL_DIR" &&
+    . .venv/bin/activate &&
+    python -m camoufox fetch &&
+    python -m playwright install chromium
+  ) || warn "Browser fetch failed; run 'python -m camoufox fetch' and 'python -m playwright install chromium' later."
 }
 
 install_native_runtime() {

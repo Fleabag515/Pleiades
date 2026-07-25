@@ -17,7 +17,7 @@
                     vulkan force a Vulkan build of llama-cpp-python (requires the
                            Vulkan SDK to compile; most AMD users want "auto" instead)
     -Core           core only (skip browser, SearXNG, Discord)
-    -NoBrowser      skip Camoufox
+    -NoBrowser      skip browser automation (Camoufox + desktop panel's Playwright/Chromium)
     -NoSearxng      skip SearXNG (local web search)
     -NoDiscord      skip the Discord extra
     -NoNativeRuntime  skip 'pleiades runtime install' (native llama-server)
@@ -165,7 +165,11 @@ function Clone-Repo {
 function Get-Extras {
   $e = @()
   $e += "ui"   # the control panel (pleiades ui) is always available
-  if (-not $NoBrowser) { $e += "browser" }
+  # browser-view (Playwright+Chromium, the desktop app's embedded live
+  # browser panel) rides the same -NoBrowser switch as Camoufox (the
+  # harness's own agent-driven browsing tool) -- see install.sh's
+  # build_extras() for the same reasoning, mirrored here.
+  if (-not $NoBrowser) { $e += "browser"; $e += "browser-view" }
   if (-not $NoDiscord) { $e += "discord" }
   if ($e.Count -eq 0) { return "" } else { return ($e -join ",") }
 }
@@ -238,11 +242,19 @@ function Install-Anamnesis {
 }
 
 function Fetch-Browser($py) {
+  # One pass for both browser automation backends this install needs:
+  # Camoufox (the harness's own agent-driven browsing tool) and
+  # Playwright's Chromium (the desktop app's embedded live browser panel,
+  # webui/browser_view.py). Playwright-Firefox (tor_browser.py's fallback
+  # when Camoufox itself isn't preferred) is deliberately NOT fetched here
+  # -- see install.sh's fetch_browser() for the same reasoning.
   if ($NoBrowser) { return }
-  Say "Fetching Camoufox browser"
+  Say "Fetching browsers (Camoufox + Playwright Chromium)"
   $venvPy = Join-Path $Dir ".venv\Scripts\python.exe"
   & $venvPy -m camoufox fetch
   if ($LASTEXITCODE -ne 0) { Warn "camoufox fetch failed; run 'python -m camoufox fetch' later." }
+  & $venvPy -m playwright install chromium
+  if ($LASTEXITCODE -ne 0) { Warn "playwright chromium fetch failed; run 'python -m playwright install chromium' later." }
 }
 
 function Make-Env {

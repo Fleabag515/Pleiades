@@ -90,7 +90,7 @@ parameters on Windows):
 | `--branch N` / `-Branch`        | Git branch (default `main`)                                  |
 | `--gpu` `--cpu` / `-Gpu`        | Force GPU or CPU build (default: auto-detect)                |
 | `--core` / `-Core`              | Core only — skip browser, SearXNG, Discord, native runtime   |
-| `--no-browser` / `-NoBrowser`   | Skip Camoufox                                                |
+| `--no-browser` / `-NoBrowser`   | Skip browser automation (Camoufox + desktop panel's Playwright/Chromium) |
 | `--no-searxng` / `-NoSearxng`   | Skip SearXNG                                                 |
 | `--no-discord` / `-NoDiscord`   | Skip the Discord extra                                       |
 | `--no-native-runtime`           | Skip the native `llama-server` runtime install               |
@@ -111,7 +111,13 @@ yourself afterward:
 ```bash
 pleiades runtime install                 # native llama-server (MoE offload, faster)
 python -m camoufox fetch                 # headed browser (only if using [browser])
+python -m playwright install chromium    # desktop app's embedded browser panel (only if using [browser-view])
 cd anamnesis && npm install --omit=dev   # vendored Anamnesis's own deps (needs Node)
+# SearXNG (web search), own venv, no Docker:
+git clone https://github.com/searxng/searxng searxng-src && cd searxng-src
+python -m venv .venv && .venv/bin/pip install -U pip setuptools wheel
+.venv/bin/pip install -U pyyaml msgspec typing-extensions pybind11
+.venv/bin/pip install --use-pep517 --no-build-isolation -e .
 ```
 
 Anamnesis itself starts on its own the first time `pleiades ui` or the desktop app

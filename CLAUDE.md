@@ -250,8 +250,9 @@ Discord bot); GitHub (`gh repo create` — repo doesn't exist yet).
 > `curl -fsSL .../install.sh | bash` (Linux/macOS) or `irm .../install.ps1 | iex`
 > (Windows). They auto-install Python/Node, auto-detect GPU for the
 > `llama-cpp-python` build, clone, venv, install `pleiades[all]`, install Anamnesis,
-> fetch + install SearXNG (own venv, no Docker), `camoufox fetch`, generate `.env`,
-> and start SearXNG. The manual steps below are the same sequence for development.
+> fetch + install SearXNG (own venv, no Docker), fetch browsers (`camoufox fetch` +
+> `playwright install chromium`, one pass), generate `.env`, and start SearXNG. The
+> manual steps below are the same sequence for development.
 
 1. Confirm `pyproject.toml` + this file present.
 2. `gh repo create Pleiades --private --source . --remote origin` (or add remote
