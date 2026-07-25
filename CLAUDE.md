@@ -116,8 +116,9 @@ only new user turn(s) + tool results + tool schemas. Anamnesis supplies history.
   swappable compute kernel. (`pleiades/inference/`.)
 - **LLM client:** the `openai` package pointed at the character's Anamnesis proxy.
   Tool calling uses standard OpenAI function-calling format, passed through unchanged.
-- **Web search:** **SearXNG** locally (Docker easiest), JSON API. The instance **must**
-  have JSON enabled (`search.formats: [html, json]`) or it returns 403.
+- **Web search:** **SearXNG** locally, fetched + installed automatically by install.sh
+  (own venv, no Docker -- see `pleiades/searxng_runtime.py`), JSON API. The instance
+  **must** have JSON enabled (`search.formats: [html, json]`) or it returns 403.
 - **Browser:** **Camoufox**, **headed** (`headless=False`), one persistent context per
   character (`~/.pleiades/profiles/<name>/browser`). Requires `camoufox fetch` once.
 - **Vault:** encrypted SQLite per profile, `cryptography` Fernet; key from
@@ -141,7 +142,7 @@ pleiades/
 ├── LICENSE                         # MIT (Fleabag515)
 ├── .gitignore                      # python + ~/.pleiades secrets never committed
 ├── .env.example                    # master key, model path, inference + searxng URLs
-├── docker-compose.yml              # SearXNG service
+├── searxng-src/                    # SearXNG, fetched (pinned commit) + installed by install.sh, own venv, gitignored
 ├── install.sh                      # one-line installer (Linux/macOS): prereqs, GPU autodetect, full stack
 ├── install.ps1                     # one-line installer (Windows): winget prereqs, CUDA autodetect, full stack
 ├── services/searxng/settings.yml   # SearXNG config WITH json format enabled
@@ -224,11 +225,11 @@ results, loop (hard cap) → return final message. Stream when possible.
 
 ## 5. Access Cowork/dev needs
 
-Shell (git/pip/npm/docker/anamnesis/camoufox + long-lived processes); network (pip/npm
+Shell (git/pip/npm/anamnesis/camoufox + long-lived processes); network (pip/npm
 installs, `camoufox fetch`, SearXNG, Discord gateway, IMAP/SMTP — inference is local so
 no LLM backend network needed); filesystem write to the repo, `~/.pleiades/`,
-`~/.anamnesis/`; Docker (or pip SearXNG); ability to run daemons (Anamnesis, SearXNG,
-the inference server, the Discord bot); GitHub (`gh repo create` — repo doesn't exist yet).
+`~/.anamnesis/`; ability to run daemons (Anamnesis, SearXNG, the inference server, the
+Discord bot); GitHub (`gh repo create` — repo doesn't exist yet).
 
 ## 6. Secrets / setup the human must provide
 
@@ -240,16 +241,17 @@ the inference server, the Discord bot); GitHub (`gh repo create` — repo doesn'
   (Gmail/mail.com app-password presets included; generic IMAP for anything else).
 - **A Discord bot token per character** (if hosting) — Developer Portal; enable Message
   Content intent.
-- **Anamnesis installed** — `npm install -g anamnesis`; `anamnesis status`.
+- **Anamnesis** — vendored in-repo (`anamnesis/`), installed automatically by
+  install.sh; `pleiades anamnesis status`.
 
 ## 7. First-session checklist
 
 > **Automated path:** end users install via the one-liners in README —
 > `curl -fsSL .../install.sh | bash` (Linux/macOS) or `irm .../install.ps1 | iex`
-> (Windows). They do hybrid prereq handling (auto-install Python/Node, guide for
-> Docker), auto-detect GPU for the `llama-cpp-python` build, clone, venv, install
-> `pleiades[all]`, install Anamnesis, `camoufox fetch`, generate `.env`, and start
-> SearXNG. The manual steps below are the same sequence for development.
+> (Windows). They auto-install Python/Node, auto-detect GPU for the
+> `llama-cpp-python` build, clone, venv, install `pleiades[all]`, install Anamnesis,
+> fetch + install SearXNG (own venv, no Docker), `camoufox fetch`, generate `.env`,
+> and start SearXNG. The manual steps below are the same sequence for development.
 
 1. Confirm `pyproject.toml` + this file present.
 2. `gh repo create Pleiades --private --source . --remote origin` (or add remote

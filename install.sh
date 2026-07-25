@@ -13,7 +13,7 @@
 #   --gpu                 force GPU build of llama-cpp-python
 #   --core                core only (skip browser, SearXNG, Discord, native runtime)
 #   --no-browser          skip Camoufox
-#   --no-searxng          skip SearXNG (Docker)
+#   --no-searxng          skip SearXNG (local web search)
 #   --no-discord          skip the Discord extra
 #   --no-native-runtime   skip 'pleiades runtime install' (native llama-server)
 #   -h, --help            show this help
@@ -85,7 +85,7 @@ pm_install() {
   esac
 }
 
-# ---- prerequisites (hybrid: auto-install runtimes, guide for Docker) -------
+# ---- prerequisites (auto-installed runtimes: Python, Node, native deps) ---
 ensure_base() {
   have git  || { say "Installing git";  pm_install git  || die "Please install git and re-run."; }
   have curl || pm_install curl || true
@@ -132,17 +132,7 @@ ensure_node() {
   esac
 }
 
-DOCKER_OK=0
-check_docker() {
-  if have docker && docker info >/dev/null 2>&1; then DOCKER_OK=1; return; fi
-  if have docker; then
-    warn "Docker is installed but the daemon isn't reachable (start it, or add your user to the 'docker' group and re-login)."
-  else
-    warn "Docker not found — it powers the built-in SearXNG web search."
-    info "Install Docker Engine: https://docs.docker.com/engine/install/"
-  fi
-  info "SearXNG will be skipped now; bring it up later with 'pleiades search up'."
-}
+
 
 # ---- GPU detection ---------------------------------------------------------
 CMAKE_ARGS=""
@@ -269,11 +259,52 @@ make_env() {
   fi
 }
 
+SEARXNG_PIN="0909dbc9efb2c6e93e2ad51e60e66417ab291710"  # searxng/searxng@master, pinned 2026-07-25 (no git tags upstream)
+
+install_searxng() {
+  # SearXNG is fetched at install time (not vendored in-repo like Anamnesis
+  # -- it's a large, independently-developed third-party project, not a fork
+  # Pleiades maintains, so there's no reason to carry its full history in
+  # this repo). Gets its own dedicated venv, kept fully separate from
+  # Pleiades' own .venv to avoid any dependency-version collision between
+  # SearXNG's Flask/lxml/babel stack and Pleiades' own FastAPI/webui stack.
+  # See pleiades/searxng_runtime.py for the module docstring with the full
+  # rationale, and docs/specs/2026-07-25-anamnesis-vendoring-and-installer-
+  # plan.md's phase 3 for the plan this implements.
+  [ "$WITH_SEARXNG" = "1" ] || return 0
+  local searxng_dir="$INSTALL_DIR/searxng-src"
+  if [ -x "$searxng_dir/.venv/bin/python" ] && "$searxng_dir/.venv/bin/python" -c "import searx" >/dev/null 2>&1; then
+    return 0  # already fetched + installed, nothing to do
+  fi
+  if ! have git; then warn "git missing; skipping SearXNG."; return; fi
+  say "Fetching SearXNG (pinned commit, no Docker required)"
+  rm -rf "$searxng_dir"
+  mkdir -p "$searxng_dir"
+  (
+    cd "$searxng_dir" &&
+    git init -q &&
+    git remote add origin https://github.com/searxng/searxng.git &&
+    git fetch --depth 1 origin "$SEARXNG_PIN" &&
+    git checkout -q FETCH_HEAD &&
+    git branch -f master HEAD &&
+    git checkout -q master
+  ) || { warn "Could not fetch SearXNG; skipping."; rm -rf "$searxng_dir"; return; }
+  say "Installing SearXNG's dependencies into its own venv"
+  (
+    cd "$searxng_dir" &&
+    "$PYBIN" -m venv .venv &&
+    .venv/bin/pip install -q -U pip setuptools wheel &&
+    .venv/bin/pip install -q -U pyyaml msgspec typing-extensions pybind11 &&
+    .venv/bin/pip install -q --use-pep517 --no-build-isolation -e .
+  ) || { warn "Could not install SearXNG's dependencies; run the steps in pleiades/searxng_runtime.py's docstring yourself inside $searxng_dir."; return; }
+  info "SearXNG installed at $searxng_dir (own venv, no Docker)."
+}
+
 start_searxng() {
   [ "$WITH_SEARXNG" = "1" ] || return 0
-  if [ "$DOCKER_OK" != "1" ]; then warn "Skipping SearXNG (Docker not ready). Later: 'pleiades search up'."; return 0; fi
-  say "Starting SearXNG (docker compose)"
-  ( cd "$INSTALL_DIR" && { docker compose up -d searxng || docker-compose up -d searxng; } ) || warn "Could not start SearXNG."
+  say "Starting SearXNG"
+  ( cd "$INSTALL_DIR" && "$INSTALL_DIR/.venv/bin/pleiades" search up ) \
+    || warn "Could not start SearXNG. Later: 'pleiades search up'."
 }
 
 link_cli() {
@@ -354,12 +385,12 @@ main() {
   ensure_python
   [ "$WITH_DISCORD" = "1" ] || true
   ensure_node
-  check_docker
   resolve_gpu
   build_extras
   clone_repo
   install_python_pkg
   install_anamnesis
+  install_searxng
   fetch_browser
   install_native_runtime
   make_env

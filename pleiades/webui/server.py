@@ -2461,22 +2461,18 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "Direction must be 'up' or 'down'.")
         if search_state.get("status") == "working":
             raise HTTPException(409, "A search-service operation is in progress.")
-        compose = Path(__file__).resolve().parents[2] / "docker-compose.yml"
-        if not compose.is_file():
-            raise HTTPException(400, f"docker-compose.yml not found at {compose}")
-        args = ["docker", "compose", "-f", str(compose)]
-        args += ["up", "-d"] if direction == "up" else ["down"]
+        from ..searxng_runtime import SearxngDaemon, SearxngRuntimeError
+        daemon = SearxngDaemon()
 
         def runner() -> None:
             search_state.update(status="working", direction=direction, error="")
             try:
-                r = subprocess.run(args, capture_output=True, text=True, timeout=600)
-                if r.returncode != 0:
-                    search_state.update(status="error",
-                                        error=(r.stderr or r.stdout or "")[-800:])
+                if direction == "up":
+                    daemon.start()
                 else:
-                    search_state.update(status="done")
-            except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+                    daemon.stop()
+                search_state.update(status="done")
+            except SearxngRuntimeError as e:
                 search_state.update(status="error", error=str(e))
 
         threading.Thread(target=runner, daemon=True).start()

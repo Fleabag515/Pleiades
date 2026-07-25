@@ -538,23 +538,35 @@ def vault_rm(name: str, key: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# search (SearXNG via docker compose)
+# search — Pleiades-owned supervision of the fetched SearXNG process
+# (phase 3 of docs/specs/2026-07-25-anamnesis-vendoring-and-installer-plan.md
+# -- replaces docker compose; same start/stop/status shape as `anamnesis`
+# above and `pleiades/models.py`'s ModelManager)
 # --------------------------------------------------------------------------- #
 @cli.command()
-@click.argument("direction", type=click.Choice(["up", "down"]))
+@click.argument("direction", type=click.Choice(["up", "down", "status"]))
 def search(direction: str) -> None:
-    """Bring the local SearXNG service up or down (docker compose)."""
-    compose = Path(__file__).resolve().parent.parent / "docker-compose.yml"
-    if not compose.is_file():
-        console.print(f"[red]docker-compose.yml not found at {compose}.[/red]")
-        sys.exit(1)
-    args = ["docker", "compose", "-f", str(compose)]
-    args += ["up", "-d"] if direction == "up" else ["down"]
-    try:
-        subprocess.run(args, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        console.print(f"[red]docker compose failed: {e}[/red]")
-        sys.exit(1)
+    """Bring the local SearXNG service up, down, or show its status."""
+    from .searxng_runtime import SearxngDaemon, SearxngRuntimeError
+    daemon = SearxngDaemon()
+    if direction == "up":
+        try:
+            url = daemon.start()
+        except SearxngRuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+        console.print(f"[green]SearXNG running at {url}[/green]")
+    elif direction == "down":
+        stopped = daemon.stop()
+        console.print("[green]Stopped.[/green]" if stopped
+                      else "[yellow]Not running (under this supervisor).[/yellow]")
+    else:
+        st = daemon.status()
+        if st["running"]:
+            console.print(f"[green]running[/green] at {st['url']} (pid {st['pid']})")
+        else:
+            console.print(f"[yellow]not running[/yellow] (expected at {st['url']})")
+        console.print(f"source: {st['source_dir']}")
 
 
 # --------------------------------------------------------------------------- #

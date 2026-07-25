@@ -97,7 +97,7 @@ pleiades discord alice                                # run it as a Discord bot
 ## 6. Web search (optional)
 
 ```bash
-pleiades search up        # start local SearXNG (docker)
+pleiades search up        # start local SearXNG (no Docker -- own venv, fetched by install.sh)
 pleiades search down
 ```
 

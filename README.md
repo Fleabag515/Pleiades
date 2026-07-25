@@ -80,9 +80,9 @@ irm https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.ps1 | iex
 The installer auto-installs Python and Node where it can (apt/dnf/pacman/zypper,
 Homebrew, or winget), detects an NVIDIA/Apple GPU and builds `llama-cpp-python`
 accordingly (falling back to CPU), fetches the native `llama-server` runtime, and
-detects Docker for SearXNG (guiding you if it's missing). Options (pass after the
-pipe on Linux, e.g. `... | bash -s -- --gpu --dir ~/apps/Pleiades`; as parameters on
-Windows):
+fetches + installs SearXNG into its own venv (no Docker required). Options (pass
+after the pipe on Linux, e.g. `... | bash -s -- --gpu --dir ~/apps/Pleiades`; as
+parameters on Windows):
 
 | Option (sh / ps1)              | Effect                                                      |
 |---------------------------------|-------------------------------------------------------------|
@@ -197,7 +197,7 @@ restarts.
 ```bash
 cp .env.example .env            # set PLEIADES_MODEL_PATH to your .gguf, fill secrets
 pleiades new alice              # creates the Anamnesis character + Pleiades profile (prompts for email creds, etc.)
-pleiades search up               # bring SearXNG online via docker compose
+pleiades search up               # bring SearXNG online (local process, no Docker)
 pleiades chat alice               # talk to the character (memory + tools wired in) — or open the desktop app / `pleiades ui`
 pleiades work alice ...          # have the character DO machine work (see below)
 pleiades discord alice            # host it as a Discord bot

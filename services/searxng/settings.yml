@@ -8,12 +8,28 @@ general:
   debug: false
 
 server:
-  # Change this. Also settable via the SEARXNG_SECRET env var in docker-compose.yml.
-  secret_key: "change-me-please"
+  # Randomly generated at de-Docker migration time (2026-07-25) -- this used
+  # to be a shared placeholder ("change-me-please") since Docker Compose
+  # could override it via the SEARXNG_SECRET env var. There's no compose
+  # layer anymore (see pleiades/searxng_runtime.py), so this file is now the
+  # actual secret. It only signs Flask session cookies for a 127.0.0.1-only,
+  # single-user instance -- low stakes, but no reason to ship a shared value.
+  secret_key: "4ccfb8a8deffe58f32dab1076bc3fe2f6d18f5eb941ccab142d5db84e85d07af"
   limiter: false          # disable the bot limiter for trusted local use
   image_proxy: true
-  bind_address: "0.0.0.0"
-  port: 8080
+  # 127.0.0.1 (not 0.0.0.0): under Docker this needed to listen on all
+  # interfaces so the container's port-forward (127.0.0.1:8888->8080) could
+  # reach it from the host. Running directly as a Pleiades-supervised
+  # subprocess (searxng_runtime.py), there's no NAT layer -- bind only to
+  # loopback, matching every other Pleiades-managed service (Anamnesis,
+  # llama-server, the webui backend).
+  bind_address: "127.0.0.1"
+  # 8888 (not the SearXNG default 8080): matches Settings.searxng_url's
+  # default (pleiades/config.py) and what docker-compose.yml used to map to
+  # from the host side. Binding directly to 8888 keeps that contract
+  # unchanged for every existing caller (pleiades/tools/search.py,
+  # harness/builtins/web.py) without needing a port-mapping layer.
+  port: 8888
 
 search:
   # THIS is the line that lets Pleiades query the JSON API. Do not remove `json`.

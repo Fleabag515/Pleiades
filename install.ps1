@@ -18,7 +18,7 @@
                            Vulkan SDK to compile; most AMD users want "auto" instead)
     -Core           core only (skip browser, SearXNG, Discord)
     -NoBrowser      skip Camoufox
-    -NoSearxng      skip SearXNG (Docker)
+    -NoSearxng      skip SearXNG (local web search)
     -NoDiscord      skip the Discord extra
     -NoNativeRuntime  skip 'pleiades runtime install' (native llama-server)
 #>
@@ -58,7 +58,7 @@ function Winget-Install($id, $label) {
   Refresh-Path
 }
 
-# ---- prerequisites (hybrid: auto-install runtimes, guide for Docker) -------
+# ---- prerequisites (auto-installed runtimes: Python, Node, native deps) ---
 function Ensure-Git {
   if (-not (Have git)) { Winget-Install "Git.Git" "Git" }
 }
@@ -88,18 +88,6 @@ function Ensure-Python {
 
 function Ensure-Node {
   if (-not (Have npm)) { Winget-Install "OpenJS.NodeJS.LTS" "Node.js LTS" }
-}
-
-function Check-Docker {
-  if ((Have docker)) {
-    try { docker info *> $null; if ($LASTEXITCODE -eq 0) { return $true } } catch {}
-    Warn "Docker is installed but not running. Start Docker Desktop, then 'pleiades search up'."
-    return $false
-  }
-  Warn "Docker not found — it powers the built-in SearXNG web search."
-  Info "Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
-  Info "SearXNG will be skipped now; bring it up later with 'pleiades search up'."
-  return $false
 }
 
 # ---- GPU detection ---------------------------------------------------------
@@ -266,12 +254,73 @@ function Make-Env {
   }
 }
 
-function Start-Searxng($dockerOk) {
+$script:SearxngPin = "0909dbc9efb2c6e93e2ad51e60e66417ab291710"  # searxng/searxng@master, pinned 2026-07-25 (no git tags upstream)
+
+function Install-Searxng {
+  # SearXNG is fetched at install time (not vendored in-repo like Anamnesis --
+  # it's a large, independently-developed third-party project, not a fork
+  # Pleiades maintains). Gets its own dedicated venv, fully separate from
+  # Pleiades' own .venv, to avoid any dependency-version collision between
+  # SearXNG's Flask/lxml/babel stack and Pleiades' own FastAPI/webui stack.
+  # See pleiades/searxng_runtime.py's module docstring for the full
+  # rationale, and this repo's install.sh (the Linux/macOS equivalent, which
+  # this mirrors) -- NOTE this Windows path is unverified, no Windows
+  # machine available to test on when it was written (2026-07-25), same
+  # caveat as this installer's other GPU/native-runtime branches.
   if ($NoSearxng) { return }
-  if (-not $dockerOk) { Warn "Skipping SearXNG (Docker not ready). Later: 'pleiades search up'."; return }
-  Say "Starting SearXNG (docker compose)"
+  $searxngDir = Join-Path $Dir "searxng-src"
+  $venvPy = Join-Path $searxngDir ".venv\Scripts\python.exe"
+  if (Test-Path $venvPy) {
+    & $venvPy -c "import searx" *> $null
+    if ($LASTEXITCODE -eq 0) { return }  # already fetched + installed
+  }
+  if (-not (Have git)) { Warn "git missing; skipping SearXNG."; return }
+  Say "Fetching SearXNG (pinned commit, no Docker required)"
+  if (Test-Path $searxngDir) { Remove-Item -Recurse -Force $searxngDir }
+  New-Item -ItemType Directory -Path $searxngDir | Out-Null
+  Push-Location $searxngDir
+  try {
+    git init -q
+    git remote add origin https://github.com/searxng/searxng.git
+    git fetch --depth 1 origin $script:SearxngPin
+    if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
+    git checkout -q FETCH_HEAD
+    git branch -f master HEAD
+    git checkout -q master
+  } catch {
+    Warn "Could not fetch SearXNG: $($_.Exception.Message)"
+    Pop-Location
+    Remove-Item -Recurse -Force $searxngDir -ErrorAction SilentlyContinue
+    return
+  }
+  try {
+    Say "Installing SearXNG's dependencies into its own venv"
+    & $py -m venv .venv
+    $venvPip = Join-Path $searxngDir ".venv\Scripts\pip.exe"
+    & $venvPip install -q -U pip setuptools wheel
+    & $venvPip install -q -U pyyaml msgspec typing-extensions pybind11
+    & $venvPip install -q --use-pep517 --no-build-isolation -e .
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+    Info "SearXNG installed at $searxngDir (own venv, no Docker)."
+  } catch {
+    Warn "Could not install SearXNG's dependencies: $($_.Exception.Message)"
+  } finally { Pop-Location }
+}
+
+function Start-Searxng {
+  if ($NoSearxng) { return }
+  Say "Starting SearXNG"
+  $venvPleiades = Join-Path $Dir ".venv\Scripts\pleiades.exe"
+  $venvPy = Join-Path $Dir ".venv\Scripts\python.exe"
   Push-Location $Dir
-  try { docker compose up -d searxng } catch { Warn "Could not start SearXNG." } finally { Pop-Location }
+  try {
+    if (Test-Path $venvPleiades) { & $venvPleiades search up }
+    else { & $venvPy -m pleiades.cli search up }
+    if ($LASTEXITCODE -ne 0) { throw "search up exited $LASTEXITCODE" }
+  } catch {
+    Warn "Could not start SearXNG: $($_.Exception.Message)"
+    Info "Later: pleiades search up"
+  } finally { Pop-Location }
 }
 
 # ---- run -------------------------------------------------------------------
@@ -279,7 +328,6 @@ Say "Pleiades installer  (Windows)"
 Ensure-Git
 $py = Ensure-Python
 Ensure-Node
-$dockerOk = Check-Docker
 # NOTE: deliberately NOT named $gpu — PowerShell variable names are case-
 # insensitive, so $gpu IS the [ValidateSet(...)]$Gpu parameter. Validation
 # attributes stay bound to the variable for the whole scope, so assigning
@@ -290,9 +338,10 @@ Clone-Repo
 Install-Pkg $py $gpuPlan
 Install-NativeRuntime $gpuPlan
 Install-Anamnesis
+Install-Searxng
 Fetch-Browser $py
 Make-Env
-Start-Searxng $dockerOk
+Start-Searxng
 
 Write-Host ""
 Say "Pleiades installed at $Dir  ($($gpuPlan.Desc))"
