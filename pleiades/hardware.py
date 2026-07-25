@@ -492,7 +492,15 @@ def read_gguf_meta(path: "str | Path") -> GGUFMeta:
     the planner falls back to size-based estimates.
     """
     p = Path(path)
-    meta = GGUFMeta(path=str(p), file_size=p.stat().st_size if p.is_file() else 0)
+    try:
+        size = p.stat().st_size if p.is_file() else 0
+    except OSError:
+        # e.g. WinError 448 crossing a symlink/junction under a different
+        # security context, or any other exotic "can't stat this" case --
+        # the docstring's "never raises" promise should cover this too, not
+        # just malformed-content parsing below.
+        size = 0
+    meta = GGUFMeta(path=str(p), file_size=size)
     try:
         with open(p, "rb") as f:
             if f.read(4) != _GGUF_MAGIC:
