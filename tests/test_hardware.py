@@ -204,6 +204,54 @@ def test_parse_win_amd_garbage_and_zero_vram():
     assert hardware._parse_win_amd('[{"vram":"NaNsense"}]') == []
 
 
+def test_parse_win_intel_array():
+    out = ('[{"name":"Intel Arc B580","vram":12884901888},'
+           '{"name":"Intel(R) Iris(R) Xe Graphics","vram":2147483648}]')
+    gpus = hardware._parse_win_intel(out)
+    assert [g.vendor for g in gpus] == ["intel", "intel"]
+    assert gpus[0].vram_total == 12884901888
+    assert gpus[0].vram_free == gpus[0].vram_total
+
+
+def test_parse_win_intel_garbage_and_zero_vram():
+    assert hardware._parse_win_intel("") == []
+    assert hardware._parse_win_intel("Oops! not json") == []
+    assert hardware._parse_win_intel('[{"name":"x","vram":0}]') == []
+
+
+def test_detect_intel_linux_sysfs(tmp_path, monkeypatch):
+    # Fake /sys/class/drm/card0/device/{vendor,mem_info_vram_total,label}
+    card = tmp_path / "card0" / "device"
+    card.mkdir(parents=True)
+    (card / "vendor").write_text("0x8086\n")
+    (card / "mem_info_vram_total").write_text(str(16 * GiB) + "\n")
+    (card / "mem_info_vram_used").write_text(str(2 * GiB) + "\n")
+    (card / "label").write_text("Intel Arc A770\n")
+    monkeypatch.setattr(hardware.Path, "glob", lambda self, pat: (
+        [card.parent] if str(self) == "/sys/class/drm" and pat == "card[0-9]*" else []))
+    gpus = hardware._detect_intel()
+    assert len(gpus) == 1
+    assert gpus[0].vendor == "intel"
+    assert gpus[0].name == "Intel Arc A770"
+    assert gpus[0].vram_total == 16 * GiB
+    assert gpus[0].vram_free == 14 * GiB
+
+
+def test_detect_intel_linux_unreadable_vram_still_registers_gpu(tmp_path, monkeypatch):
+    # No mem_info_vram_total/vram/total sysfs file at all (the real-world
+    # case on most i915/Xe kernels today) -- must still report the GPU
+    # (so backend selection sees it) with vram_total=0, not vanish entirely.
+    card = tmp_path / "card0" / "device"
+    card.mkdir(parents=True)
+    (card / "vendor").write_text("0x8086\n")
+    monkeypatch.setattr(hardware.Path, "glob", lambda self, pat: (
+        [card.parent] if str(self) == "/sys/class/drm" and pat == "card[0-9]*" else []))
+    gpus = hardware._detect_intel()
+    assert len(gpus) == 1
+    assert gpus[0].vendor == "intel"
+    assert gpus[0].vram_total == 0
+
+
 # --------------------------------------------------------------------------- #
 # mmproj sidecars must never be model candidates
 # --------------------------------------------------------------------------- #

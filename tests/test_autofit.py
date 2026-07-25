@@ -162,3 +162,59 @@ def test_pick_asset_falls_back_to_plain_build(monkeypatch):
     assets = [{"name": "llama-b1-bin-ubuntu-x64.zip"},
               {"name": "llama-b1-bin-win-cuda-x64.zip"}]
     assert pick_asset(assets)["name"] == "llama-b1-bin-ubuntu-x64.zip"
+
+
+def test_pick_asset_cpu_fallback_skips_openvino_and_opencl(monkeypatch):
+    # 2026-07-24 fix: the "no GPU -> plain CPU build" fallback excluded
+    # cuda/vulkan/hip/rocm/sycl/cann tokens but not openvino/opencl, so a
+    # CPU-only box could get handed an OpenVINO (or OpenCL) archive instead
+    # of the actual plain build, depending on asset list order.
+    import pleiades.runtime as rt
+    monkeypatch.setattr(rt, "_platform_tokens", lambda: (["ubuntu", "linux"], "x64"))
+    monkeypatch.setattr(rt, "_backend_priority", lambda: ["", "vulkan"])
+    assets = [{"name": "llama-b1-bin-ubuntu-openvino-x64.tar.gz"},
+              {"name": "llama-b1-bin-ubuntu-x64.zip"},
+              {"name": "llama-b1-bin-ubuntu-vulkan-x64.zip"}]
+    assert pick_asset(assets)["name"] == "llama-b1-bin-ubuntu-x64.zip"
+
+
+def test_backend_priority_prefers_vulkan_then_sycl_for_intel(monkeypatch):
+    import pleiades.runtime as rt
+    hw = Hardware(gpus=[GPU("intel", "Intel Arc A770", 16 * GiB, 16 * GiB)])
+    monkeypatch.setattr("pleiades.hardware.detect", lambda: hw)
+    assert rt._backend_priority() == ["vulkan", "sycl", ""]
+
+
+def test_pick_asset_prefers_vulkan_for_intel_gpu(monkeypatch):
+    import pleiades.runtime as rt
+    hw = Hardware(gpus=[GPU("intel", "Intel Arc A770", 16 * GiB, 16 * GiB)])
+    monkeypatch.setattr("pleiades.hardware.detect", lambda: hw)
+    monkeypatch.setattr(rt, "_platform_tokens", lambda: (["ubuntu", "linux"], "x64"))
+    assets = [{"name": "llama-b1-bin-ubuntu-x64.zip"},
+              {"name": "llama-b1-bin-ubuntu-vulkan-x64.zip"},
+              {"name": "llama-b1-bin-ubuntu-sycl-x64.zip"},
+              {"name": "llama-b1-bin-ubuntu-cuda-x64.zip"}]
+    assert pick_asset(assets)["name"] == "llama-b1-bin-ubuntu-vulkan-x64.zip"
+
+
+def test_pick_asset_cpu_fallback_skips_foreign_architectures(monkeypatch):
+    # Regression test for a real bug found 2026-07-24 by dry-running
+    # pick_asset against the ACTUAL live ggml-org/llama.cpp b10107 release:
+    # "llama-b10107-bin-ubuntu-s390x.tar.gz" has neither an "x64" nor
+    # "arm64" token, so the old (arch in n or ("x64" not in n and "arm64"
+    # not in n)) filter let it through as if it were a generic x64 build --
+    # once the openvino/opencl exclusion fix (above) stopped a CPU-only
+    # search from grabbing the openvino asset first, s390x was the very
+    # next wrong match in list order. This is the real asset list (trimmed
+    # to the relevant subset, names unchanged) that exposed it.
+    import pleiades.runtime as rt
+    monkeypatch.setattr(rt, "_platform_tokens", lambda: (["ubuntu", "linux"], "x64"))
+    monkeypatch.setattr(rt, "_backend_priority", lambda: ["", "vulkan"])
+    assets = [{"name": "llama-b10107-bin-ubuntu-arm64.tar.gz"},
+              {"name": "llama-b10107-bin-ubuntu-openvino-2026.2.1-x64.tar.gz"},
+              {"name": "llama-b10107-bin-ubuntu-rocm-7.2-x64.tar.gz"},
+              {"name": "llama-b10107-bin-ubuntu-s390x.tar.gz"},
+              {"name": "llama-b10107-bin-ubuntu-sycl-fp16-x64.tar.gz"},
+              {"name": "llama-b10107-bin-ubuntu-vulkan-x64.tar.gz"},
+              {"name": "llama-b10107-bin-ubuntu-x64.tar.gz"}]
+    assert pick_asset(assets)["name"] == "llama-b10107-bin-ubuntu-x64.tar.gz"

@@ -181,6 +181,96 @@ def _detect_amd() -> list[GPU]:
     return gpus
 
 
+# Intel discrete (Arc) and integrated (Xe/Iris/UHD) GPUs, sysfs vendor 0x8086.
+# UNLIKE AMD's amdgpu driver, Intel's i915/Xe drivers do not reliably expose
+# mem_info_vram_total under /sys/class/drm/cardN/device/ across generations
+# -- verified 2026-07-24 (no authoritative single sysfs path found; this is
+# genuinely driver/kernel-version-dependent, unlike the static AMD interface).
+# Rather than guess a byte count we can't stand behind, an Intel card whose
+# VRAM can't be read is still registered (vram_total=0) so it's no longer
+# invisible to backend/asset selection (_backend_priority in runtime.py) --
+# plan()/autofit.place() both already degrade a 0-VRAM GPU safely to a CPU
+# placement (budget goes negative, every GPU candidate is correctly rejected
+# as infeasible) rather than mis-sizing anything. Real per-generation VRAM
+# reading is a follow-up, not a blocker for "download the right backend".
+def _detect_intel() -> list[GPU]:
+    """Intel GPU presence via sysfs (works without any vendor SDK)."""
+    gpus = []
+    for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+        dev = card / "device"
+        try:
+            vendor = (dev / "vendor").read_text().strip()
+        except OSError:
+            continue
+        if vendor.lower() != "0x8086":  # Intel
+            continue
+        total = used = 0
+        for total_name, used_name in (("mem_info_vram_total", "mem_info_vram_used"),
+                                      ("vram/total", "vram/used")):  # best-effort; see note above
+            try:
+                total = int((dev / total_name).read_text().strip())
+                used_path = dev / used_name
+                used = int(used_path.read_text().strip()) if used_path.is_file() else 0
+                break
+            except (OSError, ValueError):
+                continue
+        name = "Intel GPU"
+        try:
+            name = (dev / "label").read_text().strip() or name
+        except OSError:
+            pass
+        gpus.append(GPU("intel", name, total, max(total - used, 0)))
+    return gpus
+
+
+_WIN_INTEL_PS = (
+    # Same registry approach as _WIN_AMD_PS (see its comment) -- the class
+    # key and qwMemorySize field are the generic Windows display-adapter
+    # interface, not AMD-specific; only the DriverDesc match differs.
+    "$live=@(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue"
+    " | ForEach-Object Name);"
+    "$k='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\"
+    "{4d36e968-e325-11ce-bfc1-08002be10318}';"
+    "$out=@(Get-ChildItem $k -ErrorAction SilentlyContinue | ForEach-Object {"
+    "$p=Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue;"
+    "if(($p.DriverDesc -match 'Intel') -and ($live -contains $p.DriverDesc)"
+    " -and $p.'HardwareInformation.qwMemorySize'){"
+    "$v=$p.'HardwareInformation.qwMemorySize';"
+    "if($v -is [byte[]]){$v=[System.BitConverter]::ToInt64($v,0)};"
+    "[pscustomobject]@{name=$p.DriverDesc;vram=[int64]$v}}});"
+    "ConvertTo-Json -InputObject $out -Compress"
+)
+
+
+def _parse_win_intel(out: str) -> list[GPU]:
+    """Parse _WIN_INTEL_PS JSON into GPUs (mirrors _parse_win_amd)."""
+    try:
+        rows = json.loads(out or "[]")
+    except ValueError:
+        return []
+    if isinstance(rows, dict):
+        rows = [rows]
+    gpus, seen = [], set()
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            total = int(r.get("vram") or 0)
+        except (TypeError, ValueError):
+            continue
+        name = str(r.get("name") or "Intel GPU")
+        if total > 0 and (name, total) not in seen:
+            seen.add((name, total))
+            gpus.append(GPU("intel", name, total, total))
+    return gpus
+
+
+def _detect_intel_windows() -> list[GPU]:
+    """Intel on Windows: registry via PowerShell (mirrors _detect_amd_windows)."""
+    out = _run(["powershell", "-NoProfile", "-Command", _WIN_INTEL_PS], timeout=15.0)
+    return _parse_win_intel(out)
+
+
 def _ram() -> tuple[int, int]:
     """(total, available) bytes, cross-platform, stdlib only."""
     if sys.platform == "linux":
@@ -236,10 +326,16 @@ def detect() -> Hardware:
     hw.gpus = _detect_nvidia()
     if sys.platform == "linux":
         hw.gpus += _detect_amd()
+        if not hw.gpus:
+            hw.gpus += _detect_intel()
     elif os.name == "nt" and not hw.gpus:
         # nvidia-smi found nothing — check for AMD (Radeon offloads via the
-        # native Vulkan llama-server runtime; see install.ps1 / autofit).
+        # native Vulkan llama-server runtime; see install.ps1 / autofit),
+        # then Intel (Arc/Xe/Iris — also served via Vulkan; see runtime.py's
+        # _backend_priority).
         hw.gpus += _detect_amd_windows()
+        if not hw.gpus:
+            hw.gpus += _detect_intel_windows()
     return hw
 
 

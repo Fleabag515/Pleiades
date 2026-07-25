@@ -180,9 +180,26 @@ def _backend_priority() -> list[str]:
         return ["cuda", "vulkan", ""]
     if gpu and gpu.vendor == "amd":
         return ["vulkan", "hip", "rocm", ""]
+    if gpu and gpu.vendor == "intel":
+        # Vulkan needs only the normal graphics driver (broadly available,
+        # incl. older Arc/iGPU generations); SYCL/oneAPI can be faster on
+        # recent Arc/Battlemage but needs the heavier oneAPI runtime
+        # installed, so it's the upgrade path, not the default.
+        return ["vulkan", "sycl", ""]
     if gpu and gpu.vendor == "apple":
         return [""]  # macos builds ship Metal by default
     return ["", "vulkan"]
+
+
+# Real llama.cpp CI matrix names outside our two supported arches (verified
+# 2026-07-24 against the live ggml-org/llama.cpp release assets, which
+# included "llama-*-bin-ubuntu-s390x.tar.gz" -- with neither an "x64" nor
+# "arm64" token, it was slipping through the fallback branch below as if it
+# were a generic/archless x64 build). Exclude explicitly rather than only
+# positively matching "x64"/"arm64", since the fallback branch exists for
+# genuinely archless names (there are none right now, but the previous,
+# narrower version of this filter assumed there always would be).
+_FOREIGN_ARCH_TOKENS = ("s390x", "ppc64le", "ppc64", "riscv64", "mips64", "sparc64")
 
 
 def pick_asset(assets: list[dict]) -> Optional[dict]:
@@ -194,14 +211,17 @@ def pick_asset(assets: list[dict]) -> Optional[dict]:
              and "xcframework" not in a.get("name", "").lower()
              and "-ui." not in a.get("name", "").lower()]
     plat = [(a, n) for a, n in names
-            if any(t in n for t in os_tokens) and (arch in n or "x64" not in n and "arm64" not in n)]
+            if any(t in n for t in os_tokens)
+            and (arch in n or ("x64" not in n and "arm64" not in n
+                                and not any(f in n for f in _FOREIGN_ARCH_TOKENS)))]
     if not plat:
         return None
     for backend in _backend_priority():
         for a, n in plat:
             if backend and backend in n:
                 return a
-            if not backend and not any(b in n for b in ("cuda", "vulkan", "hip", "rocm", "sycl", "cann")):
+            if not backend and not any(b in n for b in
+                    ("cuda", "vulkan", "hip", "rocm", "sycl", "cann", "openvino", "opencl")):
                 return a
     return plat[0][0]
 
