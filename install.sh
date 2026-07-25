@@ -27,6 +27,7 @@ WITH_BROWSER=1
 WITH_SEARXNG=1
 WITH_DISCORD=1
 WITH_NATIVE_RUNTIME=1
+WITH_DESKTOP_APP=1
 
 # ---- pretty output ---------------------------------------------------------
 if [ -t 1 ]; then B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'; else B=""; G=""; Y=""; R=""; N=""; fi
