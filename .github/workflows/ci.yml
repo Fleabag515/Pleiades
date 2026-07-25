@@ -23,7 +23,7 @@ jobs:
       # --no-deps so `import pleiades` resolves without building llama-cpp-python.
       - name: Install test dependencies
         run: |
-          pip install pytest ruff click rich httpx openai cryptography platformdirs fastapi uvicorn
+          pip install pytest ruff click rich httpx openai cryptography platformdirs fastapi uvicorn pyyaml python-multipart psutil
           pip install -e . --no-deps
       - name: Lint
         run: ruff check .

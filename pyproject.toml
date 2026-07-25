@@ -16,6 +16,7 @@ dependencies = [
     "cryptography>=42.0",             # vault encryption (Fernet)
     "platformdirs>=4.2",              # cross-platform config paths
     "psutil>=5.9",                    # harness/sandbox.py: cross-platform memory watchdog for run_shell/run_python
+    "PyYAML>=6.0",                    # searxng_runtime.py reads/writes services/searxng/settings.yml
 ]
 
 [project.optional-dependencies]
