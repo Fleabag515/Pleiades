@@ -235,12 +235,11 @@ install_anamnesis() {
     warn "Could not install Anamnesis's dependencies; run 'npm install --omit=dev' inside $anamnesis_dir yourself."
     return
   }
-  # NOTE: this does not yet start or supervise the daemon -- Pleiades-owned
-  # supervision (replacing the old hand-set-up systemd unit) is a separate,
-  # larger follow-up (phase 1 of the plan doc above). For now, run it
-  # manually: `node "$anamnesis_dir/src/daemon.js"`, or set up your own
-  # service pointed at that path.
-  info "Anamnesis's deps are installed at $anamnesis_dir. Automatic startup/supervision is coming in a follow-up update; for now, run it with: node \"$anamnesis_dir/src/daemon.js\""
+  # Pleiades-owned supervision (replacing the old hand-set-up systemd unit)
+  # shipped in phase 1 of the plan doc above: `pleiades anamnesis start` runs
+  # it, and the webui/desktop backend also starts it automatically on its
+  # own first boot -- nothing further to set up by hand here.
+  info "Anamnesis's deps are installed at $anamnesis_dir. It starts on its own the first time you run 'pleiades ui' / the desktop app, or start it directly: pleiades anamnesis start"
 }
 
 fetch_browser() {
@@ -337,7 +336,8 @@ finish() {
 
   Everything is built. Next step — just use it:
 
-    pleiades ui                   # open the control panel in your browser
+    Launch "Pleiades" from your application menu (desktop app), or:
+    pleiades ui                   # open the same control panel in your browser
 
   Or from the terminal:
     pleiades model fetch bartowski/Llama-3.2-3B-Instruct-GGUF   # best quant for THIS machine

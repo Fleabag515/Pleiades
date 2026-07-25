@@ -1,7 +1,10 @@
 # Pleiades — Quickstart
 
-Pleiades is a **command-line tool**, not a GUI app. After install you get a
-`pleiades` command. Everything below assumes you've activated the project's venv:
+This is the **CLI** path. There's also a desktop app (see the main
+[README](README.md#desktop-app)) that covers characters/models/chat visually --
+this doc is for the `pleiades` command underneath it, useful whether or not you're
+running the desktop app too. Everything below assumes you've activated the
+project's venv:
 
 ```bash
 cd ~/Pleiades
