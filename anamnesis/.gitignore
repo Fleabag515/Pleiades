@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+
+# runtime data
+*.db
+*.db-shm
+*.db-wal
+
+# env / secrets
+.env
+.env.*
+
+# logs & coverage
+*.log
+npm-debug.log*
+coverage/
+.nyc_output/
+
+# build output / temp
+dist/
+build/
+.cache/
+.tmp/
+
+# editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+config.json
+docs/superpowers/plans/

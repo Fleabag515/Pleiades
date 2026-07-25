@@ -1,0 +1,123 @@
+{
+  "_comment": "Anamnesis \u2014 self-organizing memory proxy. Works with any OpenAI-compatible backend.",
+  "proxy": {
+    "port": 8084,
+    "host": "127.0.0.1"
+  },
+  "upstream": {
+    "baseUrl": "http://127.0.0.1:8082",
+    "apiKey": "localqwen",
+    "_presets": {
+      "_note": "Swap baseUrl + apiKey for your backend:",
+      "llama-server": {
+        "baseUrl": "http://127.0.0.1:8083",
+        "apiKey": "localqwen"
+      },
+      "ollama": {
+        "baseUrl": "http://127.0.0.1:11434/v1",
+        "apiKey": "ollama"
+      },
+      "lm-studio": {
+        "baseUrl": "http://127.0.0.1:1234/v1",
+        "apiKey": "lm-studio"
+      },
+      "koboldcpp": {
+        "baseUrl": "http://127.0.0.1:5001/v1",
+        "apiKey": "koboldcpp"
+      },
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "sk-..."
+      },
+      "custom-passthrough": {
+        "_note": "Empty apiKey lets the client's own Authorization header pass through to upstream unchanged.",
+        "baseUrl": "http://127.0.0.1:8080/v1",
+        "apiKey": ""
+      }
+    },
+    "disableThinking": true,
+    "_disableThinkingNote": "Injects chat_template_kwargs:{enable_thinking:false} \u2014 prevents Qwen3 thinking tokens from eating context/time"
+  },
+  "embedding": {
+    "ollamaUrl": "http://127.0.0.1:11434",
+    "model": "nomic-embed-cpu:latest"
+  },
+  "extraction": {
+    "model": "qwen3:0.6b",
+    "_modelGuide": {
+      "gemma3:1b": "0.8GB \u2014 fastest, good enough for simple fact extraction",
+      "gemma4:e2b": "7.2GB \u2014 better quality, slower cold start",
+      "qwen2.5:0.5b": "0.4GB \u2014 smallest, use if VRAM is tight",
+      "gemma3:4b": "2.5GB \u2014 balanced quality/speed",
+      "qwen3:0.6b": "0.5GB \u2014 fast, clean JSON via /api/chat think:false, ~140 t/s"
+    },
+    "maxRetries": 2,
+    "timeoutMs": 45000,
+    "startupBacklogLimit": 200
+  },
+  "context": {
+    "tokenBudget": 50000,
+    "systemReserveTokens": 4096,
+    "recencyTurns": 8,
+    "rotatingSlots": 6,
+    "charsPerToken": 3.5,
+    "minChunkChars": 50
+  },
+  "memory": {
+    "consolidationIntervalMs": 120000,
+    "consolidationBatchSize": 50,
+    "sceneClusterThreshold": 0.72,
+    "minSceneSize": 2,
+    "decayPruneThreshold": 0.05
+  },
+  "history": {
+    "dbPath": "~/.anamnesis/history.db",
+    "maxAgeDays": 90
+  },
+  "foresight": {
+    "model": "qwen3:0.6b",
+    "maxRetries": 2,
+    "timeoutMs": 45000,
+    "startupBacklogLimit": 200,
+    "_note": "Future-intention extractor. Runs in parallel with memcell extraction."
+  },
+  "persona": {
+    "enabled": true,
+    "_note": "Character profile management \u2014 auto-detects OpenClaw SOUL.md, or use file/inline for other setups.",
+    "source": {
+      "type": "auto",
+      "_typeNote": "auto | openclaw | file | inline. 'auto' tries openclaw paths, then file, then inline.",
+      "openclaw": {
+        "soulPath": "~/.openclaw/Mark/SOUL.md",
+        "_note": "Path to SOUL.md. Used in 'openclaw' mode and as the first candidate in 'auto' mode."
+      },
+      "file": {
+        "path": "~/.anamnesis/character.md",
+        "_note": "Custom character definition file for non-OpenClaw setups."
+      },
+      "inline": {
+        "content": "",
+        "_note": "Paste character definition directly here if not using a file."
+      }
+    },
+    "model": "qwen3:0.6b",
+    "timeoutMs": 45000,
+    "drift": {
+      "enabled": true,
+      "checkEveryNTurns": 4,
+      "_checkNote": "Run a drift check every N assistant turns per session.",
+      "driftThreshold": 0.55,
+      "_thresholdNote": "Consistency score below this triggers a drift reminder. 0=always remind, 1=never."
+    },
+    "evolution": {
+      "enabled": true,
+      "consolidateAfterNObservations": 8,
+      "_consolidateNote": "After this many pending growth observations, run LLM consolidation.",
+      "maxEvolutionChars": 600
+    },
+    "injection": {
+      "maxProfileChars": 700,
+      "_note": "Max characters for the <character> block (not counting evolution/drift lines)."
+    }
+  }
+}

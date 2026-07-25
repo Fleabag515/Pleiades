@@ -1,0 +1,56 @@
+{
+  "name": "anamnesis",
+  "version": "0.6.0",
+  "description": "Anamnesis — self-organizing memory proxy for LLM agents. MemCell extraction, MemScene consolidation, scene-guided context retrieval, foresight extraction.",
+  "main": "src/proxy.js",
+  "bin": {
+    "anamnesis": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/proxy.js",
+    "dev": "node --watch src/proxy.js",
+    "test": "node --test test/*.test.js test/importers/*.test.js test/lib/*.test.js",
+    "test:watch": "node --test --watch test/*.test.js test/importers/*.test.js test/lib/*.test.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"src/**/*.js\" \"test/**/*.js\" \"*.{json,md}\"",
+    "format:check": "prettier --check \"src/**/*.js\" \"test/**/*.js\" \"*.{json,md}\""
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "better-sqlite3": "^9.6.0",
+    "node-llama-cpp": "^3.18.1",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "eslint": "^9.13.0",
+    "globals": "^15.11.0",
+    "prettier": "^3.3.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fleabag515/anamnesis.git"
+  },
+  "homepage": "https://github.com/Fleabag515/anamnesis#readme",
+  "bugs": {
+    "url": "https://github.com/Fleabag515/anamnesis/issues"
+  },
+  "keywords": [
+    "llm",
+    "memory",
+    "proxy",
+    "sqlite",
+    "ollama",
+    "evermemos",
+    "openai-compatible",
+    "context",
+    "agents"
+  ],
+  "optionalDependencies": {
+    "node-windows": "^1.0.0-beta.8"
+  }
+}
