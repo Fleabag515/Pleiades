@@ -54,3 +54,4 @@ third_party/llama.cpp/build-sw/
 # see pleiades/searxng_runtime.py's module docstring and install.sh's
 # install_searxng()). Own venv lives inside it too.
 searxng-src/
+HANDOFF.md
