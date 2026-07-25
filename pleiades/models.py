@@ -238,11 +238,23 @@ class ModelManager:
         return reg
 
     def _prune_missing(self, reg: dict) -> bool:
-        """Drop registry entries whose GGUF no longer exists on disk."""
+        """Drop registry entries whose GGUF no longer exists on disk.
+
+        path.is_file() can raise OSError for reasons that aren't "the file
+        is gone" -- e.g. WinError 448 ("untrusted mount point"), seen live
+        crossing a symlink/junction under a different security context on
+        Windows. Treat "can't confirm" as "leave it registered" rather than
+        letting one unreachable path's exotic filesystem error crash the
+        whole models list (and therefore /api/hardware) for every model.
+        """
         changed = False
         for name in list(reg.keys()):
             path = Path(reg[name].get("path", "")).expanduser()
-            if not path.is_file():
+            try:
+                exists = path.is_file()
+            except OSError:
+                exists = True
+            if not exists:
                 del reg[name]
                 changed = True
         return changed
