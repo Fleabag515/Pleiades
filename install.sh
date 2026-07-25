@@ -350,14 +350,29 @@ install_desktop_app() {
   [ "$WITH_DESKTOP_APP" = "1" ] || return 0
   [ "$PLATFORM" = "linux" ] || { info "Desktop app auto-install is Linux-only for now; see desktop/README for macOS/Windows."; return 0; }
   have npm || { warn "Skipping desktop app (no npm) — build it later: cd desktop && npm install && npm run dist:linux"; return 0; }
+  have rsync || { warn "Skipping desktop app (no rsync, needed by anamnesis/build-native/build.sh) — build it later: see desktop/README."; return 0; }
+  [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] \
+    || { info "Desktop app auto-install needs Linux x86_64 (anamnesis/build-native has no build for this platform yet); see desktop/README."; return 0; }
+
+  # Build+bail fast on a missing prerequisite instead of discovering it only
+  # after minutes of `npm install`/`electron-vite build` work: this is the
+  # exact same pruned-native-Anamnesis payload afterPack.cjs refuses to ship
+  # without (desktop/build-resources/afterPack.cjs), but the installer never
+  # actually produced it before, so it only "worked" on machines that already
+  # had a manual anamnesis/build-native/build.sh run sitting around.
+  say "Building Anamnesis's pruned native payload for the desktop app"
+  "$INSTALL_DIR/anamnesis/build-native/fetch-node.sh" \
+    && "$INSTALL_DIR/anamnesis/build-native/build.sh" \
+    || { warn "Anamnesis native build failed — skipping the desktop app. Build it later: see desktop/README."; return 0; }
 
   say "Building the desktop app (Electron + bundled backend)"
   (
     set -e
     VENV_PY="$INSTALL_DIR/.venv/bin/python3.12"
     [ -x "$VENV_PY" ] || VENV_PY="$INSTALL_DIR/.venv/bin/python3"
+    [ -x "$VENV_PY" ] || VENV_PY="$PYBIN"
     "$VENV_PY" -m pip show pyinstaller >/dev/null 2>&1 || "$VENV_PY" -m pip install pyinstaller
-    "$INSTALL_DIR/desktop/backend-build/build.sh"
+    PLEIADES_BACKEND_PY="$VENV_PY" "$INSTALL_DIR/desktop/backend-build/build.sh"
     cd "$INSTALL_DIR/desktop"
     npm install
     npm run dist:linux
