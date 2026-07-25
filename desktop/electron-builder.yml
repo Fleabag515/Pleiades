@@ -27,14 +27,26 @@ extraResources:
   # spawnBackend()) finds it in packaged builds. TODO(windows/mac): build.sh
   # is Linux x64-only today; this entry needs a per-platform equivalent
   # before those targets can bundle Anamnesis at all.
-  - from: ../anamnesis/build-native/dist/anamnesis
-    to: anamnesis
+  # The Anamnesis payload itself (source + pruned node_modules) is NOT
+  # listed here as a plain extraResources entry -- electron-builder's file-
+  # matching engine detects the package.json at its root and applies its own
+  # "production dependency" node_modules resolution instead of a raw copy,
+  # which silently drops the whole (foreign, already-pruned) node_modules/
+  # tree (verified directly, including with an explicit `filter: ['**/*']`
+  # override, which did not fix it -- see build-resources/afterPack.cjs's
+  # own comment for the full story and matching electron-builder issues).
+  # build-resources/afterPack.cjs copies it in with a plain fs operation
+  # instead, after electron-builder finishes packaging everything else.
+  #
   # Pinned Node runtime (see anamnesis/build-native/fetch-node.sh) so the
-  # bundled Anamnesis daemon above doesn't depend on a system-installed
-  # `node`. Sibling of the anamnesis/ entry above -- see
+  # Anamnesis daemon above doesn't depend on a system-installed `node`. This
+  # one has no package.json of its own (just a single `node` binary) so it
+  # isn't affected by the above and copies fine as ordinary extraResources.
+  # Sibling of the anamnesis/ dir afterPack.cjs produces -- see
   # anamnesis_runtime.py's _node_bin() for the sibling-path resolution.
   - from: ../anamnesis/build-native/dist/node-runtime/linux-x64
     to: anamnesis-node-runtime
+afterPack: build-resources/afterPack.cjs
 win:
   executableName: pleiades-desktop
   # Explicit rather than relying on electron-builder's implicit per-platform
