@@ -53,11 +53,13 @@ Feature list (owner's verbatim intent):
 
 ## 2. The hard architectural fact: Anamnesis
 
-Anamnesis (https://github.com/Fleabag515/anamnesis) is a self-organizing memory proxy.
-It sits between an OpenAI-compatible client and an OpenAI-compatible backend and gives
-the model persistent, intelligently-retrieved memory. **Pleiades must not reimplement
-memory, context management, or character identity — Anamnesis owns all of that.**
-Pleiades is the agent runtime, the tool layer, and (now) the inference server underneath.
+Anamnesis (vendored in this repo at `anamnesis/`; originally developed at
+`Fleabag515/anamnesis`, archived 2026-07-25 now that it lives here) is a self-organizing
+memory proxy. It sits between an OpenAI-compatible client and an OpenAI-compatible
+backend and gives the model persistent, intelligently-retrieved memory. **Pleiades must
+not reimplement memory, context management, or character identity — Anamnesis owns all
+of that.** Pleiades is the agent runtime, the tool layer, and (now) the inference server
+underneath.
 
 ### How Anamnesis works (the parts Pleiades depends on)
 
@@ -288,5 +290,6 @@ Discord bot); GitHub (`gh repo create` — repo doesn't exist yet).
 
 ---
 
-*Owner: Fleabag515. Upstream memory: github.com/Fleabag515/anamnesis. If you deviate from
-this brief, note why in the commit and update this file.*
+*Owner: Fleabag515. Anamnesis lives in this repo at `anamnesis/` (no separate upstream
+since 2026-07-25 -- see docs/specs/2026-07-25-anamnesis-vendoring-and-installer-plan.md).
+If you deviate from this brief, note why in the commit and update this file.*

@@ -6,25 +6,22 @@ A self-organizing memory proxy for LLM agents. Anamnesis sits between any OpenAI
 
 ## Install
 
-**Linux / macOS:**
+**This copy is vendored inside [Pleiades](https://github.com/Fleabag515/Pleiades)
+and is not meant to be installed standalone.** The original fork this was
+split from (`Fleabag515/anamnesis`) is archived as of 2026-07-25 -- its
+`install.sh`/`install.ps1`/`npm install -g anamnesis` no longer apply. To
+get this running, install Pleiades instead:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Fleabag515/anamnesis/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.sh | bash
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-irm https://raw.githubusercontent.com/Fleabag515/anamnesis/main/install.ps1 | iex
-```
-
-**npm (any platform):**
-
-```bash
-npm install -g anamnesis
-```
-
-> If `anamnesis` isn't found after install, open a new terminal or add `~/.local/bin` to your PATH.
+Pleiades installs this directory's dependencies automatically and
+supervises the daemon itself (`pleiades anamnesis start|stop|status`) --
+see `pleiades/anamnesis_runtime.py` in the Pleiades repo. The CLI reference
+below (`anamnesis new`, `anamnesis start <name>`, etc.) still describes
+this project's own commands accurately; only the top-level install step
+has changed.
 
 ## Quick Start
 
