@@ -8,6 +8,8 @@ in the Discord Developer Portal.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import os
 import re
 import subprocess
@@ -17,6 +19,50 @@ from typing import Optional
 
 from ..engine import Engine
 from ..profiles import Profile
+
+# Concurrent asyncio.to_thread(engine.run, ...) calls this one bot process
+# will run at once, across all authors. discord.py dispatches on_message
+# coroutines concurrently with no cap of its own, so N inbound messages
+# would otherwise mean N simultaneous multi-round (up to max_rounds) agent
+# loops piled onto the shared model server. Override per deployment via env;
+# the default is deliberately small -- this is local inference, not a
+# horizontally-scaled API.
+_MAX_CONCURRENT = int(os.environ.get("PLEIADES_DISCORD_MAX_CONCURRENT", "3"))
+
+
+def _floor_exec_policy_for_discord(profile: Profile) -> Profile:
+    """Blanket exec_policy="allow" is a real, documented per-character
+    convenience setting for local use (`pleiades work`), but inherited as-is
+    here it would let anyone who can DM or mention this bot trigger
+    unattended run_shell/run_python/file access. Floor it to "ask" for
+    Discord specifically -- "ask" already denies cleanly in this
+    non-interactive context (no TTY for the console approval prompt), so
+    this is a safe default rather than a broken one. Returns a COPY; never
+    mutates the shared profile object other surfaces (webui/CLI) still read
+    with the character's real, configured policy."""
+    if profile.exec_policy == "allow":
+        return dataclasses.replace(profile, exec_policy="ask")
+    return profile
+
+
+class _InFlightGate:
+    """Tracks which Discord authors currently have a reply in progress, so a
+    burst of messages from one author can't fan out into concurrent agent
+    loops (discord.py dispatches on_message with no concurrency cap of its
+    own). Not a queue -- a message from an author already in flight is
+    dropped, not deferred, so replies never arrive out of order."""
+
+    def __init__(self) -> None:
+        self._ids: set = set()
+
+    def try_enter(self, author_id) -> bool:
+        if author_id in self._ids:
+            return False
+        self._ids.add(author_id)
+        return True
+
+    def leave(self, author_id) -> None:
+        self._ids.discard(author_id)
 
 
 def _safe_service_name(name: str) -> str:
@@ -163,6 +209,9 @@ def run_discord_bot(name: str, *, engine: Optional[Engine] = None) -> None:
     intents.message_content = True
     client = discord.Client(intents=intents)
 
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+    in_flight = _InFlightGate()
+
     @client.event
     async def on_ready():
         # flush=True: under systemd, stdout is a pipe (block-buffered), so this
@@ -201,14 +250,22 @@ def run_discord_bot(name: str, *, engine: Optional[Engine] = None) -> None:
         if not content:
             return
 
-        async with message.channel.typing():
-            # engine.run is blocking; run it off the event loop.
-            import asyncio
+        # A burst from one author (or, via exec_policy, an unattended tool
+        # run) must not fan out into concurrent agent loops -- see
+        # _InFlightGate and _floor_exec_policy_for_discord above.
+        author_id = message.author.id
+        if not in_flight.try_enter(author_id):
+            return
+        try:
+            run_profile = _floor_exec_policy_for_discord(profile)
+            async with semaphore, message.channel.typing():
+                # engine.run is blocking; run it off the event loop.
+                reply = await asyncio.to_thread(engine.run, run_profile, content)
 
-            reply = await asyncio.to_thread(engine.run, profile, content)
-
-        for chunk in _split(reply or "(no response)"):
-            await message.channel.send(chunk)
+            for chunk in _split(reply or "(no response)"):
+                await message.channel.send(chunk)
+        finally:
+            in_flight.leave(author_id)
 
     client.run(token)
 
