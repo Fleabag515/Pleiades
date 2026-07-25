@@ -200,3 +200,133 @@ def test_is_vision_capable_helper():
     assert is_vision_capable({"mmproj": "/x/mmproj-a.gguf"}) is True
     assert is_vision_capable({"mmproj": "", "capabilities": "vision"}) is True
     assert is_vision_capable({"mmproj": "", "capabilities": "chat"}) is False
+
+
+# --------------------------------------------------------------------------- #
+# slot save/restore (2026-07-24): turn a cold restart's full persona/memory
+# reprocess into a fast state load, via llama-server's --slot-save-path +
+# POST /slots/0?action=save|restore. Both helpers are deliberately best-
+# effort/never-raise -- these tests cover that as much as the happy path.
+# --------------------------------------------------------------------------- #
+class _FakeResponse:
+    def __init__(self, status_code=200):
+        self.status_code = status_code
+
+
+def test_slot_save_returns_false_when_nothing_is_listening():
+    from pleiades.models import _slot_save
+    # An arbitrary local port nothing is bound to -- connection refused.
+    assert _slot_save("127.0.0.1", 1, timeout=1.0) is False
+
+
+def test_slot_restore_skips_http_entirely_when_no_save_file_exists(monkeypatch):
+    import pleiades.models as models_mod
+    calls = []
+    monkeypatch.setattr(models_mod.httpx, "post", lambda *a, **kw: calls.append((a, kw)) or _FakeResponse())
+    assert models_mod._slot_restore("127.0.0.1", 12345, "no-such-model-xyz") is False
+    assert calls == []  # never even tried -- file-existence check short-circuits
+
+
+def test_slot_restore_posts_correct_request_when_save_file_exists(monkeypatch, tmp_path):
+    import pleiades.models as models_mod
+    save_dir = config.PLEIADES_HOME / "slots" / "sometest"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / "latest.bin").write_bytes(b"fake-state")
+    calls = []
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        calls.append((url, params, json))
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(models_mod.httpx, "post", fake_post)
+    assert models_mod._slot_restore("127.0.0.1", 12345, "sometest") is True
+    assert len(calls) == 1
+    url, params, body = calls[0]
+    assert url == "http://127.0.0.1:12345/slots/0"
+    assert params == {"action": "restore"}
+    assert body == {"filename": "latest.bin"}
+
+
+def test_slot_save_returns_false_on_non_200(monkeypatch):
+    import pleiades.models as models_mod
+    monkeypatch.setattr(models_mod.httpx, "post", lambda *a, **kw: _FakeResponse(501))
+    assert models_mod._slot_save("127.0.0.1", 12345) is False
+
+
+def test_stop_calls_slot_save_before_sending_the_kill_signal(monkeypatch):
+    import pleiades.models as models_mod
+    mm = ModelManager()
+    mm._save_running({"savetest": {"pid": 999999, "host": "127.0.0.1", "port": 55001}})
+    calls = []
+    monkeypatch.setattr(models_mod, "_slot_save", lambda host, port: calls.append((host, port)))
+    monkeypatch.setattr(models_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(models_mod, "_pid_on_port", lambda host, port: None)
+    monkeypatch.setattr(models_mod.os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(models_mod.os, "getpgid", lambda pid: pid)
+    assert mm.stop("savetest") is True
+    assert calls == [("127.0.0.1", 55001)]
+
+
+def test_start_calls_slot_restore_after_wait_ready(tmp_path, monkeypatch):
+    import pleiades.models as models_mod
+
+    g = tmp_path / "r.gguf"
+    g.write_bytes(b"x")
+    mm = ModelManager()
+    mm.add("restoretest", str(g))
+
+    class FakeProc:
+        pid = 4243
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kw):
+        if "--port" not in cmd:
+            raise OSError("blocked in test")
+        return FakeProc()
+
+    calls = []
+    monkeypatch.setattr(models_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mm, "_wait_ready", lambda name, proc, timeout: None)
+    monkeypatch.setattr(models_mod, "_slot_restore",
+                        lambda host, port, name: calls.append((host, port, name)))
+    try:
+        mm.start("restoretest", wait=True)
+        assert len(calls) == 1
+        assert calls[0][2] == "restoretest"
+    finally:
+        run = mm._load_running()
+        run.pop("restoretest", None)
+        mm._save_running(run)
+        mm.remove("restoretest")
+
+
+def test_start_does_not_call_slot_restore_when_wait_is_false(tmp_path, monkeypatch):
+    import pleiades.models as models_mod
+
+    g = tmp_path / "r2.gguf"
+    g.write_bytes(b"x")
+    mm = ModelManager()
+    mm.add("norestoretest", str(g))
+
+    class FakeProc:
+        pid = 4244
+
+    def fake_popen(cmd, **kw):
+        if "--port" not in cmd:
+            raise OSError("blocked in test")
+        return FakeProc()
+
+    calls = []
+    monkeypatch.setattr(models_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(models_mod, "_slot_restore",
+                        lambda host, port, name: calls.append((host, port, name)))
+    try:
+        mm.start("norestoretest", wait=False)
+        assert calls == []
+    finally:
+        run = mm._load_running()
+        run.pop("norestoretest", None)
+        mm._save_running(run)
+        mm.remove("norestoretest")

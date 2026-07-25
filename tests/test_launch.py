@@ -124,3 +124,16 @@ def test_native_command_decode_threads_never_below_two(tmp_path, monkeypatch):
     tb = int(plan.cmd[plan.cmd.index("-tb") + 1])
     assert tb == 4  # existing floor
     assert t == 2   # new floor
+
+
+def test_native_command_includes_slot_save_path(tmp_path, monkeypatch):
+    _force_native(monkeypatch)
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="slottest",
+                                settings=Settings())
+    assert "--slot-save-path" in plan.cmd
+    idx = plan.cmd.index("--slot-save-path")
+    slot_path = plan.cmd[idx + 1]
+    assert "slottest" in slot_path
+    assert slot_path.endswith(os.sep)  # required: server does raw string concat, not path join
+    assert os.path.isdir(slot_path.rstrip(os.sep))

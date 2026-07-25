@@ -26,7 +26,9 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
-from . import runtime
+from pathlib import Path
+
+from . import config, runtime
 from .autofit import RuntimeCaps, place
 from .config import Settings
 from .hardware import read_gguf_meta, resolve_context
@@ -143,12 +145,25 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
         launch_ctx = n_ctx_max
         ngl = forced if forced is not None else (999 if pl.n_gpu_layers == -1
                                                   else pl.n_gpu_layers)
+        # Persists full sequence state (KV + any recurrent/SSM state — the
+        # same llama_state_seq_get/set_data primitives already verified this
+        # session to handle hybrid/recurrent models correctly, just with
+        # flags=0/"full" instead of the context-checkpoint mechanism's
+        # PARTIAL_ONLY) to disk on demand via POST /slots/0?action=save|
+        # restore. Directory only, not a flag toggle — costs nothing when
+        # unused (ModelManager only calls save/restore around stop/start,
+        # see models.py), and having it always available means a save file
+        # from a previous run is picked up even if slot support was added
+        # after that model was first registered.
+        slot_dir = config.PLEIADES_HOME / "slots" / name
+        slot_dir.mkdir(parents=True, exist_ok=True)
         cmd = [native, "-m", model_path,
                "--host", host, "--port", str(port),
                "-c", str(launch_ctx), "-ngl", str(ngl),
                "-t", str(decode_threads), "-tb", str(threads),
                "--alias", name,
                "--jinja",
+               "--slot-save-path", str(slot_dir) + os.sep,
                # One character = one conversation at a time through its Anamnesis
                # proxy. llama-server's "auto" default spins up 4 parallel slots,
                # each with its own compute-buffer VRAM allocation — wasted memory

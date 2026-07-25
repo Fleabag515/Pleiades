@@ -143,6 +143,48 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return False
 
 
+# Fixed filename: one slot (--parallel 1, see launch.py), one save per model
+# -- "the most recent state," not a history of snapshots. See launch.py's
+# --slot-save-path comment for why this is always wired (cheap when unused)
+# and models.py's stop()/start() for when these actually get called.
+_SLOT_FILENAME = "latest.bin"
+
+
+def _slot_save(host: str, port: int, timeout: float = 120.0) -> bool:
+    """Best-effort: ask a still-alive llama-server to persist its slot-0
+    state to disk. Returns whether it actually saved something; never
+    raises -- a model not started with --slot-save-path, one with no
+    active state, or any request failure all just mean "nothing saved,"
+    which is exactly the pre-existing behavior (a normal cold start next
+    time), not a new failure mode."""
+    try:
+        r = httpx.post(f"http://{host}:{port}/slots/0",
+                       params={"action": "save"},
+                       json={"filename": _SLOT_FILENAME}, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _slot_restore(host: str, port: int, name: str, timeout: float = 120.0) -> bool:
+    """Best-effort: if stop() previously saved this model's slot state,
+    restore it right after boot -- turns a cold restart's full persona/
+    memory reprocess into a fast state load. Checks the save file exists
+    before even trying (avoids a slow round-trip to be told "no such
+    file"); never raises -- a missing, corrupted, or model-mismatched save
+    file just means an ordinary cold start, same as before this existed."""
+    save_file = config.PLEIADES_HOME / "slots" / name / _SLOT_FILENAME
+    if not save_file.is_file():
+        return False
+    try:
+        r = httpx.post(f"http://{host}:{port}/slots/0",
+                       params={"action": "restore"},
+                       json={"filename": _SLOT_FILENAME}, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def _pid_on_port(host: str, port: int) -> Optional[int]:
     """PID of the process LISTENING on host:port, or None.
 
@@ -431,6 +473,15 @@ class ModelManager:
 
         if wait:
             self._wait_ready(name, proc, timeout)
+            # Best-effort: if a previous graceful stop saved this model's
+            # slot state (see stop()), restore it now instead of paying a
+            # full persona/memory reprocess on the first real request.
+            # Silently no-ops for models not started with --slot-save-path,
+            # a first-ever start (nothing saved yet), or any restore
+            # failure (corrupt/incompatible file) -- falls through to an
+            # ordinary cold-context start in every one of those cases,
+            # same as before this feature existed.
+            _slot_restore(m["host"], int(m["port"]), name)
         return self.base_url(name)
 
     def _wait_ready(self, name: str, proc: subprocess.Popen, timeout: float) -> None:
@@ -467,6 +518,13 @@ class ModelManager:
             return False
         pid = r.get("pid")
         if _pid_alive(pid):
+            # Best-effort, best BEFORE the kill signal: ask the server to
+            # persist its slot state to disk while it's still alive and
+            # responsive (see launch.py's --slot-save-path and start()'s
+            # matching _slot_restore call). Silently no-ops if this model
+            # wasn't started with slot-save-path, has no active state, or
+            # the request fails for any reason -- must never block stop().
+            _slot_save(r.get("host", "127.0.0.1"), int(r.get("port") or 0))
             try:
                 if os.name == "posix":
                     os.killpg(os.getpgid(pid), signal.SIGTERM)
