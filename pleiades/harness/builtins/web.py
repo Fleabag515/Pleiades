@@ -16,13 +16,74 @@ Tool guide:
 from __future__ import annotations
 
 import html as _htmllib
+import http.client
+import ipaddress
 import json
 import os
 import re
+import socket
 import urllib.parse
 import urllib.request
 
 from ..tools import tool
+
+# SSRF guard for http_fetch/deep_research: these tools are safe=True (no
+# approval prompt) and take a model-supplied URL, which is reachable via
+# untrusted content (a web page, an email, a Discord message) through prompt
+# injection with no user in the loop. Without this, a fetch to
+# 127.0.0.1:9000 (Anamnesis's unauthenticated control API) or the webui's
+# loopback-guarded API (whose guard only checks Host/Origin -- a server-side
+# fetch sends no Origin) hands another character's vault secrets/API keys to
+# the model. Resolve-then-pin-the-validated-IP closes the DNS-rebind gap
+# (checking the hostname alone isn't enough -- a second resolution at
+# connect time could return a different, unsafe address).
+_MAX_FETCH_BYTES = 2_000_000
+
+
+class _SSRFBlocked(Exception):
+    pass
+
+
+def _assert_public_ip(ip_text: str, host: str) -> None:
+    ip = ipaddress.ip_address(ip_text)
+    if (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+        raise _SSRFBlocked(f"refusing to fetch {host} — resolves to non-public address {ip}")
+
+
+def _resolve_pinned(host: str) -> str:
+    """Resolve `host`, reject any non-public address, return one validated IP."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise _SSRFBlocked(f"could not resolve host {host!r}: {e}") from e
+    if not infos:
+        raise _SSRFBlocked(f"could not resolve host {host!r}: no addresses")
+    for _family, _type, _proto, _canon, sockaddr in infos:
+        _assert_public_ip(sockaddr[0], host)
+    return infos[0][4][0]
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connects to a pre-resolved, pre-validated IP instead of re-resolving
+    `host` — re-resolving would reopen the DNS-rebind gap the check above
+    exists to close."""
+    def __init__(self, host, pinned_ip, *a, **kw):
+        super().__init__(host, *a, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, pinned_ip, *a, **kw):
+        super().__init__(host, *a, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 # SearXNG endpoint resolves from the unified project config (Settings.searxng_url,
 # which honors PLEIADES_SEARXNG_URL). SEARXNG_URL stays supported for back-compat,
@@ -60,9 +121,51 @@ _BLANKS_RE = re.compile(r"\n{3,}")
 
 
 def _get(url: str, timeout: int = 30) -> str:
+    """Fetch a trusted, admin-configured endpoint (SearXNG). NOT for
+    model-supplied URLs -- see _get_external for that (SSRF-guarded).
+    SearXNG is legitimately loopback by default, which is exactly what
+    _get_external exists to block."""
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="replace")
+        body = r.read(_MAX_FETCH_BYTES + 1)
+        return body[:_MAX_FETCH_BYTES].decode("utf-8", errors="replace")
+
+
+def _get_external(url: str, timeout: int = 30, _redirects: int = 0) -> str:
+    """Fetch a model-supplied URL (http_fetch/deep_research). SSRF-guarded:
+    resolves the host, rejects any non-public address, and connects to the
+    validated IP directly rather than letting the connection re-resolve
+    (which would reopen a DNS-rebind gap between check and connect).
+    Redirects are followed manually so each hop is re-validated the same
+    way -- otherwise a URL that passes validation could 302 straight to an
+    internal address."""
+    if _redirects > 5:
+        raise _SSRFBlocked("too many redirects")
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise _SSRFBlocked(f"unsupported scheme: {parts.scheme!r}")
+    host = parts.hostname
+    if not host:
+        raise _SSRFBlocked("URL has no host")
+    pinned_ip = _resolve_pinned(host)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    conn_cls = _PinnedHTTPSConnection if parts.scheme == "https" else _PinnedHTTPConnection
+    conn = conn_cls(host, pinned_ip, port=port, timeout=timeout)
+    try:
+        path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        conn.request("GET", path, headers={"User-Agent": _UA, "Host": host})
+        resp = conn.getresponse()
+        if resp.status in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location")
+            resp.read()  # drain so the connection can close cleanly
+            if not location:
+                raise _SSRFBlocked("redirect with no Location header")
+            next_url = urllib.parse.urljoin(url, location)
+            return _get_external(next_url, timeout=timeout, _redirects=_redirects + 1)
+        body = resp.read(_MAX_FETCH_BYTES + 1)
+        return body[:_MAX_FETCH_BYTES].decode("utf-8", errors="replace")
+    finally:
+        conn.close()
 
 
 def _strip_html(html: str) -> str:
@@ -115,7 +218,7 @@ def http_fetch(url: str, max_chars: int = 8000) -> str:
     if not url.startswith(("http://", "https://")):
         return "Error: url must start with http:// or https://"
     try:
-        html = _get(url)
+        html = _get_external(url)
     except Exception as e:
         return f"Error fetching {url}: {e}"
     text = _strip_html(html)
@@ -163,7 +266,7 @@ def deep_research(query: str, num_sources: int = 4, chars_per_page: int = 3000) 
             out.append(f"*Snippet:* {snippet}")
 
         try:
-            html = _get(url, timeout=20)
+            html = _get_external(url, timeout=20)
             text = _strip_html(html)
             body = text[:chars_per_page]
             if len(text) > chars_per_page:
