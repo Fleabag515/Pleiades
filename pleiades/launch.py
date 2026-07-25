@@ -105,6 +105,19 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     # dense-only check and starves a MoE model down to the smallest gear.
     n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path, caps=cps)
     threads = max((os.cpu_count() or 8) // 2, 4)   # physical cores beat SMT
+    # Prefill/batch processing is compute-bound (more threads help, up to
+    # physical core count) but decode is memory-bandwidth-bound and can
+    # actually get WORSE past a point once threads start contending for the
+    # same memory bus instead of adding throughput. Real measurement on a
+    # Ryzen 7 5700X (8 physical cores): decode tok/s peaked at 4 threads,
+    # +10% over 8, and collapsed 3x at 16 (SMT). Halving the physical count
+    # is a reasonable general default (llama-server's own docs recommend
+    # starting near physical-core-count/2 for memory-bound decode on
+    # desktop parts) but this exact ratio is only verified on this one box
+    # -- an explicit --n-gpu-layers-style override doesn't exist for this
+    # yet; if per-machine calibration lands (see autofit follow-up), this
+    # is the value it should replace.
+    decode_threads = max(threads // 2, 2)
 
     # Placement must be sized against whichever ctx will ACTUALLY launch —
     # native runs fixed at n_ctx_max (see below), so planning layers/expert
@@ -132,7 +145,8 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                                                   else pl.n_gpu_layers)
         cmd = [native, "-m", model_path,
                "--host", host, "--port", str(port),
-               "-c", str(launch_ctx), "-ngl", str(ngl), "-t", str(threads),
+               "-c", str(launch_ctx), "-ngl", str(ngl),
+               "-t", str(decode_threads), "-tb", str(threads),
                "--alias", name,
                "--jinja",
                # One character = one conversation at a time through its Anamnesis
