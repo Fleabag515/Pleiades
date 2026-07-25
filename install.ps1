@@ -218,27 +218,30 @@ function Install-NativeRuntime($plan) {
 }
 
 function Install-Anamnesis {
-  if (-not (Have npm)) { Warn "npm missing; skipping Anamnesis. Install Node, then 'npm i -g anamnesis'."; return }
-  $installed = ""
-  $latest = ""
-  try {
-    $out = (npm ls -g anamnesis --depth=0 2>$null | Out-String)
-    if ($out -match "anamnesis@([0-9][^\s]*)") { $installed = $Matches[1] }
-  } catch {}
-  try { $latest = (npm view anamnesis version 2>$null | Out-String).Trim() } catch {}
-
-  if ($installed -and $latest -and ($installed -eq $latest)) {
-    Say "Anamnesis $installed already installed and current — skipping"
+  # Anamnesis is vendored in-repo at $Dir\anamnesis (git subtree from
+  # Fleabag515/anamnesis -- see docs/specs/2026-07-25-anamnesis-vendoring-
+  # and-installer-plan.md). It used to be installed via `npm i -g anamnesis`,
+  # which pulled the *unrelated upstream npm package* of the same name, not
+  # this fork -- a real bug (every fresh install got the wrong Anamnesis).
+  # That step is gone; this only installs the vendored copy's own deps
+  # (mirrors install.sh's install_anamnesis()).
+  if (-not (Have npm)) { Warn "npm missing; skipping Anamnesis. Install Node, then re-run this installer."; return }
+  $anamnesisDir = Join-Path $Dir "anamnesis"
+  if (-not (Test-Path (Join-Path $anamnesisDir "package.json"))) {
+    Warn "No anamnesis\ found under $Dir -- skipping (expected the vendored copy to already be checked out)."
     return
   }
-  if ($installed) {
-    Say "Updating Anamnesis $installed -> $(if ($latest) { $latest } else { 'latest' })"
-  } else {
-    Say "Installing Anamnesis (memory proxy)"
-  }
+  Say "Installing Anamnesis's dependencies (vendored copy, not a separate package)"
   Info "npm pulls large native deps here (node-llama-cpp, transformers) — a few minutes of progress output is normal."
-  npm install -g anamnesis --no-audit --no-fund
-  if ($LASTEXITCODE -ne 0) { Warn "Could not install anamnesis globally; run 'npm i -g anamnesis' yourself." }
+  Push-Location $anamnesisDir
+  try {
+    npm install --omit=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+      Warn "Could not install Anamnesis's dependencies; run 'npm install --omit=dev' inside $anamnesisDir yourself."
+      return
+    }
+  } finally { Pop-Location }
+  Info "Anamnesis's deps are installed at $anamnesisDir. It starts on its own the first time you run 'pleiades ui' / the desktop app, or start it directly: pleiades anamnesis start"
 }
 
 function Fetch-Browser($py) {

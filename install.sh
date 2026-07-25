@@ -128,7 +128,7 @@ ensure_node() {
     apt-get|dnf|zypper) pm_install nodejs npm;;
     pacman)             pm_install nodejs npm;;
     brew)               pm_install node;;
-    *) warn "Could not auto-install Node. Install Node.js + npm, then 'npm i -g anamnesis'.";;
+    *) warn "Could not auto-install Node. Install Node.js + npm, then re-run this installer.";;
   esac
 }
 
