@@ -226,6 +226,30 @@ def pick_asset(assets: list[dict]) -> Optional[dict]:
     return plat[0][0]
 
 
+_CUDA_VERSION_RE = re.compile(r"-cuda-(\d+\.\d+)-")
+
+
+def _cudart_asset_for(main_name: str, assets: list[dict]) -> Optional[dict]:
+    """Find the cudart-*.zip sidecar matching a chosen win-cuda-*.zip asset's
+    CUDA version (e.g. "llama-b1-bin-win-cuda-12.4-x64.zip" ->
+    "cudart-llama-bin-win-cuda-12.4-x64.zip") -- llama.cpp ships these as
+    separate downloads (verified against the live b10107 release: the main
+    Windows CUDA build does NOT bundle cudart/cublas DLLs itself), so
+    llama-server.exe is missing them on any machine without the CUDA
+    toolkit already installed unless this sidecar is also fetched and
+    unzipped alongside it. None if main_name isn't a CUDA build or no
+    version-matched sidecar exists in this release."""
+    m = _CUDA_VERSION_RE.search(main_name.lower())
+    if not m:
+        return None
+    version = m.group(1)
+    for a in assets:
+        name = a.get("name", "").lower()
+        if name.startswith("cudart-") and name.endswith(".zip") and f"-cuda-{version}-" in name:
+            return a
+    return None
+
+
 def install(log: Optional[Callable[[str], None]] = None) -> str:
     """Download the best llama.cpp prebuilt for this machine. Returns the path."""
     import httpx
@@ -236,7 +260,8 @@ def install(log: Optional[Callable[[str], None]] = None) -> str:
         r = c.get("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest")
         r.raise_for_status()
         rel = r.json()
-        asset = pick_asset(rel.get("assets", []))
+        assets = rel.get("assets", [])
+        asset = pick_asset(assets)
         if not asset:
             raise RuntimeError_(
                 "No matching prebuilt for this platform in the latest llama.cpp "
@@ -248,6 +273,23 @@ def install(log: Optional[Callable[[str], None]] = None) -> str:
             with open(dest, "wb") as f:
                 for chunk in resp.iter_bytes(1024 * 1024):
                     f.write(chunk)
+
+        # Windows CUDA builds don't bundle cublas/cudart DLLs -- llama-
+        # server.exe fails to start on a machine without the CUDA toolkit
+        # already installed unless this sidecar is fetched too (see
+        # _cudart_asset_for's docstring; real asset layout verified
+        # directly against the live release, not assumed).
+        cudart_dest = None
+        if os.name == "nt":
+            cudart_asset = _cudart_asset_for(asset["name"], assets)
+            if cudart_asset:
+                say(f"downloading {cudart_asset['name']} (cudart/cublas DLLs) …")
+                cudart_dest = runtime_dir() / cudart_asset["name"]
+                with c.stream("GET", cudart_asset["browser_download_url"]) as resp:
+                    resp.raise_for_status()
+                    with open(cudart_dest, "wb") as f:
+                        for chunk in resp.iter_bytes(1024 * 1024):
+                            f.write(chunk)
 
     say("extracting…")
     target = runtime_dir() / "llama.cpp"
@@ -273,6 +315,17 @@ def install(log: Optional[Callable[[str], None]] = None) -> str:
                 f.chmod(f.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
             except OSError:
                 pass
+
+    if cudart_dest is not None:
+        # Flat DLLs at the zip root (verified against the real b10107
+        # cudart-llama-bin-win-cuda-12.4-x64.zip: cublas64_12.dll,
+        # cublasLt64_12.dll, cudart64_12.dll, no subdirectories) --
+        # extract directly next to llama-server.exe so Windows' normal
+        # DLL search order (same directory as the .exe) finds them.
+        with zipfile.ZipFile(cudart_dest) as z:
+            z.extractall(binary.parent)
+        cudart_dest.unlink(missing_ok=True)
+
     clear_caps_cache()
     say(f"installed {binary}")
     return str(binary)

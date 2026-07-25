@@ -218,3 +218,36 @@ def test_pick_asset_cpu_fallback_skips_foreign_architectures(monkeypatch):
               {"name": "llama-b10107-bin-ubuntu-vulkan-x64.tar.gz"},
               {"name": "llama-b10107-bin-ubuntu-x64.tar.gz"}]
     assert pick_asset(assets)["name"] == "llama-b10107-bin-ubuntu-x64.tar.gz"
+
+
+def test_cudart_asset_matches_exact_cuda_version():
+    # Real asset names from the live ggml-org/llama.cpp b10107 release.
+    from pleiades.runtime import _cudart_asset_for
+    assets = [{"name": "cudart-llama-bin-win-cuda-12.4-x64.zip"},
+              {"name": "cudart-llama-bin-win-cuda-13.3-x64.zip"},
+              {"name": "llama-b10107-bin-win-cuda-12.4-x64.zip"},
+              {"name": "llama-b10107-bin-win-cuda-13.3-x64.zip"}]
+    got = _cudart_asset_for("llama-b10107-bin-win-cuda-12.4-x64.zip", assets)
+    assert got["name"] == "cudart-llama-bin-win-cuda-12.4-x64.zip"
+    got2 = _cudart_asset_for("llama-b10107-bin-win-cuda-13.3-x64.zip", assets)
+    assert got2["name"] == "cudart-llama-bin-win-cuda-13.3-x64.zip"
+
+
+def test_cudart_asset_none_for_non_cuda_build():
+    from pleiades.runtime import _cudart_asset_for
+    assets = [{"name": "cudart-llama-bin-win-cuda-12.4-x64.zip"},
+              {"name": "llama-b10107-bin-win-vulkan-x64.zip"}]
+    assert _cudart_asset_for("llama-b10107-bin-win-vulkan-x64.zip", assets) is None
+
+
+def test_cudart_asset_none_for_linux_cuda_string_without_win_sidecar():
+    # No Linux cudart sidecar exists in the real release (confirmed against
+    # the live asset list) -- must not match a Windows one by version alone.
+    from pleiades.runtime import _cudart_asset_for
+    assets = [{"name": "cudart-llama-bin-win-cuda-12.4-x64.zip"}]
+    assert _cudart_asset_for("llama-b10107-bin-ubuntu-x64.tar.gz", assets) is None
+
+
+def test_cudart_asset_none_when_sidecar_missing_from_release():
+    from pleiades.runtime import _cudart_asset_for
+    assert _cudart_asset_for("llama-b10107-bin-win-cuda-12.4-x64.zip", []) is None
