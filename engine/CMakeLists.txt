@@ -51,11 +51,13 @@ if (PLEIADES_ENGINE_CUDA)
   endif()
 endif()
 
-# We only need libllama itself for this phase (llama_sampler_* and the
-# context/batch/decode API all live directly in include/llama.h) -- not
-# `common` (chat templates, json-schema-grammar, CLI arg parsing), so skip
-# building it and its heavier optional deps for now. Also skip llama.cpp's
-# own tests/tools/examples/server -- we're consuming it as a library only.
+# We build libllama itself from the submodule, and hand-pick the SMALL slice of
+# llama.cpp's `common/` needed for real jinja chat templating into our own
+# `pleiades_chat` static lib below -- rather than turning on LLAMA_BUILD_COMMON,
+# which would compile the whole `llama-common` target (arg.cpp CLI parsing,
+# download.cpp/hf-cache.cpp HuggingFace networking, imatrix, llguidance,
+# ngram/speculative machinery) that this deliberately-minimal engine doesn't
+# want. Also skip llama.cpp's own tests/tools/examples/server -- library only.
 set(LLAMA_BUILD_COMMON  OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS   OFF CACHE BOOL "" FORCE)
@@ -66,24 +68,94 @@ set(BUILD_SHARED_LIBS  OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp
                  ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 
+set(LLAMA_CPP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp)
+
+# -- pleiades_chat: real per-model jinja chat templating + tool-call parsing --
+#
+# The exact minimal slice of llama.cpp's common/ that implements
+# common_chat_templates_init/apply + common_chat_parse (Stage B). This set was
+# derived empirically, not guessed: every candidate translation unit was
+# compiled to an object and an nm-based undefined-symbol sweep computed the
+# closure. Compiling these 15 upstream TUs into one static archive and linking
+# the three public entry points pulled in ALL 15 (none dead), and left only
+# `llama_*`/`ggml_*` (satisfied by libllama) plus seven tiny common.cpp helpers
+# unresolved -- those seven are vendored verbatim in src/llama_common_min.cpp
+# (see that file's header for why common.cpp is NOT compiled whole). This is the
+# same "compile a vendored source slice into its own small static lib" pattern
+# pleiades_httplib already uses below for cpp-httplib.
+#
+# What each file provides (why the link breaks without it):
+#   chat.cpp                      - the public common_chat_* API itself
+#   chat-auto-parser-generator.cpp- autoparser::peg_generator::generate_parser,
+#                                   which DERIVES a PEG tool-call parser from the
+#                                   model's own jinja at apply() time (this is
+#                                   how cross-family parsing works without a
+#                                   hand-written parser per model)
+#   chat-auto-parser-helpers.cpp  - helpers the generator/analyzer use
+#   chat-peg-parser.cpp           - common_chat_peg_parse + AST->common_chat_msg
+#   chat-diff-analyzer.cpp        - streaming-diff + id-part helpers chat.cpp uses
+#   peg-parser.cpp                - the generic PEG engine (arena parse/load/save)
+#   json-schema-to-grammar.cpp    - tool-argument grammar generation
+#   log.cpp                       - the LOG_* facility the whole cluster calls
+#   unicode.cpp                   - common_parse_utf8_codepoint (peg + jinja)
+#   jinja/{lexer,parser,runtime,   - llama.cpp's own jinja template engine
+#          value,string,caps}.cpp    (this repo's real templater; NOT "minja")
+add_library(pleiades_chat STATIC
+  ${LLAMA_CPP_DIR}/common/chat.cpp
+  ${LLAMA_CPP_DIR}/common/chat-auto-parser-generator.cpp
+  ${LLAMA_CPP_DIR}/common/chat-auto-parser-helpers.cpp
+  ${LLAMA_CPP_DIR}/common/chat-peg-parser.cpp
+  ${LLAMA_CPP_DIR}/common/chat-diff-analyzer.cpp
+  ${LLAMA_CPP_DIR}/common/peg-parser.cpp
+  ${LLAMA_CPP_DIR}/common/json-schema-to-grammar.cpp
+  ${LLAMA_CPP_DIR}/common/log.cpp
+  ${LLAMA_CPP_DIR}/common/unicode.cpp
+  ${LLAMA_CPP_DIR}/common/jinja/lexer.cpp
+  ${LLAMA_CPP_DIR}/common/jinja/parser.cpp
+  ${LLAMA_CPP_DIR}/common/jinja/runtime.cpp
+  ${LLAMA_CPP_DIR}/common/jinja/value.cpp
+  ${LLAMA_CPP_DIR}/common/jinja/string.cpp
+  ${LLAMA_CPP_DIR}/common/jinja/caps.cpp
+  src/llama_common_min.cpp
+)
+# PUBLIC include dirs so these upstream TUs find their own headers (common/,
+# nlohmann in vendor/, ggml/include, include/); when pleiades_engine links this
+# PRIVATE (below), it inherits these to compile chat_template.cpp, but does NOT
+# re-export them -- so http_server.cpp and the tests never see chat.h's
+# global `using json = nlohmann::ordered_json;` alias, which would collide with
+# the engine's own `using json = nlohmann::json;`.
+target_include_directories(pleiades_chat PUBLIC
+  ${LLAMA_CPP_DIR}/common
+  ${LLAMA_CPP_DIR}/vendor
+  ${LLAMA_CPP_DIR}/ggml/include
+  ${LLAMA_CPP_DIR}/include
+)
+target_link_libraries(pleiades_chat PUBLIC llama)
+# Upstream common/ targets C++17; these TUs also compile clean at the engine's
+# global C++20 (verified) -- this only records the floor.
+target_compile_features(pleiades_chat PUBLIC cxx_std_17)
+
 add_library(pleiades_engine STATIC
   src/model_manager.cpp
   src/context_governor.cpp
   src/prefix_cache.cpp
   src/engine.cpp
   src/chat_template.cpp
-  src/tool_call_parser.cpp
 )
 target_include_directories(pleiades_engine PUBLIC include)
 # nlohmann/json.hpp is vendored inside the llama.cpp submodule (see the
-# pleiades_httplib/pleiades-engine-server comment below for the full
-# rationale on why it's used directly rather than turning on
-# LLAMA_BUILD_COMMON) -- chat_template.cpp/tool_call_parser.cpp need it too
-# now (Phase 5 tool-calling: rendering/parsing the `tools`/`tool_calls`
+# pleiades_httplib/pleiades-engine-server comment below for the full rationale
+# on why it's used directly rather than turning on LLAMA_BUILD_COMMON) --
+# chat_template.cpp needs it too (rendering/parsing the `tools`/`tool_calls`
 # JSON), so it's PUBLIC on pleiades_engine itself rather than only on the
 # server binary.
 target_include_directories(pleiades_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp/vendor)
-target_link_libraries(pleiades_engine PUBLIC llama)
+# pleiades_chat is PRIVATE: chat_template.cpp (compiled here) needs its headers
+# and symbols, but downstream targets linking pleiades_engine must NOT inherit
+# common/ on their include path (see the include-dir note on pleiades_chat).
+# CMake still propagates the static-lib link dependency to the final binaries so
+# the common_chat_* symbols resolve.
+target_link_libraries(pleiades_engine PUBLIC llama PRIVATE pleiades_chat)
 
 add_executable(pleiades-engine-cli src/cli_main.cpp)
 target_link_libraries(pleiades-engine-cli PRIVATE pleiades_engine)
@@ -104,10 +176,9 @@ target_link_libraries(pleiades-engine-bench-prefix PRIVATE pleiades_engine)
 # Phase 3: HTTP transport shim. cpp-httplib and nlohmann/json are both
 # vendored inside the llama.cpp submodule already (vendor/cpp-httplib,
 # vendor/nlohmann) -- compiled/included directly here rather than turning on
-# LLAMA_BUILD_COMMON (see chat_template.h for why common/chat.cpp + minja
-# are deliberately not wired in yet).
+# LLAMA_BUILD_COMMON (real chat templating comes from the pleiades_chat slice
+# above, not the whole llama-common target).
 find_package(Threads REQUIRED)
-set(LLAMA_CPP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp)
 
 add_library(pleiades_httplib STATIC ${LLAMA_CPP_DIR}/vendor/cpp-httplib/httplib.cpp)
 target_include_directories(pleiades_httplib PUBLIC ${LLAMA_CPP_DIR}/vendor/cpp-httplib)

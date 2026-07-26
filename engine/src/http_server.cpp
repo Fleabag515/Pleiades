@@ -14,13 +14,20 @@
 // kv_bytes_per_token is also omitted from /props -- that's hardware.py's KV-
 // cost formula, not yet ported to C++; add it here once it is.
 //
-// Chat templating uses the hardcoded ChatML stopgap (chat_template.h/.cpp),
-// not real per-model jinja -- see that file's header comment for why. Tool
-// calling (Phase 5) is layered on top of that same stopgap: the request's
-// `tools` array is rendered into the model's own detected dialect
-// (ModelManager::tool_dialect(), see chat_template.h::ToolDialect) and its
-// generated text is parsed back into structured `tool_calls`
-// (tool_call_parser.h) for the non-streaming path -- see handle_chat().
+// Chat templating (Stage B) uses REAL per-model jinja: the model's own
+// GGUF-embedded tokenizer.chat_template is compiled once at load
+// (ModelManager::chat_templates(), backed by llama.cpp's common_chat_*
+// machinery -- see chat_template.h), and EVERY request is rendered through it
+// -- so tools, tool_calls history, and reasoning are emitted in whatever native
+// format each model family's own template specifies, not the two hand-coded
+// Qwen dialects the engine used before. The model's completion is parsed back
+// into structured content/reasoning_content/tool_calls by that same resolved
+// format (RenderedChat::parse) -- for any family llama.cpp understands, not
+// just Qwen. A finished generation that can't be parsed into the template's
+// format (e.g. a tool call truncated by max_tokens) throws, which handle_chat
+// surfaces as a distinct HTTP 422 rather than a 200 that narrates broken markup
+// as prose (Pleiades often runs exec_policy "allow" -- a real intended action
+// must never silently fail to fire).
 //
 // One mutex serializes every request (chat AND resize), matching
 // EngineState's own `self.lock` in server.py and llama.cpp's own "single
@@ -84,7 +91,6 @@
 #include "pleiades_engine/context_governor.h"
 #include "pleiades_engine/engine.h"
 #include "pleiades_engine/model_manager.h"
-#include "pleiades_engine/tool_call_parser.h"
 
 using json = nlohmann::json;
 using namespace pleiades_engine;
@@ -117,15 +123,30 @@ json props_json(ServerState& s) {
     };
 }
 
-// Message parsing (role/content/tool_calls/tool_call_id round-trip, plus
-// the JSON-null-content safety fix) lives in chat_template.cpp's
-// parse_chat_messages() now -- shared with the unit tests in
-// test_tool_calls.cpp, which a http_server.cpp-local static function
-// couldn't be.
-
 std::string now_id() {
     static int counter = 0;
     return "chatcmpl-pleiades-" + std::to_string(++counter);
+}
+
+// Builds the OpenAI-shape `tool_calls` array for a chat.completion response
+// message. `streaming` adds the `index` field the SSE delta path requires (and
+// the non-streaming message shape omits) -- otherwise identical. Each call's id
+// is the one llama.cpp's parser assigned, or a stable "call_<i>" fallback when
+// the model/template produced none.
+json tool_calls_json(const std::vector<ChatToolCall>& calls, bool streaming) {
+    json arr = json::array();
+    for (size_t i = 0; i < calls.size(); ++i) {
+        json entry = {
+            {"id", calls[i].id.empty() ? "call_" + std::to_string(i) : calls[i].id},
+            {"type", "function"},
+            {"function", {{"name", calls[i].name}, {"arguments", calls[i].arguments}}},
+        };
+        if (streaming) {
+            entry["index"] = i;
+        }
+        arr.push_back(std::move(entry));
+    }
+    return arr;
 }
 
 void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response& res) {
@@ -138,8 +159,7 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                          "application/json");
         return;
     }
-    auto messages = parse_chat_messages(body);
-    if (messages.empty()) {
+    if (!body.contains("messages") || !body["messages"].is_array() || body["messages"].empty()) {
         res.status = 400;
         res.set_content(
             json{{"error", {{"message", "messages must not be empty"}, {"type", "invalid_request_error"}}}}.dump(),
@@ -186,37 +206,63 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         }
     }
 
-    std::vector<json> tools;
+    json tools = json::array();
     if (body.contains("tools") && body["tools"].is_array()) {
-        for (const auto& t : body["tools"]) {
-            tools.push_back(t);
-        }
+        tools = body["tools"];
     }
+    bool tools_offered = !tools.empty();
 
-    ToolDialect dialect = s.models.tool_dialect();
-    if (!tools.empty() && dialect == ToolDialect::NONE) {
+    const ChatTemplates& tmpls = s.models.chat_templates();
+    bool model_supports_tools = tmpls.supports_tools();
+    // A tool-offered request against a template with no tool support is honored
+    // exactly as before: the tools are dropped (rendered as a plain completion,
+    // no tool_calls will ever be parsed), with a loud warning -- see the old
+    // ToolDialect::NONE behavior this preserves.
+    json effective_tools = (tools_offered && model_supports_tools) ? tools : json::array();
+    if (tools_offered && !model_supports_tools) {
         std::fprintf(stderr,
-                      "[pleiades-engine-server] WARNING: request offered %zu tool(s) but no tool-calling dialect "
-                      "was detected for this model at load time -- ignoring tools, falling back to a plain "
-                      "completion (no tool_calls will ever be parsed from this model's output; see "
-                      "ModelManager::tool_dialect()).\n",
+                      "[pleiades-engine-server] WARNING: request offered %zu tool(s) but this model's chat template "
+                      "advertises no tool-calling support (ChatTemplates::supports_tools()==false) -- ignoring tools, "
+                      "falling back to a plain completion (no tool_calls will ever be parsed from this model's "
+                      "output).\n",
                       tools.size());
     }
 
-    std::string prompt;
-    if (dialect == ToolDialect::NONE) {
-        // Non-Qwen (or no-tool) model: render with ITS OWN template family via
-        // llama.cpp's builtin templater rather than assuming Qwen ChatML. Fall
-        // back to the ChatML stopgap only when the model carries no template
-        // (a base model) or llama.cpp doesn't recognize the family. Tools were
-        // already warned about + dropped above (NONE == no tool support).
-        prompt = apply_builtin_template(s.models.chat_template(), messages, /*add_generation_prompt=*/true);
-        if (prompt.empty()) {
-            prompt = format_chatml(messages);
-        }
-    } else {
-        prompt = format_chat_prompt(messages, tools, dialect, s.models.open_thinking());
+    // enable_thinking toggles the template's own thinking block (models that
+    // have none ignore it). Default on; a request may override with a boolean.
+    bool enable_thinking = true;
+    if (body.contains("enable_thinking") && body["enable_thinking"].is_boolean()) {
+        enable_thinking = body["enable_thinking"].get<bool>();
     }
+
+    RenderedChat rendered;
+    try {
+        rendered = tmpls.apply(body["messages"], effective_tools, /*add_generation_prompt=*/true, enable_thinking);
+    } catch (const std::exception& e) {
+        // A jinja evaluation error is a bad request (e.g. a message shape the
+        // template rejects), not a server fault -- surface it as 400.
+        res.status = 400;
+        res.set_content(json{{"error",
+                              {{"message", std::string("chat template render failed: ") + e.what()},
+                               {"type", "invalid_request_error"}}}}
+                            .dump(),
+                         "application/json");
+        return;
+    }
+    std::string prompt = rendered.prompt();
+    // The resolved format may want extra stop strings honored (e.g. a tool-call
+    // closing marker); merge them into whatever the request already asked for.
+    for (const auto& extra_stop : rendered.additional_stops()) {
+        sampling.stop.push_back(extra_stop);
+    }
+    // Streaming can only carry structured tool_calls (not raw markup) if we
+    // buffer the whole turn and parse it before emitting SSE. That's only
+    // needed when a tool call could actually appear -- i.e. tools were offered
+    // AND the template supports them. A plain (or tool-unsupported) request
+    // keeps true token-by-token streaming. This mirrors the pre-Stage-B
+    // `!tools.empty() && dialect != NONE` discriminator exactly.
+    bool tool_mode = !effective_tools.empty();
+
     long created = static_cast<long>(std::time(nullptr));
     std::string id = now_id();
 
@@ -232,56 +278,56 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         std::fprintf(stderr, "[pleiades-engine-server] chat: prompt_tokens=%d prefix_cached=%d decoded=%d\n",
                      r.n_prompt_tokens, r.n_prompt_cached, r.n_prompt_tokens - r.n_prompt_cached);
 
-        json message;
+        json message = {{"role", "assistant"}};
         std::string finish_reason = "stop";
-
-        if (dialect == ToolDialect::NONE) {
-            message = {{"role", "assistant"}, {"content", r.text}};
-        } else {
-            ParsedToolCalls parsed = parse_tool_calls(r.text, dialect, tools);
-            if (!parsed.ok) {
-                // Fail loud and distinctly from a normal 200/"stop" response
-                // -- see tool_call_parser.h's doc comment on
-                // ParsedToolCalls. A 4xx/5xx here makes
-                // pleiades/harness/llm.py::_post's urllib.request.urlopen()
-                // raise HTTPError, which agent.py's loop already treats as
-                // a retryable "model_error" (NOT as "no tool_calls -> final
-                // answer") -- exactly the distinction that must never be
-                // lost (Pleiades often runs with exec_policy "allow", so a
-                // real intended action must never silently fail to fire).
-                res.status = 422;
-                res.set_content(
-                    json{{"error",
-                          {{"message", "model produced a malformed or incomplete tool call: " + parsed.error},
-                           {"type", "tool_call_parse_error"}}}}
-                        .dump(),
-                    "application/json");
-                return;
+        try {
+            ParsedChatMessage pm = rendered.parse(r.text, /*is_partial=*/false);
+            // Fail-loud discipline (Pleiades-specific, not llama.cpp's): a
+            // tool-capable turn whose parse yields NOTHING usable -- no tool
+            // call, no content, no reasoning -- while the model DID generate
+            // text is a tool call truncated (or mangled) mid-structure. The PEG
+            // parser accepts such a fragment leniently as "empty" rather than
+            // throwing, so we detect it here and 422 it exactly like a hard
+            // parse error: with exec_policy "allow", a real intended action must
+            // never silently vanish into an empty 200. (The old Qwen-only parser
+            // caught this as an unterminated <tool_call>; this is the
+            // format-agnostic equivalent.)
+            if (tool_mode && pm.tool_calls.empty() && pm.content.empty() && pm.reasoning_content.empty() &&
+                !r.text.empty()) {
+                throw std::runtime_error(
+                    "tool-capable generation produced no parseable tool call or content (likely truncated "
+                    "mid tool-call by max_tokens)");
             }
-            message = {{"role", "assistant"}};
-            if (!parsed.calls.empty()) {
-                // OpenAI convention: content is null (not "") when a turn
-                // is ONLY tool calls with no leading prose -- and this
-                // engine's own parse_chat_messages() is null-safe reading
-                // it back on the next round (see chat_template.h).
-                message["content"] = parsed.content.empty() ? json(nullptr) : json(parsed.content);
-                json tc_array = json::array();
-                for (size_t i = 0; i < parsed.calls.size(); ++i) {
-                    tc_array.push_back({
-                        {"id", "call_" + std::to_string(i)},
-                        {"type", "function"},
-                        {"function",
-                         {{"name", parsed.calls[i].name}, {"arguments", parsed.calls[i].arguments.dump()}}},
-                    });
-                }
-                message["tool_calls"] = tc_array;
+            if (!pm.tool_calls.empty()) {
+                // OpenAI convention: content is null (not "") when a turn is
+                // ONLY tool calls with no leading prose.
+                message["content"] = pm.content.empty() ? json(nullptr) : json(pm.content);
+                message["tool_calls"] = tool_calls_json(pm.tool_calls, /*streaming=*/false);
                 finish_reason = "tool_calls";
             } else {
-                message["content"] = parsed.content;
+                message["content"] = pm.content;
             }
-            if (!parsed.reasoning_content.empty()) {
-                message["reasoning_content"] = parsed.reasoning_content;
+            if (!pm.reasoning_content.empty()) {
+                message["reasoning_content"] = pm.reasoning_content;
             }
+        } catch (const std::exception& e) {
+            // Fail loud and distinctly from a normal 200/"stop" response: the
+            // model's output could NOT be parsed into a complete, trustworthy
+            // reply in the template's format (truncated/malformed tool call).
+            // A 4xx here makes pleiades/harness/llm.py::_post's
+            // urllib.request.urlopen() raise HTTPError, which agent.py's loop
+            // treats as a retryable "model_error" -- NOT as "no tool_calls ->
+            // final answer", exactly the distinction that must never be lost
+            // (Pleiades often runs exec_policy "allow").
+            res.status = 422;
+            res.set_content(
+                json{{"error",
+                      {{"message", std::string("model produced output that does not match the model's chat format: ") +
+                                       e.what()},
+                       {"type", "tool_call_parse_error"}}}}
+                    .dump(),
+                "application/json");
+            return;
         }
 
         json resp = {
@@ -300,8 +346,8 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     }
 
     // Formats one SSE `data: {chat.completion.chunk}\n\n` frame. Used only
-    // synchronously below to PRE-BUILD the buffered-tool-stream frames before
-    // any is written -- deliberately NOT reused inside the raw-stream
+    // synchronously below to PRE-BUILD the buffered-structured-stream frames
+    // before any is written -- deliberately NOT reused inside the raw-stream
     // content-provider lambda, which runs after handle_chat() returns and
     // would capture this local by dangling reference.
     auto sse_chunk = [&](const json& delta, const char* finish_reason) -> std::string {
@@ -313,24 +359,22 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         return "data: " + chunk.dump() + "\n\n";
     };
 
-    // -- Phase A: buffered tool-capable streaming --------------------------- //
+    // -- Phase A: buffered structured streaming ----------------------------- //
     //
     // The SSE token path streams delta.content only; it can't emit structured
-    // delta.tool_calls. Streaming raw <tool_call> markup as visible content
-    // is the specific silent failure this guards against: the streamed
-    // interactive path (pleiades/engine.py::stream_events) reconstructs tool
-    // calls from delta.tool_calls and never raises on plain content, so raw
-    // markup there executes NO tool while looking like a normal answer.
+    // delta.tool_calls. Streaming raw tool-call markup as visible content is the
+    // specific silent failure this guards against: the streamed interactive path
+    // (pleiades/engine.py::stream_events) reconstructs tool calls from
+    // delta.tool_calls and never raises on plain content, so raw markup there
+    // executes NO tool while looking like a normal answer.
     //
-    // So when this request both offers tools AND the model has a known
-    // dialect, run the whole turn buffered (reusing the exact non-streaming
-    // complete() + parse_tool_calls() machinery), then replay the parsed
-    // result as SSE: content first, then a SINGLE delta carrying the whole
-    // tool_calls array (the OpenAI SDK the caller uses accumulates a
-    // one-chunk tool_call fine via tc.index -- partial argument deltas are
-    // not required). dialect == NONE or no tools offered falls through to the
-    // unchanged raw token-streaming path below.
-    if (!tools.empty() && dialect != ToolDialect::NONE) {
+    // So when a tool call could appear, run the whole turn buffered (reusing
+    // the exact non-streaming complete() + parse machinery), then replay the
+    // parsed result as SSE: content first, then a SINGLE delta carrying the
+    // whole tool_calls array (the OpenAI SDK the caller uses accumulates a
+    // one-chunk tool_call fine via tc.index). A plain request falls through to
+    // the unchanged raw token-streaming path below.
+    if (tool_mode) {
         GenerationResult r;
         {
             std::lock_guard<std::mutex> lock(s.mu);
@@ -340,53 +384,48 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                      "[pleiades-engine-server] chat(stream,tools): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
                      r.n_prompt_tokens, r.n_prompt_cached, r.n_prompt_tokens - r.n_prompt_cached);
 
-        ParsedToolCalls parsed = parse_tool_calls(r.text, dialect, tools);
-        if (!parsed.ok) {
-            // Fail loud with the SAME 422/tool_call_parse_error as the
-            // non-streaming path -- possible here precisely because generation
-            // finished BEFORE any SSE byte was sent, so nothing is committed
-            // yet. The caller's OpenAI client raises on the 422 and
-            // engine.py's streamed branch falls back to a non-streamed
-            // request (its existing `except Exception: streamed = False`).
-            // A 200 that narrates the malformed markup as content is the one
-            // outcome this must never produce (Pleiades often runs exec_policy
-            // "allow" -- a real intended action must never silently not fire).
+        std::vector<std::string> chunks;
+        chunks.push_back(sse_chunk({{"role", "assistant"}}, nullptr));
+        const char* finish_reason = "stop";
+        try {
+            ParsedChatMessage pm = rendered.parse(r.text, /*is_partial=*/false);
+            // Same fail-loud guard as the non-streaming path (see there): a
+            // tool-capable turn that parses to nothing usable is a truncated
+            // tool call, not an empty final answer -- 422, never a 200 SSE.
+            if (tool_mode && pm.tool_calls.empty() && pm.content.empty() && pm.reasoning_content.empty() &&
+                !r.text.empty()) {
+                throw std::runtime_error(
+                    "tool-capable generation produced no parseable tool call or content (likely truncated "
+                    "mid tool-call by max_tokens)");
+            }
+            if (!pm.reasoning_content.empty()) {
+                chunks.push_back(sse_chunk({{"reasoning_content", pm.reasoning_content}}, nullptr));
+            }
+            if (!pm.tool_calls.empty()) {
+                if (!pm.content.empty()) {
+                    chunks.push_back(sse_chunk({{"content", pm.content}}, nullptr));
+                }
+                chunks.push_back(sse_chunk({{"tool_calls", tool_calls_json(pm.tool_calls, /*streaming=*/true)}}, nullptr));
+                finish_reason = "tool_calls";
+            } else if (!pm.content.empty()) {
+                chunks.push_back(sse_chunk({{"content", pm.content}}, nullptr));
+            }
+        } catch (const std::exception& e) {
+            // Fail loud with the SAME 422 as the non-streaming path -- possible
+            // here precisely because generation finished BEFORE any SSE byte was
+            // sent, so nothing is committed yet. The caller's OpenAI client
+            // raises on the 422 and engine.py's streamed branch falls back to a
+            // non-streamed request. A 200 that narrates malformed markup as
+            // content is the one outcome this must never produce.
             res.status = 422;
             res.set_content(
                 json{{"error",
-                      {{"message", "model produced a malformed or incomplete tool call: " + parsed.error},
+                      {{"message", std::string("model produced output that does not match the model's chat format: ") +
+                                       e.what()},
                        {"type", "tool_call_parse_error"}}}}
                     .dump(),
                 "application/json");
             return;
-        }
-
-        std::vector<std::string> chunks;
-        chunks.push_back(sse_chunk({{"role", "assistant"}}, nullptr));
-        if (!parsed.reasoning_content.empty()) {
-            chunks.push_back(sse_chunk({{"reasoning_content", parsed.reasoning_content}}, nullptr));
-        }
-        const char* finish_reason = "stop";
-        if (!parsed.calls.empty()) {
-            if (!parsed.content.empty()) {
-                chunks.push_back(sse_chunk({{"content", parsed.content}}, nullptr));
-            }
-            json tc_array = json::array();
-            for (size_t i = 0; i < parsed.calls.size(); ++i) {
-                // Streaming delta tool_calls REQUIRE `index` (the field
-                // engine.py accumulates on); the non-streaming message shape
-                // does not. Otherwise identical to the non-streaming path.
-                tc_array.push_back({
-                    {"index", i},
-                    {"id", "call_" + std::to_string(i)},
-                    {"type", "function"},
-                    {"function", {{"name", parsed.calls[i].name}, {"arguments", parsed.calls[i].arguments.dump()}}},
-                });
-            }
-            chunks.push_back(sse_chunk({{"tool_calls", tc_array}}, nullptr));
-            finish_reason = "tool_calls";
-        } else if (!parsed.content.empty()) {
-            chunks.push_back(sse_chunk({{"content", parsed.content}}, nullptr));
         }
         chunks.push_back(sse_chunk(json::object(), finish_reason));
 
@@ -405,14 +444,15 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         return;
     }
 
-    // -- Raw token streaming (dialect == NONE or no tools offered) ---------- //
+    // -- Raw token streaming (content-only format) -------------------------- //
     //
-    // Unchanged in spirit: one provider call runs the whole generation,
-    // writing an SSE chunk per token (or per held-back chunk when `stop`
-    // strings are set -- see Engine::generate) via the on_token callback,
-    // then [DONE]. No tool_call parsing is needed on this path (no dialect or
-    // no tools), and the PROMPT was still built tool-dialect-aware above, so
-    // any assistant tool_calls history still round-trips for a streamed turn.
+    // Unchanged in spirit: one provider call runs the whole generation, writing
+    // an SSE chunk per token (or per held-back chunk when `stop` strings are set
+    // -- see Engine::generate) via the on_token callback, then [DONE]. No
+    // tool-call parsing is needed on this path (a content-only format never
+    // produces structured output), and the PROMPT was still built through the
+    // model's real template above, so any assistant tool_calls history still
+    // round-trips for a streamed turn.
     res.set_chunked_content_provider(
         "text/event-stream", [&s, prompt, n_predict, id, created, sampling](size_t /*offset*/, httplib::DataSink& sink) {
             std::lock_guard<std::mutex> lock(s.mu);
@@ -657,14 +697,15 @@ int main(int argc, char** argv) {
 
         ModelManager models;
         models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock);
-        // Tool-calling dialect is sniffed once here (ModelManager::load(),
-        // from the model's own tokenizer.chat_template) -- logged loudly
-        // since a silent NONE means every /v1/chat/completions request
-        // that offers `tools` will have them ignored entirely (see
+        // Chat templating is built once here (ModelManager::load(), from the
+        // model's own GGUF jinja template) -- logged loudly, including which
+        // template llama.cpp resolved and whether it advertises tool-calling
+        // support (a template without it means every /v1/chat/completions
+        // request that offers `tools` will have them ignored -- see
         // handle_chat()'s WARNING log for that case).
-        std::fprintf(stderr, "[pleiades-engine] tool-call dialect: %s%s\n",
-                     tool_dialect_name(models.tool_dialect()),
-                     models.open_thinking() ? " (open-thinking generation prompt)" : "");
+        std::fprintf(stderr, "[pleiades-engine] chat template: %s (tool-calling: %s)\n",
+                     models.chat_templates().source().c_str(),
+                     models.chat_templates().supports_tools() ? "supported" : "not advertised");
         ContextGovernor ctx;
         ctx.create(models.model(), args.n_ctx, /*n_ctx_max=*/llama_model_n_ctx_train(models.model()), cparams);
         Engine engine(models, ctx);

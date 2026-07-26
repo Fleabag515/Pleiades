@@ -1,86 +1,99 @@
-// Pure string test -- no model, no GPU/CPU inference needed. Fast to run
-// every time, unlike the fixture-model tests below.
+// Offline wrapper tests for the real jinja chat-templating layer
+// (chat_template.h / chat_template.cpp), which fronts llama.cpp's common_chat_*
+// engine. No GGUF/model is loaded: ChatTemplates::create(nullptr, override)
+// drives everything from a jinja template string (llama.cpp's
+// common_chat_templates_init supports a null model together with an explicit
+// template), so these run fast and offline like the pre-Stage-B string tests.
+//
+// The real cross-family, tool-calling-with-a-loaded-model coverage lives in the
+// end-to-end HTTP tests (test_http_tool_calls.cpp), which boot the server
+// against real Qwen and non-Qwen GGUFs -- that's where the PEG tool-call parser
+// derived from each model's own template is exercised for real.
 #include "pleiades_engine/chat_template.h"
 
+#include "nlohmann/json.hpp"
 #include "test_util.h"
 
+using json = nlohmann::json;
+using namespace pleiades_engine;
+
 int main() {
-    using pleiades_engine::apply_builtin_template;
-    using pleiades_engine::ChatMessage;
-    using pleiades_engine::format_chatml;
+    // A minimal ChatML-style jinja template -- enough to exercise the render +
+    // parse round-trip without a model. The exact rendered bytes are a property
+    // of THIS template (not a hardcoded engine format), so they're assertable.
+    const std::string chatml =
+        "{% for message in messages %}<|im_start|>{{ message['role'] }}\n{{ message['content'] }}<|im_end|>\n"
+        "{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}";
 
-    // Single user turn.
+    // ---- create from an override template, no model --------------------------
     {
-        std::string out = format_chatml({{"user", "hi"}});
-        PLEIADES_CHECK(out == "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n");
+        ChatTemplates t = ChatTemplates::create(nullptr, chatml);
+        PLEIADES_CHECK(t.valid());
+        PLEIADES_CHECK(!t.source().empty());
     }
 
-    // System + user, matching the shape a real chat request sends.
+    // ---- render a plain system+user turn through the real jinja engine -------
     {
-        std::string out = format_chatml({{"system", "You are helpful."}, {"user", "hi"}});
-        PLEIADES_CHECK(out ==
-                        "<|im_start|>system\nYou are helpful.<|im_end|>\n"
-                        "<|im_start|>user\nhi<|im_end|>\n"
-                        "<|im_start|>assistant\n");
+        ChatTemplates t = ChatTemplates::create(nullptr, chatml);
+        json messages = json::array({
+            {{"role", "system"}, {"content", "You are helpful."}},
+            {{"role", "user"}, {"content", "hi"}},
+        });
+        RenderedChat rc = t.apply(messages, json::array(), /*add_generation_prompt=*/true, /*enable_thinking=*/true);
+        const std::string& p = rc.prompt();
+        PLEIADES_CHECK(p.find("<|im_start|>system\nYou are helpful.<|im_end|>\n") != std::string::npos);
+        PLEIADES_CHECK(p.find("<|im_start|>user\nhi<|im_end|>\n") != std::string::npos);
+        // ends with the generation prompt
+        const std::string tail = "<|im_start|>assistant\n";
+        PLEIADES_CHECK(p.size() >= tail.size() && p.substr(p.size() - tail.size()) == tail);
     }
 
-    // Empty message list -- still terminates with the assistant preamble,
-    // doesn't crash. (The HTTP layer rejects empty `messages` before this
-    // is ever called, but the formatter itself should still be well-defined.)
+    // ---- parse a plain final answer -> content, no tool calls, no throw ------
     {
-        std::string out = format_chatml({});
-        PLEIADES_CHECK(out == "<|im_start|>assistant\n");
+        ChatTemplates t = ChatTemplates::create(nullptr, chatml);
+        RenderedChat rc = t.apply(json::array({{{"role", "user"}, {"content", "hi"}}}), json::array(), true, true);
+        ParsedChatMessage pm = rc.parse("Just a normal answer.", /*is_partial=*/false);
+        PLEIADES_CHECK(pm.tool_calls.empty());
+        PLEIADES_CHECK(pm.content == "Just a normal answer.");
+        PLEIADES_CHECK(pm.reasoning_content.empty());
     }
 
-    // -- Stage A: cross-family builtin templating ------------------------- //
-    // apply_builtin_template() routes a NON-Qwen model's own chat_template
-    // through llama.cpp's builtin templater so it gets ITS family's markup,
-    // not the Qwen ChatML the old stopgap forced on everything. Pure string
-    // logic (no model/backend needed), so it's exercised here. The template
-    // strings only need the substrings llama.cpp's family detector keys on.
-    const std::vector<ChatMessage> sys_user = {{"system", "You are helpful."}, {"user", "hi"}};
-
-    // A Llama-3 template renders Llama-3 header markup -- and, crucially, NOT
-    // the <|im_start|> ChatML the pre-Stage-A path would have mis-rendered.
+    // ---- null content on an assistant tool-call history turn must not throw --
+    // llama.cpp's own oaicompat message parser tolerates content:null (the case
+    // the engine previously hand-guarded against); prove the wrapper feeds it
+    // through and renders the round-tripped conversation without crashing.
     {
-        const std::string llama3_tmpl =
-            "{% for message in messages %}<|start_header_id|>{{ message['role'] }}<|end_header_id|>\n\n"
-            "{{ message['content'] }}<|eot_id|>{% endfor %}";
-        std::string out = apply_builtin_template(llama3_tmpl, sys_user, /*add_generation_prompt=*/true);
-        PLEIADES_CHECK(out ==
-                        "<|start_header_id|>system<|end_header_id|>\n\nYou are helpful.<|eot_id|>"
-                        "<|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|>"
-                        "<|start_header_id|>assistant<|end_header_id|>\n\n");
-        PLEIADES_CHECK(out.find("<|im_start|>") == std::string::npos);
+        ChatTemplates t = ChatTemplates::create(nullptr, chatml);
+        json convo = json::array({
+            {{"role", "user"}, {"content", "weather?"}},
+            {{"role", "assistant"},
+             {"content", nullptr},
+             {"tool_calls", json::array({{{"id", "call_0"},
+                                          {"type", "function"},
+                                          {"function", {{"name", "get_weather"},
+                                                        {"arguments", "{\"location\":\"LA\"}"}}}}})}},
+            {{"role", "tool"}, {"tool_call_id", "call_0"}, {"name", "get_weather"}, {"content", "72F"}},
+        });
+        bool threw = false;
+        try {
+            RenderedChat rc = t.apply(convo, json::array(), true, true);
+            (void)rc.prompt();
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        PLEIADES_CHECK(!threw);
     }
 
-    // A Gemma template renders Gemma turns: no separate system turn (merged
-    // into the first user turn) and "assistant" becomes "model".
+    // ---- a malformed override template fails loud at create() ----------------
     {
-        const std::string gemma_tmpl =
-            "{% for message in messages %}<start_of_turn>{{ message['role'] }}\n"
-            "{{ message['content'] }}<end_of_turn>\n{% endfor %}";
-        std::string out = apply_builtin_template(gemma_tmpl, sys_user, /*add_generation_prompt=*/true);
-        PLEIADES_CHECK(out == "<start_of_turn>user\nYou are helpful.\n\nhi<end_of_turn>\n<start_of_turn>model\n");
-    }
-
-    // Longer content than the initial buffer estimate must still round-trip
-    // (the grow-once path). A ~400-char user turn exceeds 2*chars only if the
-    // estimate is wrong; assert the whole thing survives regardless.
-    {
-        const std::string big(400, 'x');
-        const std::string llama3_tmpl =
-            "{% for message in messages %}<|start_header_id|>{{ message['role'] }}<|end_header_id|>\n\n"
-            "{{ message['content'] }}<|eot_id|>{% endfor %}";
-        std::string out = apply_builtin_template(llama3_tmpl, {{"user", big}}, /*add_generation_prompt=*/true);
-        PLEIADES_CHECK(out.find(big) != std::string::npos);
-    }
-
-    // No template (base model) and an unrecognized family both return "" so
-    // the caller falls back to format_chatml() instead of a wrong-family render.
-    {
-        PLEIADES_CHECK(apply_builtin_template("", sys_user, true).empty());
-        PLEIADES_CHECK(apply_builtin_template("not a known template at all", sys_user, true).empty());
+        bool threw = false;
+        try {
+            ChatTemplates t = ChatTemplates::create(nullptr, "{% for x in %}broken");
+            (void)t;
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        PLEIADES_CHECK(threw);
     }
 
     return 0;

@@ -1,6 +1,7 @@
 #include "pleiades_engine/model_manager.h"
 
 #include <cstdio>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -13,8 +14,8 @@ namespace {
 // llm_ffn_exps_block_regex() verbatim (same regex string, same
 // "blk\\.<N><regex>" pattern format) -- see common/arg.cpp's "--n-cpu-moe"
 // (`-ncmoe`) option handler for the real upstream logic this mirrors. The
-// engine deliberately doesn't build `common/` (engine/CMakeLists.txt), so
-// this ~15-line piece is replicated directly here instead of linking that
+// engine deliberately doesn't build `common/` wholesale (engine/CMakeLists.txt),
+// so this ~15-line piece is replicated directly here instead of linking that
 // whole target in just for this.
 constexpr const char* kFfnExpsRegex = "\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
 
@@ -22,26 +23,6 @@ std::string ffn_exps_block_regex(int layer_idx) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "blk\\.%d%s", layer_idx, kFfnExpsRegex);
     return std::string(buf);
-}
-
-// Reads a string metadata key off `model` via llama_model_meta_val_str(),
-// returning "" if the key is absent. That function returns -1 for a
-// missing key, or otherwise the snprintf-would-be length of the value
-// REGARDLESS of buf_size (standard snprintf semantics) -- see
-// third_party/llama.cpp/src/llama-model.cpp's implementation. So: probe
-// once with a throwaway buffer to learn the real length, then allocate
-// exactly that and call again. tokenizer.chat_template in particular can
-// be several KB (8204 bytes for the Qwythos GGUF checked while building
-// this), so a single fixed-size stack buffer isn't safe here.
-std::string read_model_meta_str(const llama_model* model, const char* key) {
-    char probe[1];
-    int32_t n = llama_model_meta_val_str(model, key, probe, sizeof(probe));
-    if (n < 0) {
-        return {};
-    }
-    std::vector<char> buf(static_cast<size_t>(n) + 1);
-    llama_model_meta_val_str(model, key, buf.data(), buf.size());
-    return std::string(buf.data(), static_cast<size_t>(n));
 }
 
 }  // namespace
@@ -108,10 +89,21 @@ void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe
             statewise_map);
     }
 
-    std::string tmpl = read_model_meta_str(model_, "tokenizer.chat_template");
-    tool_dialect_ = detect_tool_dialect(tmpl);
-    open_thinking_ = detect_open_thinking(tmpl);
-    chat_template_ = std::move(tmpl);
+    // Build the model's real chat templates from its own GGUF jinja template.
+    // A model that carries no usable template (or one whose jinja fails to
+    // parse) must still load: llama.cpp's built-in ChatML default covers that
+    // exactly the way the old hardcoded format_chatml() stopgap did, so this
+    // never turns a template quirk into a failed model load. common_chat_*'s
+    // "chatml" override is init()'s own documented alias for that built-in.
+    try {
+        chat_templates_ = ChatTemplates::create(model_, /*template_override=*/"");
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+                     "[pleiades-engine] WARNING: model's own chat template failed to build (%s); falling back to "
+                     "llama.cpp's built-in ChatML template. Tool-calling may be unavailable for this model.\n",
+                     e.what());
+        chat_templates_ = ChatTemplates::create(model_, /*template_override=*/"chatml");
+    }
 }
 
 void ModelManager::unload() {
@@ -120,9 +112,7 @@ void ModelManager::unload() {
         model_ = nullptr;
     }
     path_.clear();
-    tool_dialect_ = ToolDialect::NONE;
-    open_thinking_ = false;
-    chat_template_.clear();
+    chat_templates_ = ChatTemplates{};
     moe_override_patterns_.clear();
     moe_overrides_.clear();
 }

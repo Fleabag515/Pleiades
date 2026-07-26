@@ -71,7 +71,8 @@ struct GenerationResult {
 // tokens up to n_predict or until end-of-generation, per the SamplingParams
 // (greedy by default -- see that struct). No chat template applied here --
 // callers (e.g. the Phase 3 HTTP shim) format the prompt themselves; see
-// pleiades_engine::format_chatml() for the current stopgap formatter.
+// pleiades_engine::ChatTemplates (chat_template.h) for the real per-model
+// jinja templating the HTTP shim renders every request through.
 class Engine {
 public:
     Engine(ModelManager& models, ContextGovernor& ctx);

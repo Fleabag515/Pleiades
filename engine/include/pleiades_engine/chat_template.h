@@ -1,184 +1,129 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "nlohmann/json.hpp"
 
+// Forward-declared so this header never pulls in llama.cpp's chat.h. That
+// matters for a concrete reason, not just hygiene: chat.h does
+// `using json = nlohmann::ordered_json;` at GLOBAL scope, whereas the rest of
+// this engine (http_server.cpp, tests) does `using json = nlohmann::json;`.
+// Letting both aliases into one translation unit is a hard `::json`
+// redefinition error. So the entire llama.cpp chat surface -- and the
+// ordered_json alias it drags in -- is quarantined inside chat_template.cpp,
+// and everything the rest of the engine touches is expressed here in plain
+// std types + the engine's own (unordered) nlohmann::json.
+struct llama_model;
+
 namespace pleiades_engine {
 
-// Which tool-calling text dialect a loaded model's own chat template
-// expects/emits. There is no single "Qwen tool format" -- a council review
-// (2026-07-23, cross-checked against real GGUF tokenizer.chat_template
-// metadata pulled via llama_model_meta_val_str, not paraphrased) found at
-// least two, both currently present on this machine:
-//
-//   QWEN_XML:  arch qwen35 / qwen35moe (e.g. the primary
-//              Qwythos-9B-Claude-Mythos-5-1M model, and HauhauCS's
-//              Qwen3.6-35B-A3B MoE):
-//                <tool_call>
-//                <function=NAME>
-//                <parameter=KEY>
-//                VALUE
-//                </parameter>
-//                </function>
-//                </tool_call>
-//
-//   QWEN_JSON: arch qwen2 and dense qwen3 (e.g. Qwen2.5-0.5B-Instruct,
-//              Rootkit7's Ternary-Bonsai-4B):
-//                <tool_call>
-//                {"name": NAME, "arguments": {...}}
-//                </tool_call>
-//
-// A parser/formatter hardcoded to only one of these would silently produce
-// zero tool calls against the other family. See ModelManager::tool_dialect()
-// for how this is detected once, at model-load time, from the model's own
-// template -- never guessed from a model name/path.
-enum class ToolDialect {
-    NONE,       // no tool-call dialect detected -- behave exactly as the
-                // pre-tool-calling engine did (see format_chatml()).
-    QWEN_XML,
-    QWEN_JSON,
-};
-
-const char* tool_dialect_name(ToolDialect d);
-
-// Sniffs a model's raw tokenizer.chat_template text for one of the two
-// dialects above. Pure string function (no model/GGUF needed), so it's
-// directly unit-testable against literal template snippets -- see
-// test_tool_calls.cpp. XML is checked first: its `<function=` marker is
-// unambiguous (pure XML-style tags, no JSON braces anywhere near it in
-// either real sample), so checking it first keeps detection robust even if
-// a future template's example text mixes markers from both families.
-ToolDialect detect_tool_dialect(const std::string& chat_template);
-
-// Whether this template's own `add_generation_prompt` tail defaults to an
-// OPEN (model-completes-it) `<think>\n` block when `enable_thinking` isn't
-// explicitly passed, vs. no think handling at all. Sniffed independently of
-// dialect (not assumed from it) because real ground truth shows these are
-// orthogonal: qwen35/qwen35moe (both XML-dialect samples checked) default
-// to open thinking via this exact marker; qwen2 (JSON-dialect) has no think
-// handling whatsoever; a dense-qwen3 JSON-dialect sample checked instead
-// forces a pre-closed think block unconditionally (a third behavior this
-// function deliberately does not try to distinguish from "no support" --
-// see chat_template.cpp's doc comment for the full reasoning).
-bool detect_open_thinking(const std::string& chat_template);
-
-// One tool call, in the model's own {name, arguments} shape. Used both for
-// an INBOUND assistant history turn's tool_calls (ChatMessage::tool_calls,
-// round-tripped back into the dialect's native text by format_chat_prompt())
-// and for an OUTBOUND freshly-parsed call from the model's own generated
-// text (tool_call_parser.h). `arguments` is always a JSON object.
-struct ToolCall {
+// One parsed tool call, OpenAI-shape: `arguments` is the JSON-encoded string
+// exactly as llama.cpp's parser emits it (ready to drop into a response's
+// function.arguments field without re-encoding).
+struct ChatToolCall {
+    std::string id;
     std::string name;
-    nlohmann::json arguments;
+    std::string arguments;  // JSON-encoded object, as a string
 };
 
-struct ChatMessage {
-    std::string role;                  // "system" | "user" | "assistant" | "tool"
+// The structured result of parsing a model's completion back out of whatever
+// native format its own template specifies. `reasoning_content` is the
+// extracted <think>-style reasoning (empty if the model/template has none);
+// `tool_calls` is empty for an ordinary final answer.
+struct ParsedChatMessage {
     std::string content;
-    std::string reasoning_content;     // assistant only; empty if absent
-    std::vector<ToolCall> tool_calls;  // assistant only; empty if none
-    std::string tool_call_id;          // role == "tool" only
-    std::string tool_name;             // role == "tool" only (API fidelity; neither
-                                        // dialect's template actually renders this
-                                        // into the prompt text, only `content`)
+    std::string reasoning_content;
+    std::vector<ChatToolCall> tool_calls;
 };
 
-// STOPGAP hardcoded ChatML formatter -- NOT real per-model jinja templating.
-//
-// Real templating (llama_model_chat_template() + llama.cpp's common/chat.cpp
-// + minja) was deliberately deferred after a council review (qwen3.8-max +
-// Kimi, 2026-07-22): chat.cpp is not self-contained (pulls in common.cpp,
-// log.cpp, json-schema-to-grammar.cpp, the auto-parser/peg-parser files --
-// confirmed by reading the actual pinned includes, not just taken on either
-// model's word), so wiring it in is a real, separate unit of work, not a
-// quick add. Since Pleiades serves mostly Qwen-family GGUFs today and this
-// phase's goal is proving the HTTP plumbing (not perfecting templating),
-// this hardcodes Qwen2/2.5/3.x's stable ChatML-style template
-// (<|im_start|>role\ncontent<|im_end|>\n) and defers real multi-model
-// template support to a later phase. See
-// docs/specs/2026-07-21-native-inference-engine-design.md, Phase 3.
-//
-// Tool-calling (Phase 5, 2026-07-23) is layered on top via
-// format_chat_prompt() below rather than by editing this function in place
-// -- format_chatml() remains the exact byte-for-byte behavior for
-// ToolDialect::NONE models, still covered by test_chat_template.cpp.
-std::string format_chatml(const std::vector<ChatMessage>& messages);
+// The outcome of rendering ONE request through the model's real jinja
+// template. Carries the prompt string AND the parser state (chat format +
+// derived PEG parser) needed to turn the model's completion of that prompt
+// back into structured fields -- so a single object round-trips render ->
+// generate -> parse for one turn. Move-only; hides llama.cpp's common_chat_*
+// types (and their ordered_json) behind an opaque pimpl.
+class RenderedChat {
+public:
+    RenderedChat() noexcept;
+    RenderedChat(RenderedChat&&) noexcept;
+    RenderedChat& operator=(RenderedChat&&) noexcept;
+    RenderedChat(const RenderedChat&) = delete;
+    RenderedChat& operator=(const RenderedChat&) = delete;
+    ~RenderedChat();
 
-// Tool-aware formatter. `tools` is the request's raw OpenAI-shape `tools`
-// array (each element `{"type":"function","function":{"name",
-// "description","parameters"}}`), passed straight through into the
-// dialect's own `<tools>...</tools>` block via compact JSON, exactly like
-// the real templates' own `tool | tojson`.
-//
-// When `dialect == NONE`, this is exactly `format_chatml(messages)` --
-// tools/tool_calls/tool-role messages are ignored entirely, matching "no
-// tool support, behave exactly as today" (see ModelManager::tool_dialect()).
-//
-// When `dialect != NONE`, assistant tool_calls and role=="tool" messages
-// are re-rendered into the dialect's own native text form regardless of
-// whether `tools` is non-empty on THIS specific request (history from an
-// earlier round should still round-trip correctly even if, unusually, this
-// exact call omitted `tools`) -- but the `# Tools...` instructional system
-// block is only injected when `tools` is non-empty.
-//
-// Deliberate simplifications vs. the real per-model jinja (documented in
-// chat_template.cpp, not hidden): a model-specific forced-identity string
-// some finetunes splice into their own template (e.g. Qwythos's own "You
-// are Qwythos..." override, which is designed to override conflicting
-// identity instructions) is never reproduced -- Pleiades has its own
-// per-character system-prompt identity, and forcibly injecting a
-// finetune's own persona override here would actively fight that, not
-// just omit a nicety. Likewise the vanilla Qwen2.5 template's hardcoded
-// "You are Qwen, created by Alibaba Cloud" fallback (shown only when a
-// request has NO system message at all) is not reproduced, since
-// Pleiades' harness always sends one.
-std::string format_chat_prompt(const std::vector<ChatMessage>& messages, const std::vector<nlohmann::json>& tools,
-                                ToolDialect dialect, bool open_thinking);
+    // The fully-rendered prompt to feed the engine.
+    const std::string& prompt() const;
 
-// Cross-family fallback formatter (Stage A of real per-model templating).
-// Renders `messages` through llama.cpp's OWN built-in template engine
-// (llama_chat_apply_template) driven by `tmpl` -- the model's own
-// tokenizer.chat_template string (ModelManager::chat_template()). This is NOT
-// jinja: llama.cpp sniffs the template text against a fixed list of known
-// families (Llama-3, Gemma, Phi-3, Mistral, Zephyr, ChatML, ...) and emits
-// that family's correct role markup. It exists so a NON-Qwen instruct GGUF
-// stops being silently mis-rendered as Qwen ChatML by format_chatml(): the
-// ToolDialect::NONE path in http_server.cpp uses this whenever the model
-// carries a template, and only falls back to format_chatml() when it doesn't
-// (a base model) or llama.cpp doesn't recognize the family.
-//
-// Only role+content is rendered -- tool calls / tool-role messages are NOT
-// supported (llama.cpp's builtin templater has no tool-calling; that is Stage
-// B's real jinja work). That's correct for a NONE-dialect model, which has no
-// tool support to begin with (see ModelManager::tool_dialect()). The Qwen
-// XML/JSON dialects never reach here; they keep their own hardcoded renderers.
-//
-// Returns "" when `tmpl` is empty, `messages` is empty, or llama.cpp does not
-// recognize the template family -- the caller then falls back to
-// format_chatml(). `add_generation_prompt` appends the trailing
-// assistant-turn opener, exactly like format_chatml()'s own tail.
-std::string apply_builtin_template(const std::string& tmpl, const std::vector<ChatMessage>& messages,
-                                   bool add_generation_prompt);
+    // Extra stop strings this template/format wants honored (e.g. a tool-call
+    // closing marker). Callers merge these into their sampling stop list.
+    const std::vector<std::string>& additional_stops() const;
 
-// Parses an OpenAI-shape request body's `messages` array into ChatMessage
-// structs, round-tripping `tool_calls` (assistant turns) and
-// `tool_call_id`/`name` (role=="tool" turns) -- see http_server.cpp's
-// chat-completions handler, the only caller in this binary.
-//
-// Null-safe throughout: nlohmann's `.value(key, default)` only substitutes
-// `default` for a MISSING key -- a PRESENT key holding JSON `null` still
-// reaches `.get<std::string>()`, which throws `type_error` 302. An
-// OpenAI-standard assistant tool-call turn commonly has `content: null`
-// (no accompanying prose, just tool_calls), and Pleiades' own harness
-// (pleiades/harness/agent.py::_assistant_turn) round-trips whatever this
-// engine itself emits verbatim -- so if this engine ever emits `content:
-// null` (which it does, matching the OpenAI convention, whenever a
-// tool-call response has no leading prose), the very next turn of ANY
-// multi-round tool-use conversation would feed it right back here. This
-// was a real, live, latent 500 before this function existed; every
-// optional string field below is read through the same null-safe path.
-std::vector<ChatMessage> parse_chat_messages(const nlohmann::json& body);
+    // Parse `generated_text` (the model's completion of prompt()) into
+    // structured content/reasoning/tool_calls, using the exact format this
+    // render resolved. `is_partial` tolerates a mid-generation prefix; pass
+    // false for a finished generation.
+    //
+    // THROWS std::runtime_error when a finished (is_partial=false) generation
+    // does not match the template's format -- e.g. a tool call truncated by
+    // max_tokens, or malformed markup. That throw is the fail-loud signal the
+    // HTTP layer maps to a distinct 422 (never a 200 that narrates broken
+    // tool-call markup as prose) -- see http_server.cpp, and why it matters
+    // when Pleiades runs exec_policy "allow".
+    ParsedChatMessage parse(const std::string& generated_text, bool is_partial) const;
+
+    struct Impl;
+    explicit RenderedChat(Impl* impl) noexcept;  // internal ctor (chat_template.cpp)
+
+private:
+    std::unique_ptr<Impl> impl_;
+};
+
+// Real per-model chat templating, built once from a loaded GGUF's own
+// tokenizer.chat_template via llama.cpp's common_chat_* machinery (the same
+// code path real llama-server uses). Replaces the engine's old hardcoded
+// Qwen ChatML/XML/JSON formatters and Qwen-only tool-call parser with genuine
+// per-family jinja rendering + auto-derived tool-call parsing for ANY model
+// whose template llama.cpp understands. One instance per loaded model; hold it
+// on ModelManager. Move-only; opaque pimpl (see the llama_model note above).
+class ChatTemplates {
+public:
+    ChatTemplates() noexcept;
+    ChatTemplates(ChatTemplates&&) noexcept;
+    ChatTemplates& operator=(ChatTemplates&&) noexcept;
+    ChatTemplates(const ChatTemplates&) = delete;
+    ChatTemplates& operator=(const ChatTemplates&) = delete;
+    ~ChatTemplates();
+
+    // Build from a loaded model. `template_override` forces a specific jinja
+    // template string; empty (the normal case) reads the model's own GGUF
+    // metadata template. A null `model` is allowed ONLY together with a
+    // non-empty override (used by the offline unit tests to exercise a known
+    // template with no model loaded). THROWS std::runtime_error if no usable
+    // template can be built (e.g. the override is malformed jinja).
+    static ChatTemplates create(const llama_model* model, const std::string& template_override = "");
+
+    bool valid() const;
+
+    // Which template source llama.cpp resolved (for load-time logging).
+    std::string source() const;
+
+    // Whether this model's template advertises tool-call support (jinja caps).
+    // When false, tools offered on a request are ignored (see http_server.cpp).
+    bool supports_tools() const;
+
+    // Render an OpenAI-shape request. `messages` and `tools` are the raw
+    // request arrays (unordered nlohmann::json, straight from the body). Pass
+    // an empty/absent `tools` to render without tools. THROWS
+    // std::runtime_error on a template evaluation error.
+    RenderedChat apply(const nlohmann::json& messages, const nlohmann::json& tools, bool add_generation_prompt,
+                       bool enable_thinking) const;
+
+    struct Impl;
+
+private:
+    std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace pleiades_engine
