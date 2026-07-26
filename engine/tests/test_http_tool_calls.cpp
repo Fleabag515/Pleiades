@@ -33,20 +33,25 @@
 // cleanly (CTest SKIP_RETURN_CODE) when that file isn't present -- so it runs
 // for real where a suitable model exists and never fails a fresh checkout.
 //
-// A FRESH SERVER PROCESS backs each assertion group below (see ServerProcess),
-// deliberately -- NOT a performance choice. A real, separate, PRE-EXISTING bug
-// was found while writing this test: two successive requests against one
-// running server, where the second's prompt has a long common prefix with
-// whatever the KV/prefix-cache still holds from the first (Engine::generate's
-// Phase 6 prefix-cache reuse -- see prefix_cache.cpp), can corrupt generation
-// on the second call (reproduced independently of every Phase A/B/C change in
-// this pass -- it happens on the pre-Phase-A/B/C code too, confirmed by
-// reverting this session's engine.cpp/http_server.cpp changes and re-running
-// two back-to-back curl requests by hand). That is a separate, real, tracked
-// issue (not something this test is responsible for verifying or fixing), and
-// giving every assertion group its own cold server sidesteps it entirely so
-// this test actually verifies what it's named for: Phase A/B/C's own
-// correctness, not the prefix cache's.
+// A FRESH SERVER PROCESS backs each Phase-A/B/C assertion group below (see
+// ServerProcess) so each verifies its OWN concern in isolation. There is ALSO
+// a dedicated same-server group -- test_same_server_prefix_reuse() -- that
+// fires multiple requests at ONE running server on purpose.
+//
+// That group is the regression test for a real, previously-unfixed bug this
+// test's earlier version had to sidestep: two successive requests against one
+// running server, where the second's prompt shares a long prefix with what the
+// KV/prefix-cache still holds from the first (Engine::generate's Phase 6 reuse
+// -- see prefix_cache.cpp), corrupted generation on the second call. Root
+// cause (fixed in engine.cpp): this pinned llama.cpp's FLASH-ATTENTION kernel
+// leaks stale K/V from cells that llama_memory_seq_rm() freed but the shorter
+// second prompt didn't overwrite -- a numerical perturbation that flipped a
+// greedy argmax and turned a valid tool call into malformed JSON (HTTP 422).
+// Reproduced on CPU and CUDA alike (it is a flash-attention bug, not a GPU
+// one). The engine now scrubs the KV data and cold-decodes when flash
+// attention is active and the prompt is shorter than the resident sequence,
+// while still reusing the prefix when a turn GROWS the conversation -- both
+// behaviors are asserted below.
 //
 // argv[1] = path to the pleiades-engine-server binary (from CMake TARGET_FILE)
 // argv[2] = path to the Qwen GGUF fixture
@@ -243,6 +248,78 @@ int test_streaming_fail_loud(httplib::Client& cli) {
     return 0;
 }
 
+// A growing multi-turn continuation of tool_request(): same system + first
+// user turn, plus the assistant's get_weather(San Francisco) call, its tool
+// result, and a NEW user turn about Boston. Its prompt strictly EXTENDS what
+// the first request left resident, so the prefix cache should (and does)
+// reuse the shared prefix -- the case the FA fix deliberately keeps fast.
+json growing_tool_request() {
+    json b = tool_request(false, 128);
+    b["messages"].push_back({{"role", "assistant"},
+                             {"content", nullptr},
+                             {"tool_calls", json::array({{{"id", "call_0"},
+                                                          {"type", "function"},
+                                                          {"function", {{"name", "get_weather"},
+                                                                        {"arguments", "{\"location\":\"San Francisco\"}"}}}}})}});
+    b["messages"].push_back({{"role", "tool"},
+                             {"tool_call_id", "call_0"},
+                             {"name", "get_weather"},
+                             {"content", "{\"temp\":\"18C\",\"sky\":\"foggy\"}"}});
+    b["messages"].push_back({{"role", "user"}, {"content", "Now check the weather in Boston with the same tool."}});
+    return b;
+}
+
+// Parses a non-streaming chat response and returns the first tool call's
+// `location` argument, or "" on any failure (non-200, parse error, no tool
+// call, missing location). The caller PLEIADES_CHECKs it.
+std::string tool_call_location(const httplib::Result& res) {
+    if (!res || res->status != 200) return {};
+    json body = json::parse(res->body, nullptr, false);
+    if (body.is_discarded()) return {};
+    const json& choice = body["choices"][0];
+    const json& msg = choice["message"];
+    if (!msg.contains("tool_calls") || !msg["tool_calls"].is_array() || msg["tool_calls"].empty()) return {};
+    const json& fn = msg["tool_calls"][0]["function"];
+    if (fn["name"] != "get_weather") return {};
+    json args = json::parse(fn["arguments"].get<std::string>(), nullptr, false);
+    if (args.is_discarded() || !args.contains("location") || !args["location"].is_string()) return {};
+    return args["location"].get<std::string>();
+}
+
+// -- Prefix-cache reuse across requests on ONE server (regression) -------- //
+// The bug this file's header documents: the SECOND of two back-to-back
+// requests to the same running server, sharing a long common prefix, came
+// back as a 422 (corrupted tool call). Fire the same greedy tool request
+// TWICE, then a growing continuation -- all three must return a valid tool
+// call. On the unfixed engine the 2nd request 422s here; the growth request
+// additionally proves prefix reuse is still exercised (not disabled wholesale).
+int test_same_server_prefix_reuse(httplib::Client& cli) {
+    auto r1 = cli.Post("/v1/chat/completions", tool_request(false, 128).dump(), "application/json");
+    std::string loc1 = tool_call_location(r1);
+    PLEIADES_CHECK(!loc1.empty());  // first (cold) request: valid tool call
+
+    // The regression: identical request, same server. Was HTTP 422 (the FA
+    // stale-KV leak corrupted the reused-prefix generation).
+    auto r2 = cli.Post("/v1/chat/completions", tool_request(false, 128).dump(), "application/json");
+    PLEIADES_CHECK(r2 != nullptr);
+    PLEIADES_CHECK(r2->status == 200);  // NOT 422 -- the actual regression assertion
+    std::string loc2 = tool_call_location(r2);
+    PLEIADES_CHECK(!loc2.empty());
+    PLEIADES_CHECK(loc2 == loc1);  // greedy => identical requests => identical result
+
+    // Growing continuation: its prompt extends the resident sequence, so the
+    // prefix cache reuses the shared prefix (fast path preserved under FA) and
+    // must still produce a correct, parseable call for the new city.
+    auto r3 = cli.Post("/v1/chat/completions", growing_tool_request().dump(), "application/json");
+    PLEIADES_CHECK(r3 != nullptr);
+    PLEIADES_CHECK(r3->status == 200);
+    std::string loc3 = tool_call_location(r3);
+    PLEIADES_CHECK(!loc3.empty());  // valid tool call after prefix reuse
+    std::fprintf(stderr, "[test] same-server prefix reuse OK: req1=%s req2=%s (reused) grow=%s\n", loc1.c_str(),
+                 loc2.c_str(), loc3.c_str());
+    return 0;
+}
+
 // -- 5. Phase B: seeded sampling is reproducible (not greedy-only) -------- //
 // Two identical temperature>0 seeded requests, against two INDEPENDENT cold
 // servers, must produce identical content -- impossible if sampling params
@@ -374,6 +451,11 @@ int main(int argc, char** argv) {
     rc |= run_group(test_streaming_tool_call);
     rc |= run_group(test_non_streaming_fail_loud);
     rc |= run_group(test_streaming_fail_loud);
+    // Deliberately its OWN single server shared across all three requests --
+    // the whole point is exercising prefix-cache reuse ACROSS requests (see the
+    // file header): a fresh cold server per request would hide the very bug it
+    // regresses.
+    rc |= run_group(test_same_server_prefix_reuse);
 
     // Phase B reproducibility: two independent cold servers, same seeded
     // request, must agree -- see seeded_request_content's doc comment for

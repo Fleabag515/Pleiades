@@ -126,9 +126,12 @@ Engine::Engine(ModelManager& models, ContextGovernor& ctx) : models_(models), ct
 void Engine::reset_prefix_cache() {
     llama_context* ctx = ctx_.ctx();
     if (ctx) {
-        // Hard-clear sequence 0's KV so the tracked cache and the real KV
-        // agree (both empty).
-        llama_memory_seq_rm(llama_get_memory(ctx), /*seq_id=*/0, /*p0=*/-1, /*p1=*/-1);
+        // Hard-clear the KV so the tracked cache and the real KV agree (both
+        // empty). data=true zeroes the backend buffers, not just the cell
+        // metadata -- required so a subsequent flash-attention decode can't
+        // read leftover K/V from these now-freed cells (see the stale-KV guard
+        // in generate() for the full rationale).
+        llama_memory_clear(llama_get_memory(ctx), /*data=*/true);
     }
     prefix_.invalidate(ctx_.epoch());
 }
@@ -166,6 +169,14 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         prefix_.invalidate(ctx_.epoch());
     }
 
+    // High-water mark of the sequence currently resident in the KV -- the
+    // number of contiguous positions [0, resident) that hold live K/V (the
+    // previous request's prompt + everything it generated). prefix_ mirrors
+    // the KV exactly (see PrefixCache), so this is just its length. Captured
+    // before any trim below because the FA-safety check needs the *pre-trim*
+    // resident length.
+    const size_t resident = prefix_.size();
+
     std::vector<llama_token> prompt_tokens = tokenize(vocab, prompt, /*add_special=*/true);
     result.n_prompt_tokens = static_cast<int>(prompt_tokens.size());
 
@@ -184,6 +195,43 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         if (pos_min > 0 || pos_max < static_cast<llama_pos>(n_reuse) - 1) {
             n_reuse = 0;
         }
+    }
+
+    // -- Flash-attention stale-KV correctness guard ------------------------
+    //
+    // Trimming the KV with llama_memory_seq_rm() only clears cell *metadata*;
+    // the K/V *data* of the freed cells stays in the backend buffer until a
+    // later decode overwrites it. The suffix decode below overwrites cells
+    // [n_reuse, prompt_len), so any freed cell at position >= prompt_len keeps
+    // its stale K/V -- which happens exactly when this prompt is SHORTER than
+    // the resident high-water (a shorter/diverged turn, the norm once Anamnesis
+    // rewrites the memory block each turn; see launch.py's --cache-reuse note).
+    //
+    // With the explicit-mask attention path those stale cells are correctly
+    // masked (mask_drop == -inf), so reuse is exact -- verified byte-for-byte
+    // on CPU and CUDA. But this pinned llama.cpp's FLASH-ATTENTION kernel
+    // (b10103 / c588c4f47) leaks non-zero K/V from those masked cells into the
+    // result: a small numerical perturbation that flips the occasional greedy
+    // argmax and silently corrupts generation (empirically: a Qwen2.5 tool call
+    // comes back as `{{"name"..}}}}` instead of `{"name"..}` on the 2nd of two
+    // identical requests -- reproduced on CPU *and* CUDA, so it is a flash-
+    // attention bug, not a GPU one; it is not the position/KV bookkeeping,
+    // which is provably correct here, nor CUDA graphs). llama_batch_get_one's
+    // auto-assigned positions were ruled out too (explicit positions don't fix
+    // it). The tiny fixture in test_prefix_cache doesn't trip it only because
+    // its perturbation stays under the argmax-flip threshold.
+    //
+    // Fix: when flash attention may be active and stale cells would remain,
+    // scrub the whole KV data buffer (llama_memory_clear(data=true) is the only
+    // public API that zeroes data, not just metadata) and cold-decode. Reuse is
+    // preserved for the common growing-conversation case (prompt_len >=
+    // resident: every freed cell is overwritten by the suffix decode, so no
+    // stale data survives) and whenever flash attention is explicitly off.
+    const bool fa_maybe_on = ctx_.params().flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    if (fa_maybe_on && prompt_tokens.size() < resident) {
+        llama_memory_clear(mem, /*data=*/true);
+        prefix_.invalidate(ctx_.epoch());
+        n_reuse = 0;
     }
 
     // Trim the KV back to the reusable prefix: remove [n_reuse, inf) from
@@ -208,7 +256,10 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     int n_suffix = static_cast<int>(prompt_tokens.size() - n_reuse);
     llama_batch prompt_batch = llama_batch_get_one(prompt_tokens.data() + n_reuse, n_suffix);
     if (llama_decode(ctx, prompt_batch) != 0) {
-        // Leave the cache consistent with the (now-uncertain) KV state.
+        // Scrub the KV data (not just metadata) so a partially-written,
+        // now-abandoned decode can't leak into the next request's flash-
+        // attention pass -- then drop the tracked prefix to match.
+        llama_memory_clear(mem, /*data=*/true);
         prefix_.invalidate(ctx_.epoch());
         throw std::runtime_error("pleiades_engine: llama_decode failed on prompt");
     }
@@ -284,6 +335,7 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         llama_batch next_batch = llama_batch_get_one(&next, 1);
         if (llama_decode(ctx, next_batch) != 0) {
             llama_sampler_free(chain);
+            llama_memory_clear(mem, /*data=*/true);  // scrub partial KV (see prompt-decode failure above)
             prefix_.invalidate(ctx_.epoch());
             throw std::runtime_error("pleiades_engine: llama_decode failed during generation");
         }

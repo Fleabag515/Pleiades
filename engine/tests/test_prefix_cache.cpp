@@ -4,11 +4,16 @@
 // Two layers here:
 //   1. Pure PrefixCache bookkeeping (no model) -- LCP math + the
 //      "always leave one token" cap + epoch invalidation.
-//   2. Engine-level behavior against the real (tiny) fixture model:
-//      a repeated prompt reuses the cache and produces byte-identical
-//      output to a cold decode; a prompt that diverges partway only
-//      re-decodes the diverged suffix; a resize drops the cache (strategy
-//      3b) and the engine still generates correctly afterward.
+//   2. Engine-level behavior against the real (tiny) fixture model, with
+//      flash attention OFF (see main()): a repeated prompt reuses the cache
+//      and produces byte-identical output to a cold decode; a prompt that
+//      diverges partway only re-decodes the diverged suffix; a resize drops
+//      the cache (strategy 3b) and the engine still generates correctly.
+//   3. Flash-attention stale-KV regression (section 5, FA ON): the fix that
+//      makes reuse safe under flash attention -- a shorter/repeat request
+//      cold-decodes (no stale-cell leak, byte-identical), a growing request
+//      still reuses the shared prefix. On the unfixed engine the repeat
+//      request's output diverged (the corruption this whole pass fixed).
 //
 // The determinism check (warm cache hit == cold decode, byte for byte) is
 // the load-bearing one: a caching bug here would silently corrupt every
@@ -97,8 +102,19 @@ int main(int argc, char** argv) {
 
     ModelManager models;
     models.load(model_path, /*n_gpu_layers=*/0);
+
+    // Reuse-math (sections 1-4) is verified with flash attention explicitly
+    // DISABLED. FA-on prefix reuse has a separate, real llama.cpp stale-KV
+    // hazard (fixed by engine.cpp's guard and regressed in section 5 below), so
+    // isolating the reuse LOGIC here means pinning FA off -- otherwise the fix
+    // would (correctly) cold-decode the shorter repeat prompts these sections
+    // fire and the "reuse happened" assertions couldn't run at all. With FA off
+    // the mask path makes reuse exact regardless of stale cells, so these
+    // byte-identical checks exercise the reuse machinery directly.
+    ContextParams fa_off;
+    fa_off.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     ContextGovernor ctx;
-    ctx.create(models.model(), /*n_ctx=*/512);
+    ctx.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, fa_off);
     Engine engine(models, ctx);
 
     // Keep prompts well within the fixture's own tiny trained context (128
@@ -141,7 +157,7 @@ int main(int argc, char** argv) {
     // against a fresh context.
     {
         ContextGovernor ctx2;
-        ctx2.create(models.model(), /*n_ctx=*/512);
+        ctx2.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, fa_off);
         Engine engine2(models, ctx2);
         auto div_cold = engine2.complete(divergent, 16);
         PLEIADES_CHECK(div_cold.n_prompt_cached == 0);
@@ -159,6 +175,76 @@ int main(int argc, char** argv) {
     PLEIADES_CHECK(after.n_prompt_cached == 0);         // resize dropped it
     PLEIADES_CHECK(after.n_generated_tokens > 0);
     PLEIADES_CHECK(!after.text.empty());
+
+    // -- (5) flash-attention stale-KV regression ------------------------- //
+    // The real bug: with FLASH ATTENTION on, a second (shorter or diverged)
+    // request that reuses a trimmed prefix read stale K/V from the freed cells
+    // -- llama.cpp's FA kernel leaks masked-out cells' data -- and silently
+    // corrupted generation. The fix cold-decodes (scrubbing KV data) when FA is
+    // active and the prompt is shorter than the resident sequence, but keeps
+    // reuse when the prompt GROWS. This section asserts both, against a real
+    // FA-enabled context. On the UNFIXED engine the identical-repeat check
+    // below diverges (that was the corruption). The prompt is deliberately
+    // long enough that the FA perturbation would flip a greedy argmax -- the
+    // handful-of-tokens prompts above stay under that threshold, which is why
+    // the pre-fix engine passed sections 1-4 while still being broken here.
+    {
+        ContextParams fa_on;
+        fa_on.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+        // A ChatML-shaped prompt (the fixture tokenizes the markers as plain
+        // text -- it has no tool template) that empirically flips this model's
+        // greedy argmax on the unfixed engine: the identical-repeat below then
+        // diverges from the cold decode. A shorter, blander prompt keeps the FA
+        // perturbation under the flip threshold and would only exercise the
+        // n_prompt_cached==0 behavioral assertion, not the byte-identical one.
+        const std::string p =
+            "<|im_start|>system\nYou are a helpful assistant. Use tools when appropriate.<|im_end|>\n"
+            "<|im_start|>user\nWhat is the weather in San Francisco? Use the get_weather tool.<|im_end|>\n"
+            "<|im_start|>assistant\n";
+
+        // Cold reference in its own fresh FA-on context (no reuse possible).
+        std::string cold_ref;
+        {
+            ContextGovernor c;
+            c.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, fa_on);
+            Engine e(models, c);
+            cold_ref = e.complete(p, /*n_predict=*/48).text;
+        }
+
+        ContextGovernor fctx;
+        fctx.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, fa_on);
+        Engine fe(models, fctx);
+        auto a1 = fe.complete(p, /*n_predict=*/48);        // cold on this engine
+        auto a2 = fe.complete(p, /*n_predict=*/48);        // identical repeat
+        PLEIADES_CHECK(a1.text == cold_ref);
+        PLEIADES_CHECK(a2.text == a1.text);                 // <- corrupted pre-fix
+        PLEIADES_CHECK(a2.n_prompt_cached == 0);            // safe cold path taken (prompt < resident)
+
+        // Growth: a strictly LONGER prompt that shares p's prefix. A separate
+        // engine seeds a small resident (short generation) then extends it, so
+        // the second prompt genuinely exceeds the resident high-water -- the fix
+        // keeps reuse (every freed cell is overwritten), so cached > 0, and the
+        // output must still equal a cold decode of the same prompt.
+        ContextGovernor gctx;
+        gctx.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, fa_on);
+        Engine ge(models, gctx);
+        ge.complete(p, /*n_predict=*/4);                    // small resident: p + 4 tokens
+        const std::string pg =
+            p + " walk through the ancient forest to deliver a woven basket of fresh warm bread and "
+                "golden honey to her frail grandmother, taking great care never to stray from the "
+                "narrow winding path between the tall dark trees.";
+        std::string grow_cold;
+        {
+            ContextGovernor c;
+            c.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, fa_on);
+            Engine e(models, c);
+            grow_cold = e.complete(pg, /*n_predict=*/32).text;
+        }
+        auto grow = ge.complete(pg, /*n_predict=*/32);
+        PLEIADES_CHECK(grow.n_prompt_cached > 0);           // reuse preserved under FA
+        PLEIADES_CHECK(grow.n_prompt_cached < grow.n_prompt_tokens);
+        PLEIADES_CHECK(grow.text == grow_cold);             // correct despite reuse
+    }
 
     llama_backend_free();
     return 0;
