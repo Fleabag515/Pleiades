@@ -1,13 +1,14 @@
-"""launch.py's build_command(): --mmproj wiring, scoped to the native
-llama-server runtime only (see pleiades/launch.py's build_command docstring
-for why the python fallback and PLEIADES_ENGINE=pleiades_native are
-deliberately excluded)."""
+"""launch.py's build_command(): --mmproj wiring (native llama-server only),
+plus the PLEIADES_ENGINE=pleiades_native branch's flag-mode CLI + autofit
+placement wiring (GPU/MoE offload). --mmproj is still excluded from the
+pleiades_native path (that engine has no vision support); GPU/MoE placement is
+NOT -- the native C++ engine now shares this function's autofit machinery."""
 
 import os
 
 
 from pleiades import launch, runtime
-from pleiades.autofit import RuntimeCaps
+from pleiades.autofit import Placement, RuntimeCaps
 from pleiades.config import Settings
 
 
@@ -136,3 +137,86 @@ def test_native_command_includes_slot_save_path(tmp_path, monkeypatch):
     assert "slottest" in slot_path
     assert slot_path.endswith(os.sep)  # required: server does raw string concat, not path join
     assert os.path.isdir(slot_path.rstrip(os.sep))
+
+
+# -- PLEIADES_ENGINE=pleiades_native: flag-mode CLI + autofit placement ----- #
+
+def _force_native_cpp(monkeypatch, bin_path="/fake/pleiades-engine-server"):
+    """Route build_command() into the native C++ engine branch."""
+    from pleiades import runtime as _rt
+    monkeypatch.setenv("PLEIADES_ENGINE", "pleiades_native")
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: bin_path)
+
+
+def test_pleiades_native_uses_flag_mode_not_legacy_positional(tmp_path, monkeypatch):
+    # The branch used to emit 6-positional-arg legacy mode with ngl hardcoded
+    # to 0. It must now emit http_server.cpp's flag CLI instead.
+    _force_native_cpp(monkeypatch)
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8091, name="nat",
+                                n_gpu_layers="auto", settings=Settings())
+    assert plan.cmd[1].startswith("--")  # not the legacy `<bin> <model> <host> ...`
+    assert plan.cmd[plan.cmd.index("--model") + 1] == str(model)
+    for flag in ("--host", "--port", "--ctx", "--ngl", "--alias"):
+        assert flag in plan.cmd
+
+
+def test_pleiades_native_all_gpu_layers_is_negative_ngl(tmp_path, monkeypatch):
+    # place() emits n_gpu_layers == -1 for full-GPU/MoE strategies. This engine
+    # takes "all layers" as a NEGATIVE ngl (ModelManager::load -> llama), NOT
+    # the 999 sentinel the llama-server branch uses -- it must pass -1 straight
+    # through and never emit 999.
+    _force_native_cpp(monkeypatch)
+    monkeypatch.setattr(launch, "place",
+                        lambda meta, ctx, caps=None: Placement("full_gpu", n_gpu_layers=-1, est_tps=100.0))
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8091, name="nat",
+                                n_gpu_layers="auto", settings=Settings())
+    assert plan.cmd[plan.cmd.index("--ngl") + 1] == "-1"
+    assert "999" not in plan.cmd
+
+
+def test_pleiades_native_moe_placement_emits_n_cpu_moe(tmp_path, monkeypatch):
+    # A MoE split (n_cpu_moe > 0, from the model's own expert structure) must
+    # reach the engine as --n-cpu-moe.
+    _force_native_cpp(monkeypatch)
+    monkeypatch.setattr(launch, "place",
+                        lambda meta, ctx, caps=None: Placement("moe_cpu", n_gpu_layers=-1, n_cpu_moe=48, est_tps=20.0))
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8091, name="moe",
+                                n_gpu_layers="auto", settings=Settings())
+    assert plan.cmd[plan.cmd.index("--n-cpu-moe") + 1] == "48"
+    assert "n_cpu_moe=48" in plan.why
+
+
+def test_pleiades_native_explicit_ngl_override_wins_and_skips_moe(tmp_path, monkeypatch):
+    # An explicit n_gpu_layers overrides autofit and suppresses the auto MoE
+    # split (matching the sibling native branch's `forced is None` gating).
+    _force_native_cpp(monkeypatch)
+    monkeypatch.setattr(launch, "place",
+                        lambda meta, ctx, caps=None: Placement("moe_cpu", n_gpu_layers=-1, n_cpu_moe=48, est_tps=20.0))
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8091, name="nat",
+                                n_gpu_layers=10, settings=Settings())
+    assert plan.cmd[plan.cmd.index("--ngl") + 1] == "10"
+    assert "--n-cpu-moe" not in plan.cmd
+    assert "override" in plan.why
+
+
+def test_pleiades_native_moe_offload_caps_enabled(tmp_path, monkeypatch):
+    # The branch must pass place() a RuntimeCaps with moe_offload=True (the
+    # engine supports --n-cpu-moe), NOT probe the possibly-absent llama-server
+    # binary -- otherwise a MoE model would never get a split. Capture the caps
+    # place() is actually called with.
+    _force_native_cpp(monkeypatch)
+    seen = {}
+
+    def _capture_place(meta, ctx, caps=None):
+        seen["caps"] = caps
+        return Placement("full_gpu", n_gpu_layers=-1, est_tps=100.0)
+
+    monkeypatch.setattr(launch, "place", _capture_place)
+    model = _fake_gguf(tmp_path)
+    launch.build_command(str(model), "127.0.0.1", 8091, name="nat",
+                         n_gpu_layers="auto", settings=Settings())
+    assert seen["caps"].moe_offload is True

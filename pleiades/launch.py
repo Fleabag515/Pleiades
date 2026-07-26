@@ -69,29 +69,86 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
 
     # Feature-flagged, off by default (docs/specs/2026-07-21-native-
     # inference-engine-design.md, Phase 5): the from-scratch libllama-based
-    # engine, once it clears the parity bar Phase 4 benchmarked. Kept as
-    # its own branch with its own minimal command construction rather than
-    # slotting into the native-llama-server branch below -- that branch
-    # assumes whatever binary it gets back understands llama-server's full
-    # flag set (flash-attention toggle, KV quantization, MoE expert
-    # offload, speculative decoding), none of which this engine implements
-    # yet. See find_native_cpp_engine()'s own docstring for the reasoning
+    # engine. It now shares this function's autofit placement (see the branch
+    # body), but is kept as its own branch rather than slotting into the
+    # native-llama-server branch below: that branch builds flags this engine
+    # still doesn't implement (--jinja, speculative decoding via -md/--spec-type,
+    # --mmproj vision, --slot-save-path, --cache-reuse, --parallel), so pointing
+    # it at this binary would pass flags parse_args() rejects. What this engine
+    # DOES support -- ngl/n-cpu-moe/ub/fa/ctk/ctv/mlock/ctx/threads -- is enough
+    # to run the same placement, which is what the branch below now does. See
+    # find_native_cpp_engine()'s own docstring for the separation rationale
     # (checked against a second independent opinion, not just assumed).
     if os.environ.get("PLEIADES_ENGINE", "").lower() == "pleiades_native":
         native_cpp = runtime.find_native_cpp_engine()
         if native_cpp:
-            n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path)
+            # The from-scratch engine (engine/http_server.cpp) now speaks
+            # llama-server's flag CLI and, unlike when this branch first landed
+            # ("no autofit/MoE-split support yet"), DOES support GPU + MoE
+            # expert offload: --ngl/--n-cpu-moe/--ub/--fa/--ctk/--ctv/--mlock
+            # (see that file's parse_args()). So it now goes through the SAME
+            # autofit placement as the native-llama-server branch below instead
+            # of the old ngl=0 legacy positional mode.
+            #
+            # A dedicated RuntimeCaps is used rather than probing the (possibly
+            # absent) llama-server binary via runtime.caps(): the engine's
+            # capabilities are a known subset -- MoE expert offload yes, but not
+            # the managed fork's prefill env-opts, speculative decoding, mmproj
+            # or slot save/restore. place()'s VRAM cost model applies unchanged
+            # because this engine links the very same libllama (identical
+            # per-layer weight + KV footprint), and place() already reserves
+            # autofit._OVERHEAD off gpu.vram_free and rejects placements that
+            # don't fit -- so the OOM margin is inherited, not bypassed, and
+            # n_cpu_moe is keyed off THIS model's real MoE structure via `meta`.
+            cpp_caps = RuntimeCaps(moe_offload=True, native=True)
+            n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path, caps=cpp_caps)
+            # Context is fixed at launch (like llama-server): the engine's
+            # /resize exists, but we commit to the ceiling n_ctx_max here, same
+            # reasoning as the native branch below.
             launch_ctx = n_ctx_max
+            pl = place(meta, launch_ctx, caps=cpp_caps)
             forced = None
             if not (isinstance(n_gpu_layers, str) and n_gpu_layers.strip().lower() in ("", "auto")):
                 try:
                     forced = int(n_gpu_layers)
                 except (TypeError, ValueError):
                     forced = None
-            ngl = forced if forced is not None else 0  # no autofit/MoE-split support yet -- CPU-only until Phase 6+
-            cmd = [native_cpp, model_path, host, str(port), str(launch_ctx), str(ngl), name]
-            why = (f"runtime=pleiades-native-engine (Phase 5, experimental) "
-                   f"n_ctx={launch_ctx} n_gpu_layers={ngl}")
+            # "All layers on GPU" is a NEGATIVE ngl for this engine
+            # (ModelManager::load -> llama: n_gpu_layers < 0 => n_layer_all + 1),
+            # NOT the 999 sentinel the llama-server branch relies on. place()
+            # emits -1 for the full-GPU / MoE-split strategies, so it passes
+            # straight through; a user override is honored verbatim.
+            ngl = forced if forced is not None else pl.n_gpu_layers
+            cmd = [native_cpp, "--model", model_path, "--host", host, "--port", str(port),
+                   "--ctx", str(launch_ctx), "--ngl", str(ngl), "--alias", name]
+            if forced is None and pl.n_cpu_moe:
+                cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
+            ub = getattr(eff, "n_ubatch", 0) or pl.n_ubatch
+            if not ub and pl.n_cpu_moe:
+                # MoE-with-CPU-experts prefill is upload-bound; a bigger physical
+                # batch amortizes the per-ubatch expert re-uploads (same measured
+                # win the native branch documents). ub <= 2048 <= the engine's
+                # default n_batch, so no --batch bump is needed.
+                ub = 2048
+            if ub:
+                cmd += ["--ub", str(ub)]
+            fa = eff.flash_attn
+            if eff.kv_cache_type and fa == "auto":
+                fa = "on"  # a quantized V-cache requires flash attention
+            if fa:
+                cmd += ["--fa", fa]
+            if eff.kv_cache_type:
+                cmd += ["--ctk", eff.kv_cache_type, "--ctv", eff.kv_cache_type]
+            if getattr(eff, "mlock", False):
+                cmd += ["--mlock"]
+            why = (f"runtime=pleiades-native-engine (experimental) strategy={pl.strategy} "
+                   f"n_ctx={launch_ctx} ngl={ngl}"
+                   + (f" n_cpu_moe={pl.n_cpu_moe}" if (forced is None and pl.n_cpu_moe) else "")
+                   + (f" ub={ub}" if ub else "")
+                   + f" est={pl.est_tps} tok/s -- {pl.reason}")
+            if forced is not None:
+                why = (f"runtime=pleiades-native-engine (experimental) "
+                       f"n_ctx={launch_ctx} ngl={forced} (explicit override)")
             return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max)
         print("[launch] PLEIADES_ENGINE=pleiades_native requested but "
               "pleiades-engine-server not found (build via `cmake --build "
