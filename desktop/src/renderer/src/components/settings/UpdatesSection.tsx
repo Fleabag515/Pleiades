@@ -83,6 +83,12 @@ function UpdatesSection(): React.JSX.Element {
             {status.phase === 'error' && status.error && (
               <span className="text-[11px] text-rose-300/80">{status.error}</span>
             )}
+            {status.phase === 'ready' && (
+              <span className="text-[11px] text-ink-dim">
+                Opens the installer for you to run -- your OS may ask you to confirm it (e.g.
+                Windows SmartScreen), that&apos;s expected for this build.
+              </span>
+            )}
           </div>
 
           <div className="flex flex-none items-center gap-2">

@@ -130,6 +130,10 @@ let tray: Tray | null = null
 // just hides it (minimize-to-tray) instead of tearing anything down.
 let quitting = false
 let logStream: WriteStream | null = null
+// Set from autoUpdater's 'update-downloaded' event -- the local cache path
+// of the already-downloaded installer, opened (not silently executed) by
+// the install IPC handler below. See that handler for why.
+let downloadedInstallerPath: string | null = null
 
 function logLine(line: string): void {
   const msg = `[${new Date().toISOString()}] ${line}`
@@ -356,12 +360,40 @@ function registerIpcHandlers(): void {
     autoUpdater.checkForUpdates().catch((e) => logLine(`[update] manual check failed: ${e}`))
   })
   ipcMain.handle('pleiades:get-update-status', () => updateStatus)
-  ipcMain.handle('pleiades:install-update-and-restart', () => {
-    // quitAndInstall's own 'before-quit'-equivalent path bypasses our normal
-    // before-quit handler (which stops the backend first) -- stop it
-    // ourselves before handing off, so the update doesn't land on top of a
-    // still-running backend process on the next launch.
-    stopBackend().finally(() => autoUpdater.quitAndInstall())
+  ipcMain.handle('pleiades:install-update-and-restart', async () => {
+    // NOT autoUpdater.quitAndInstall(): that spawns the unsigned NSIS
+    // installer as a detached background process AFTER this app has already
+    // quit, with no window of its own visible to react to. If Windows'
+    // SmartScreen (or Defender) gates that unattended launch behind a
+    // prompt, there is nothing left on screen suggesting one is even
+    // pending -- confirmed for real (2026-07-25): the app just vanished and
+    // never came back, with the install left half-applied (new
+    // resources/, stale app.asar) and zero indication anything had gone
+    // wrong. shell.openPath() instead launches the very same installer
+    // exactly the way a user double-clicking it in Explorer would -- any
+    // SmartScreen/Defender prompt lands in a normal foreground window right
+    // after they clicked "Install & restart," when they're actually
+    // watching for something to happen, matching how install.ps1's own
+    // desktop-app build already hands off to the user rather than trying to
+    // run its unsigned installer unattended (see that file's
+    // Install-DesktopApp comment).
+    if (!downloadedInstallerPath) {
+      setUpdateStatus({
+        phase: 'error',
+        error: 'Installer file not found -- try checking for updates again.'
+      })
+      return
+    }
+    const openError = await shell.openPath(downloadedInstallerPath)
+    if (openError) {
+      setUpdateStatus({ phase: 'error', error: `Could not open installer: ${openError}` })
+      return
+    }
+    // The installer is now up (or a security prompt is, which the user is
+    // right here to answer) -- stop our own backend and quit so it's free
+    // to overwrite this install's files, same as before.
+    await stopBackend()
+    app.quit()
   })
 }
 
@@ -385,8 +417,11 @@ function registerIpcHandlers(): void {
 // Shell puts a small dot on the gear icon the instant it's anything other
 // than idle/checking/not-available, so an update doesn't sit undiscovered
 // behind a panel nobody happened to open). The ONE click the owner asked
-// for is installUpdateAndRestart's IPC handler above, which is
-// autoUpdater.quitAndInstall() after stopping the backend cleanly first.
+// for is installUpdateAndRestart's IPC handler above -- it opens the
+// already-downloaded installer via shell.openPath() (a normal, visible,
+// user-facing launch) rather than autoUpdater.quitAndInstall()'s unattended
+// background spawn; see that handler's own comment for why the distinction
+// matters on an unsigned Windows build.
 // ---------------------------------------------------------------------------
 
 function setUpdateStatus(patch: Partial<UpdateStatus>): void {
@@ -408,9 +443,10 @@ function setupAutoUpdater(): void {
   autoUpdater.on('download-progress', (p) =>
     setUpdateStatus({ phase: 'downloading', progressPercent: Math.round(p.percent) })
   )
-  autoUpdater.on('update-downloaded', (info) =>
+  autoUpdater.on('update-downloaded', (info) => {
+    downloadedInstallerPath = info.downloadedFile
     setUpdateStatus({ phase: 'ready', version: info.version, progressPercent: 100 })
-  )
+  })
   autoUpdater.on('error', (err) => {
     logLine(`[update] ${err}`)
     setUpdateStatus({ phase: 'error', error: String(err?.message ?? err) })
