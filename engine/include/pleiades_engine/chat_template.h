@@ -137,6 +137,31 @@ std::string format_chatml(const std::vector<ChatMessage>& messages);
 std::string format_chat_prompt(const std::vector<ChatMessage>& messages, const std::vector<nlohmann::json>& tools,
                                 ToolDialect dialect, bool open_thinking);
 
+// Cross-family fallback formatter (Stage A of real per-model templating).
+// Renders `messages` through llama.cpp's OWN built-in template engine
+// (llama_chat_apply_template) driven by `tmpl` -- the model's own
+// tokenizer.chat_template string (ModelManager::chat_template()). This is NOT
+// jinja: llama.cpp sniffs the template text against a fixed list of known
+// families (Llama-3, Gemma, Phi-3, Mistral, Zephyr, ChatML, ...) and emits
+// that family's correct role markup. It exists so a NON-Qwen instruct GGUF
+// stops being silently mis-rendered as Qwen ChatML by format_chatml(): the
+// ToolDialect::NONE path in http_server.cpp uses this whenever the model
+// carries a template, and only falls back to format_chatml() when it doesn't
+// (a base model) or llama.cpp doesn't recognize the family.
+//
+// Only role+content is rendered -- tool calls / tool-role messages are NOT
+// supported (llama.cpp's builtin templater has no tool-calling; that is Stage
+// B's real jinja work). That's correct for a NONE-dialect model, which has no
+// tool support to begin with (see ModelManager::tool_dialect()). The Qwen
+// XML/JSON dialects never reach here; they keep their own hardcoded renderers.
+//
+// Returns "" when `tmpl` is empty, `messages` is empty, or llama.cpp does not
+// recognize the template family -- the caller then falls back to
+// format_chatml(). `add_generation_prompt` appends the trailing
+// assistant-turn opener, exactly like format_chatml()'s own tail.
+std::string apply_builtin_template(const std::string& tmpl, const std::vector<ChatMessage>& messages,
+                                   bool add_generation_prompt);
+
 // Parses an OpenAI-shape request body's `messages` array into ChatMessage
 // structs, round-tripping `tool_calls` (assistant turns) and
 // `tool_call_id`/`name` (role=="tool" turns) -- see http_server.cpp's

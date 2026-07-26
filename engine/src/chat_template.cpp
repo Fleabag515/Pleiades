@@ -1,5 +1,7 @@
 #include "pleiades_engine/chat_template.h"
 
+#include "llama.h"
+
 namespace pleiades_engine {
 
 using json = nlohmann::json;
@@ -301,6 +303,46 @@ std::string format_chat_prompt(const std::vector<ChatMessage>& messages, const s
         out += "<think>\n";
     }
     return out;
+}
+
+std::string apply_builtin_template(const std::string& tmpl, const std::vector<ChatMessage>& messages,
+                                   bool add_generation_prompt) {
+    if (tmpl.empty() || messages.empty()) {
+        return {};
+    }
+    std::vector<llama_chat_message> chat;
+    chat.reserve(messages.size());
+    for (const auto& m : messages) {
+        // role/content are borrowed as C strings for the duration of the call;
+        // `messages` outlives it, so no copies are needed. tool_calls/
+        // reasoning_content are intentionally not passed -- see the header.
+        chat.push_back({m.role.c_str(), m.content.c_str()});
+    }
+
+    // llama_chat_apply_template returns the FULL formatted length even when it
+    // exceeds the buffer (standard snprintf-style), or a negative value if it
+    // doesn't recognize the template family. Size the first buffer at the
+    // API's own recommended 2 * total message characters, then grow once if
+    // that underestimated.
+    size_t total_chars = 0;
+    for (const auto& m : messages) {
+        total_chars += m.role.size() + m.content.size();
+    }
+    std::vector<char> buf(std::max<size_t>(2 * total_chars, 256));
+    int32_t n = llama_chat_apply_template(tmpl.c_str(), chat.data(), chat.size(), add_generation_prompt, buf.data(),
+                                          static_cast<int32_t>(buf.size()));
+    if (n < 0) {
+        return {};  // template family not recognized -> caller falls back
+    }
+    if (static_cast<size_t>(n) > buf.size()) {
+        buf.resize(static_cast<size_t>(n));
+        n = llama_chat_apply_template(tmpl.c_str(), chat.data(), chat.size(), add_generation_prompt, buf.data(),
+                                      static_cast<int32_t>(buf.size()));
+        if (n < 0) {
+            return {};
+        }
+    }
+    return std::string(buf.data(), static_cast<size_t>(n));
 }
 
 std::vector<ChatMessage> parse_chat_messages(const json& body) {

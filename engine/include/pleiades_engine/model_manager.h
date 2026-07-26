@@ -70,11 +70,22 @@ public:
     // meaningful when tool_dialect() != NONE, but valid (false) regardless.
     bool open_thinking() const { return open_thinking_; }
 
+    // This model's own raw tokenizer.chat_template metadata string (empty if
+    // the GGUF carries none -- e.g. a base/non-instruct model). Read once at
+    // load(). Used by the ToolDialect::NONE path to format via
+    // llama_chat_apply_template() (its actual template family) instead of
+    // assuming Qwen ChatML for every non-Qwen model -- see
+    // apply_builtin_template() in chat_template.h and http_server.cpp's
+    // handle_chat(). The Qwen XML/JSON dialects don't consult this (they have
+    // their own hardcoded renderers), so it's only the cross-family fallback.
+    const std::string& chat_template() const { return chat_template_; }
+
 private:
     llama_model* model_ = nullptr;
     std::string path_;
     ToolDialect tool_dialect_ = ToolDialect::NONE;
     bool open_thinking_ = false;
+    std::string chat_template_;
 
     // Storage for the tensor_buft_overrides regex patterns built by
     // load()'s n_cpu_moe handling. llama_model_params::tensor_buft_overrides

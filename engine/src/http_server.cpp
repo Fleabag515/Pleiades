@@ -203,7 +203,20 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                       tools.size());
     }
 
-    std::string prompt = format_chat_prompt(messages, tools, dialect, s.models.open_thinking());
+    std::string prompt;
+    if (dialect == ToolDialect::NONE) {
+        // Non-Qwen (or no-tool) model: render with ITS OWN template family via
+        // llama.cpp's builtin templater rather than assuming Qwen ChatML. Fall
+        // back to the ChatML stopgap only when the model carries no template
+        // (a base model) or llama.cpp doesn't recognize the family. Tools were
+        // already warned about + dropped above (NONE == no tool support).
+        prompt = apply_builtin_template(s.models.chat_template(), messages, /*add_generation_prompt=*/true);
+        if (prompt.empty()) {
+            prompt = format_chatml(messages);
+        }
+    } else {
+        prompt = format_chat_prompt(messages, tools, dialect, s.models.open_thinking());
+    }
     long created = static_cast<long>(std::time(nullptr));
     std::string id = now_id();
 
@@ -413,11 +426,25 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                 return sink.write(data.data(), data.size());
             };
             write_chunk({{"role", "assistant"}}, nullptr);
-            GenerationResult sr = s.engine.generate(
-                prompt, n_predict, [&](const std::string& piece) { return write_chunk({{"content", piece}}, nullptr); },
-                sampling);
-            std::fprintf(stderr, "[pleiades-engine-server] chat(stream): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
-                         sr.n_prompt_tokens, sr.n_prompt_cached, sr.n_prompt_tokens - sr.n_prompt_cached);
+            try {
+                GenerationResult sr = s.engine.generate(
+                    prompt, n_predict,
+                    [&](const std::string& piece) { return write_chunk({{"content", piece}}, nullptr); }, sampling);
+                std::fprintf(stderr,
+                             "[pleiades-engine-server] chat(stream): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
+                             sr.n_prompt_tokens, sr.n_prompt_cached, sr.n_prompt_tokens - sr.n_prompt_cached);
+            } catch (const std::exception& e) {
+                // A mid-stream failure (e.g. llama_decode OOM) must NOT escape
+                // this content-provider lambda: httplib runs it during response
+                // serialization, OUTSIDE the routing try/catch that guards the
+                // handler, so an uncaught throw here tears down the connection
+                // handler instead of just this request. The 200 + SSE preamble
+                // is already committed, so we can't downgrade to an error
+                // status -- log it and end the stream cleanly (the client sees
+                // a truncated completion terminated by [DONE], never a hang).
+                std::fprintf(stderr, "[pleiades-engine-server] chat(stream): generation failed mid-stream: %s\n",
+                             e.what());
+            }
             write_chunk(json::object(), "stop");
             static const std::string done = "data: [DONE]\n\n";
             sink.write(done.data(), done.size());

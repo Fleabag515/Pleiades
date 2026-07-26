@@ -111,6 +111,7 @@ void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe
     std::string tmpl = read_model_meta_str(model_, "tokenizer.chat_template");
     tool_dialect_ = detect_tool_dialect(tmpl);
     open_thinking_ = detect_open_thinking(tmpl);
+    chat_template_ = std::move(tmpl);
 }
 
 void ModelManager::unload() {
@@ -121,6 +122,7 @@ void ModelManager::unload() {
     path_.clear();
     tool_dialect_ = ToolDialect::NONE;
     open_thinking_ = false;
+    chat_template_.clear();
     moe_override_patterns_.clear();
     moe_overrides_.clear();
 }
