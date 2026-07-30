@@ -227,12 +227,34 @@ class Anamnesis:
 
     def is_running(self, name: str) -> bool:
         char = self.get_character(name)
+        # The real daemon (verified live, 2026-07-30) reports two booleans,
+        # `active`/`running` -- NOT a status/state string. This was a real,
+        # live bug: checking status/state first found neither key, fell
+        # through to "does this character have a port number in its config"
+        # (true forever, for any character that was ever created, whether or
+        # not its proxy process is actually alive), so ensure_running()
+        # always believed an already-registered-but-crashed/never-started
+        # proxy was up and never called start() -- every request to it then
+        # failed at the client with a bare connection error, with nothing to
+        # self-heal it. Check the real booleans first; keep the status/state
+        # string check as a fallback for daemon versions that use that shape
+        # instead (unverified against this specific version, but a strictly
+        # cheaper check than tearing it out).
+        if "active" in char or "running" in char:
+            return bool(char.get("active")) or bool(char.get("running"))
         status = (char.get("status") or char.get("state") or "").lower()
         if status:
             return status in {"running", "active", "started", "up"}
-        # Fall back: a resolvable port that accepts connections.
+        # Last-resort fallback for a daemon shape with neither: a registered
+        # port is only meaningful if something is actually listening on it.
         port = self._extract_port(char)
-        return port is not None
+        if port is None:
+            return False
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex(("127.0.0.1", port)) == 0
 
     def set_upstream(self, name: str, upstream: dict) -> bool:
         """Point a character's upstream at `upstream` (e.g. {"baseUrl": ...}).
