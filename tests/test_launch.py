@@ -83,7 +83,12 @@ def test_mmproj_is_never_wired_into_the_elastic_python_engine(tmp_path, monkeypa
     assert "pleiades.inference.server" in " ".join(plan.cmd)
 
 
-def test_mmproj_is_never_wired_into_the_pleiades_native_cpp_engine(tmp_path, monkeypatch):
+def test_mmproj_is_wired_into_the_pleiades_native_cpp_engine(tmp_path, monkeypatch):
+    # Phase 9.4.2 (docs/specs/2026-07-21-native-inference-engine-design.md):
+    # the engine gained real vision support (libmtmd) this pass -- this test
+    # used to pin the OPPOSITE behavior (mmproj silently dropped on this
+    # branch) as a regression guard for a since-closed limitation. Updated
+    # rather than deleted so a future regression here is still caught.
     from pleiades import runtime as _rt
     monkeypatch.setenv("PLEIADES_ENGINE", "pleiades_native")
     monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
@@ -92,7 +97,9 @@ def test_mmproj_is_never_wired_into_the_pleiades_native_cpp_engine(tmp_path, mon
     mmproj.write_bytes(b"fake-mmproj")
     plan = launch.build_command(str(model), "127.0.0.1", 8090, name="vlm",
                                 mmproj=str(mmproj), settings=Settings())
-    assert "--mmproj" not in " ".join(plan.cmd)
+    assert "--mmproj" in plan.cmd
+    assert plan.cmd[plan.cmd.index("--mmproj") + 1] == str(mmproj)
+    assert "+mmproj (vision)" in plan.why
     assert "pleiades-native-engine" in plan.why
 
 

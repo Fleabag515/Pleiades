@@ -259,9 +259,97 @@ recurrent architectures from existing dense checkpoints (what the original
 Phase 2 draft proposed) is real, valuable work — it just belongs in a
 dedicated research project, not this one.
 
+## Phase 4 (bonus lane) — Cascading-cache C++ port design, 2026-07-30
+
+**Status: designed, NOT started. Confirmed still a bonus lane, behind the
+native-engine sole-cutover work — Fleagle's direct call, 2026-07-30, when
+asked explicitly whether this reprioritization still held.** Recorded here so
+the design exists when it's picked up, not to imply work has begun.
+
+**Source:** `streaming-lab.zip`, pulled from Minty's `~/Downloads/` this
+session — turned out to be exactly the Cascading-Cache system this doc
+already references as part of [[new-brain-project]]/Mark's setup (Chunks 6-11
+of Fleagle's own `streaming_memory`), not a new, unrelated idea. Confirmed via
+`hf_cache_adapter.py`'s own docstring: built against `Qwen3_5Attention`/
+`Qwen3_5TextModel` specifically (24 DeltaNet layers + 8 full-attention layers,
+dual RoPE theta). Qwen-hybrid-specific by construction, as this doc's Phase
+0/0.A already anticipated — not a general technique.
+
+**The headline de-risking finding, verified against the actual pinned
+`third_party/llama.cpp` (not assumed):** the Python design's riskiest
+component — `rope_remap.py`, float64-angle-accumulation RoPE position
+remapping — **does not need to be ported at all.** `llama_kv_cache::
+build_graph_shift` (`src/llama-kv-cache.cpp`) already does the identical
+operation correctly, per-layer, using the model's own per-layer rotary_dim
+and theta, driven by `llama_memory_seq_add`. The C++ port never computes a
+rotation; it chooses spans and calls an existing llama.cpp primitive. This
+also matches this doc's own earlier finding that llama-server's prefix
+caching already shipped upstream for free — the pattern holds: check what
+llama.cpp already does before porting Python that assumes it doesn't.
+
+**Second finding, changes the honest scope for exactly Mark's model shape:**
+on a hybrid model, `llama_memory_hybrid::seq_rm` routes through the recurrent
+(DeltaNet) memory first, which only supports suffix rollback, not
+mid-sequence removal — a middle eviction silently no-ops there. So eviction
+in this port would affect **only the full-attention layers**; the recurrent
+state keeps every evicted token forever, same as `streaming_memory` did by
+construction (it never touched DeltaNet). This isn't a bug to fix, it's the
+honest semantics of a hybrid cache, and the design gates on it (see below) —
+but it means the "conversation never hits a wall" story for a model like
+Mark's is real for the bounded-attention layers specifically, not a claim
+about the recurrent state's own (already-O(1), already-bounded) memory.
+
+**Design shape (full detail in the archived agent output,
+`/tmp/claude-1000/.../tasks/wwkhufbvm.output`, `portPlan` key):**
+`ResidentMap` (metadata-only — no K/V tensors are ported, llama.cpp already
+owns that storage; folds in and replaces `PrefixCache`) + `CascadeLadder`
+(the cascade/floor/tie-break policy, ported near-verbatim) + `ImportanceScorer`
+(surprise via free post-sample logits; the Python design's attention-EMA half
+is dropped outright — no public llama.cpp API exposes attention weights, and
+shipping a scorer multiplied by a structurally-always-zero term would be
+dishonest) + `RetentionBudget` (elastic grow/shrink, rebound so "grow" prefers
+a free `ContextGovernor::resize()` gear-up before ever evicting) +
+`CompactionPlan` (the actual new logic: batches `seq_rm`/`seq_add` calls
+safely, asserts KV position sync after every application).
+
+**Gating, per this doc's original Phase 0.A spirit but corrected:** GGUF
+metadata can't reliably answer "does this architecture support cascade
+eviction" — the design instead runs a cheap behavioral probe at model load
+(4 dummy-token decode, try `seq_rm` suffix/middle, try one `seq_add` shift)
+and only enables the cascade if every probe succeeds AND the model's
+`general.architecture` is in an explicit, config-overridable allowlist
+defaulting to `Off`. Any model that isn't Mark's shape — including ordinary
+Gemma, Llama, dense Qwen — gets exactly today's existing behavior, byte-
+identical, unconditionally. Quantized KV cache (`type_k` other than
+F16/BF16/F32) hard-refuses the cascade too: shifting a quantized K means a
+dequant→rotate→requant round trip per shift, and repeated shifts would
+compound quantization error silently.
+
+**What's explicitly NOT validated and must not be assumed correct when this
+is eventually built:** nothing in `streaming_memory` has ever run against
+real model weights (still true, unchanged from this doc's earlier
+observation); the elastic grow/shrink thresholds were fit to a synthetic
+scorer's output range and need recalibration once a real surprise signal
+exists; category floors protecting persona have never been exercised
+end-to-end; whether position spread genuinely degrades a real model's output
+enough to justify compaction's complexity is a measured question, not a
+given.
+
+**Sequencing note for whenever this is picked back up:** build order should
+start with folding `PrefixCache` into `ResidentMap` with the cascade
+permanently `Off` (net correctness-neutral, shippable on its own), then null-
+policy compaction plumbing tested against a dense model with a byte-identical-
+to-truncation oracle before any real eviction policy is layered on top. Do
+not start with the elastic/regret-driven part — it's the one component that
+changes the retention target over time, so everything else needs to be
+trustworthy first.
+
 ---
 *Written 2026-07-21 following a qwen3.8-max + Opus council consult, per
 Fleagle's direction. Companion to
 [[2026-07-21-native-inference-engine-design.md]] — that doc's context governor
 (Phase 1/2 there) should consume this doc's Phase 0.A model-memory-profile
-rather than duplicate assumptions about KV growth.*
+rather than duplicate assumptions about KV growth. Phase 4 (cascading-cache
+C++ port design) added 2026-07-30, sourced from `streaming-lab.zip` off
+Minty; confirmed still a bonus lane behind that doc's Phase 9 sole-engine
+cutover.*

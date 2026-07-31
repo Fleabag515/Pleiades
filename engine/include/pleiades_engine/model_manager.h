@@ -6,6 +6,14 @@
 #include "llama.h"
 #include "pleiades_engine/chat_template.h"
 
+// Opaque forward declaration -- callers that need the real mtmd API (e.g.
+// http_server.cpp calling mtmd_tokenize()) #include "mtmd.h" themselves;
+// this header only needs a pointer type. Safe regardless of mtmd.h's own
+// `extern "C" { typedef struct mtmd_context mtmd_context; }` -- the struct
+// tag `mtmd_context` names the same type either way, extern "C" affects
+// symbol linkage, not type identity.
+struct mtmd_context;
+
 namespace pleiades_engine {
 
 // Wraps llama_model_load_from_file/llama_model_free. One model resident at
@@ -44,8 +52,15 @@ public:
     // llama_model_statewise_init(). Only meaningful when the cached layers' experts are
     // CPU-offloaded (n_cpu_moe covering them) so the cold chain stays on CPU -- otherwise
     // the CUDA placement tripwire will abort. Empty = disabled. See docs Phase 7.
+    // mmproj_path (optional, Phase 9.4.2): path to a multimodal-projector GGUF.
+    // When set, initializes libmtmd (mtmd_init_from_file) alongside the text
+    // model so vision-capable requests can be served -- mtmd() returns
+    // non-null only when this succeeded. Throws if the file is given but
+    // fails to load (an explicitly-requested capability that silently isn't
+    // there is worse than a clean error at startup); a model with no mmproj
+    // and no vision request needs it at all, so it's opt-in, not probed.
     void load(const std::string& path, int n_gpu_layers = 0, int n_cpu_moe = 0, bool use_mlock = false,
-              const std::string& statewise_map = "");
+              const std::string& statewise_map = "", const std::string& mmproj_path = "");
 
     void unload();
 
@@ -63,10 +78,15 @@ public:
     // carrying no usable template falls back to llama.cpp's built-in ChatML).
     const ChatTemplates& chat_templates() const { return chat_templates_; }
 
+    // Non-null only after a successful load() with mmproj_path set. Owned by
+    // this ModelManager -- freed in unload()/~ModelManager, never by a caller.
+    mtmd_context* mtmd() const { return mtmd_; }
+
 private:
     llama_model* model_ = nullptr;
     std::string path_;
     ChatTemplates chat_templates_;
+    mtmd_context* mtmd_ = nullptr;
 
     // Storage for the tensor_buft_overrides regex patterns built by
     // load()'s n_cpu_moe handling. llama_model_params::tensor_buft_overrides

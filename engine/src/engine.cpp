@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "mtmd-helper.h"
+
 namespace pleiades_engine {
 
 namespace {
@@ -136,6 +138,20 @@ void Engine::reset_prefix_cache() {
     prefix_.invalidate(ctx_.epoch());
 }
 
+void Engine::seed_prefix_cache(std::vector<llama_token> tokens) {
+    // Phase 9.4: called by the HTTP shim right after a successful
+    // POST /slots/0?action=restore -- llama_state_seq_load_file() repopulated
+    // the live KV directly (positions baked into the saved state, nothing for
+    // us to recompute), but PrefixCache's own bookkeeping has no way to know
+    // that happened. Left uncalled, the next request's reusable_prefix()
+    // would compute against an empty tracked sequence and cold-decode the
+    // WHOLE prompt on top of KV that already holds it -- duplicating content
+    // exactly like the bug Phase 6's PrefixCache was built to fix in the
+    // first place, just reintroduced via a different code path. epoch() is
+    // current (a restore never resizes), so tag with it rather than bumping.
+    prefix_.set(std::move(tokens), ctx_.epoch());
+}
+
 GenerationResult Engine::complete(const std::string& prompt, int n_predict, const SamplingParams& sampling) {
     return generate(prompt, n_predict, nullptr, sampling);
 }
@@ -148,6 +164,15 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     }
     const llama_vocab* vocab = llama_model_get_vocab(models_.model());
     llama_context* ctx = ctx_.ctx();
+    if (!ctx) {
+        // Only reachable when a resize failed AND its rollback failed (see
+        // ContextGovernor::resize) -- fail as a clean error the HTTP layer
+        // turns into a JSON 500, not a null deref inside llama_decode that
+        // takes the whole server (and every conversation on it) down.
+        throw std::runtime_error(
+            "pleiades_engine: no live llama_context (a context resize failed and could not be "
+            "rolled back; POST /resize to a smaller n_ctx to recover)");
+    }
     llama_memory_t mem = llama_get_memory(ctx);
 
     GenerationResult result;
@@ -268,9 +293,75 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     prefix_.set(prompt_tokens, ctx_.epoch());
 
     auto t1 = std::chrono::steady_clock::now();
-    result.prompt_seconds = std::chrono::duration<double>(t1 - t0).count();
+    double prompt_seconds = std::chrono::duration<double>(t1 - t0).count();
 
-    // -- generation ---------------------------------------------------------
+    return run_sampling_loop(n_predict, on_token, sampling, prompt_seconds,
+                             static_cast<int>(prompt_tokens.size()), static_cast<int>(n_reuse),
+                             /*track_prefix_cache=*/true);
+}
+
+GenerationResult Engine::complete_multimodal(const mtmd_input_chunks* chunks, int n_predict,
+                                             const SamplingParams& sampling) {
+    return generate_multimodal(chunks, n_predict, nullptr, sampling);
+}
+
+GenerationResult Engine::generate_multimodal(const mtmd_input_chunks* chunks, int n_predict,
+                                             const std::function<bool(const std::string&)>& on_token,
+                                             const SamplingParams& sampling) {
+    if (!models_.is_loaded()) {
+        throw std::runtime_error("pleiades_engine: no model loaded");
+    }
+    if (!models_.mtmd()) {
+        throw std::runtime_error("pleiades_engine: no mmproj loaded (vision not enabled for this model -- "
+                                 "start the server with --mmproj)");
+    }
+    llama_context* ctx = ctx_.ctx();
+    if (!ctx) {
+        throw std::runtime_error(
+            "pleiades_engine: no live llama_context (a context resize failed and could not be "
+            "rolled back; POST /resize to a smaller n_ctx to recover)");
+    }
+    llama_memory_t mem = llama_get_memory(ctx);
+
+    auto t0 = std::chrono::steady_clock::now();
+
+    // Always a cache-busting cold decode -- see this method's own header
+    // comment (engine.h) for why PrefixCache cannot honestly represent an
+    // image-spanned KV region. Both the incoming and outgoing cache state are
+    // empty regardless of what the previous request left behind.
+    llama_memory_clear(mem, /*data=*/true);
+    prefix_.invalidate(ctx_.epoch());
+
+    llama_pos new_n_past = 0;
+    int32_t rc = mtmd_helper_eval_chunks(models_.mtmd(), ctx, chunks, /*n_past=*/0, /*seq_id=*/0,
+                                         ctx_.params().n_batch, /*logits_last=*/true, &new_n_past);
+    if (rc != 0) {
+        llama_memory_clear(mem, /*data=*/true);
+        prefix_.invalidate(ctx_.epoch());
+        throw std::runtime_error("pleiades_engine: mtmd_helper_eval_chunks failed (rc=" + std::to_string(rc) + ")");
+    }
+
+    auto t1 = std::chrono::steady_clock::now();
+    double prompt_seconds = std::chrono::duration<double>(t1 - t0).count();
+    int n_prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks));
+
+    return run_sampling_loop(n_predict, on_token, sampling, prompt_seconds, n_prompt_tokens,
+                             /*n_prompt_cached=*/0, /*track_prefix_cache=*/false);
+}
+
+GenerationResult Engine::run_sampling_loop(int n_predict, const std::function<bool(const std::string&)>& on_token,
+                                           const SamplingParams& sampling, double prompt_seconds,
+                                           int n_prompt_tokens, int n_prompt_cached, bool track_prefix_cache) {
+    llama_context* ctx = ctx_.ctx();
+    const llama_vocab* vocab = llama_model_get_vocab(models_.model());
+    llama_memory_t mem = llama_get_memory(ctx);
+
+    GenerationResult result;
+    result.n_prompt_tokens = n_prompt_tokens;
+    result.n_prompt_cached = n_prompt_cached;
+    result.prompt_seconds = prompt_seconds;
+    auto t_gen_start = std::chrono::steady_clock::now();
+
     // Sampler chain per the request (greedy by default -- see
     // build_sampler_chain / SamplingParams). llama_sampler_sample() accepts
     // each sampled token into the chain, so the penalties sampler tracks the
@@ -339,9 +430,13 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
             prefix_.invalidate(ctx_.epoch());
             throw std::runtime_error("pleiades_engine: llama_decode failed during generation");
         }
-        // This token is now resident in the KV -- keep the cache mirroring
-        // the KV exactly so the next request can reuse it too.
-        prefix_.append(next);
+        // This token is now resident in the KV. Text-path: keep the cache
+        // mirroring the KV exactly so the next request can reuse it too.
+        // Multimodal-path: never append -- see generate_multimodal's comment
+        // on why prefix_ stays empty for the entire duration of that call.
+        if (track_prefix_cache) {
+            prefix_.append(next);
+        }
     }
 
     // Flush any held-back (but safe) tail on a clean end -- EOG or n_predict
@@ -351,8 +446,8 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         on_token(text.substr(emitted));
     }
 
-    auto t2 = std::chrono::steady_clock::now();
-    result.generate_seconds = std::chrono::duration<double>(t2 - t1).count();
+    auto t_gen_end = std::chrono::steady_clock::now();
+    result.generate_seconds = std::chrono::duration<double>(t_gen_end - t_gen_start).count();
     result.n_generated_tokens = generated;
     result.stopped_on_stop_string = stopped_on_stop;
     result.text = std::move(text);

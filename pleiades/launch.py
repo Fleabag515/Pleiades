@@ -21,7 +21,9 @@ Autodetect/autoconfig, end to end:
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Optional
@@ -43,6 +45,27 @@ class LaunchPlan:
     env: Optional[dict] = None   # extra environment for the server process
 
 
+def _query_engine_caps(binary_path: str) -> RuntimeCaps:
+    """`<binary> --caps` -> RuntimeCaps, for the from-scratch C++ engine only.
+
+    Cheap (no model load, see http_server.cpp::print_caps()) and per-BUILD
+    accurate -- unlike guessing from a filename/path convention (the pattern
+    runtime.caps() still uses for the OTHER native runtime, see that
+    function), this asks the actual binary what it was built with. Any
+    failure here (older binary predating --caps, unexpected output, a hung
+    process) falls back to the previous behavior of this call site
+    (moe_offload=True) rather than breaking model placement on an
+    introspection hiccup -- see call site's comment.
+    """
+    try:
+        out = subprocess.run([binary_path, "--caps"], capture_output=True,
+                             text=True, timeout=5.0)
+        data = json.loads(out.stdout.strip().splitlines()[-1])
+        return RuntimeCaps(moe_offload=bool(data.get("moe_offload", True)), native=True)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, json.JSONDecodeError):
+        return RuntimeCaps(moe_offload=True, native=True)
+
+
 def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                   n_ctx: "int | str" = "auto", n_gpu_layers: "int | str" = "auto",
                   chat_format: str = "", settings: Optional[Settings] = None,
@@ -51,14 +74,14 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     runtime (autodetected), layer-split on the bundled python fallback.
 
     `mmproj` (path to a multimodal-projector GGUF, see models.Model.mmproj) is
-    ONLY ever wired into the native llama-server branch below via --mmproj.
-    Scoped there deliberately, not to the `llama_cpp.server` python fallback
-    or the PLEIADES_ENGINE=pleiades_native custom engine branch above: llama.
-    cpp's own bundled server has no first-class multimodal flag in the
-    version pinned here, and the from-scratch native C++ engine
-    (engine/http_server.cpp) doesn't implement image handling at all yet
-    (see docs/specs/2026-07-23-vision-routing-design.md) -- silently
-    dropping `mmproj` on those two paths is intentional, not an oversight.
+    wired into the native llama-server branch below via --mmproj, and (Phase
+    9.4.2, docs/specs/2026-07-21-native-inference-engine-design.md) into the
+    PLEIADES_ENGINE=pleiades_native engine branch above the same way -- it
+    links libmtmd now (see engine/CMakeLists.txt's LLAMA_BUILD_MTMD). Still
+    NOT wired into the `llama_cpp.server` python fallback: that package's own
+    bundled server has no first-class multimodal flag in the version pinned
+    here, and that path is slated for retirement anyway (Phase 9.6) --
+    silently dropping `mmproj` there only is intentional, not an oversight.
     """
     eff = settings or Settings.load()
 
@@ -75,8 +98,9 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     # still doesn't implement (--jinja, speculative decoding via -md/--spec-type,
     # --mmproj vision, --slot-save-path, --cache-reuse, --parallel), so pointing
     # it at this binary would pass flags parse_args() rejects. What this engine
-    # DOES support -- ngl/n-cpu-moe/ub/fa/ctk/ctv/mlock/ctx/threads -- is enough
-    # to run the same placement, which is what the branch below now does. See
+    # DOES support -- ngl/n-cpu-moe/ub/fa/ctk/ctv/mlock/ctx/threads/slot-save-path/
+    # mmproj -- is enough to run the same placement, which is what the branch
+    # below now does. See
     # find_native_cpp_engine()'s own docstring for the separation rationale
     # (checked against a second independent opinion, not just assumed).
     if os.environ.get("PLEIADES_ENGINE", "").lower() == "pleiades_native":
@@ -100,7 +124,19 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             # autofit._OVERHEAD off gpu.vram_free and rejects placements that
             # don't fit -- so the OOM margin is inherited, not bypassed, and
             # n_cpu_moe is keyed off THIS model's real MoE structure via `meta`.
-            cpp_caps = RuntimeCaps(moe_offload=True, native=True)
+            #
+            # moe_offload used to be hardcoded True here regardless of what was
+            # actually built (Phase 9.2: this binary can now answer for itself
+            # via `--caps`, one JSON line, no model touched -- see http_server.cpp's
+            # print_caps()). A CPU-only build reports moe_offload=false (nothing
+            # to offload between CPU and itself); place() then falls back to
+            # dense placement instead of planning an expert split this build
+            # can't actually perform -- exactly the degrade-not-OOM behavior
+            # Phase 9's Risk R1 asks for. Any failure to query (older binary
+            # predating --caps, timeout, bad JSON) keeps the prior
+            # assume-offload-capable default rather than breaking a working
+            # setup on an introspection hiccup.
+            cpp_caps = _query_engine_caps(native_cpp)
             n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path, caps=cpp_caps)
             # Context is fixed at launch (like llama-server): the engine's
             # /resize exists, but we commit to the ceiling n_ctx_max here, same
@@ -119,8 +155,31 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             # emits -1 for the full-GPU / MoE-split strategies, so it passes
             # straight through; a user override is honored verbatim.
             ngl = forced if forced is not None else pl.n_gpu_layers
+            # Phase 9.2 (docs/specs/2026-07-21-native-inference-engine-design.md):
+            # this branch used to build its command with none of the
+            # thread/batch tuning the native-llama-server branch below computes
+            # -- --threads was silently thrown away entirely (the engine then
+            # launched pinned at ggml's hardcoded default of 4, see
+            # detect_default_threads()'s own comment in http_server.cpp for why
+            # that was "the highest-ROI bug an engine review found"). Same
+            # halve-physical-cores formula as below, duplicated rather than
+            # hoisted above this early-return branch to avoid computing it on
+            # every call when this branch isn't taken.
+            threads = max((os.cpu_count() or 8) // 2, 4)
+            # Phase 9.4: warm-state slot save/restore, same directory/flag
+            # shape as the native-llama-server branch below (models.py's
+            # _slot_save/_slot_restore don't care which binary answers --
+            # both now implement the identical POST /slots/0?action=... wire
+            # contract, see http_server.cpp). Directory only, not a toggle --
+            # costs nothing when unused, and a save from a previous run is
+            # picked up even if this flag was added after that model was
+            # first registered (same reasoning as the branch below).
+            slot_dir = config.PLEIADES_HOME / "slots" / name
+            slot_dir.mkdir(parents=True, exist_ok=True)
             cmd = [native_cpp, "--model", model_path, "--host", host, "--port", str(port),
-                   "--ctx", str(launch_ctx), "--ngl", str(ngl), "--alias", name]
+                   "--ctx", str(launch_ctx), "--ngl", str(ngl), "--alias", name,
+                   "--threads", str(threads),
+                   "--slot-save-path", str(slot_dir) + os.sep]
             if forced is None and pl.n_cpu_moe:
                 cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
             ub = getattr(eff, "n_ubatch", 0) or pl.n_ubatch
@@ -132,6 +191,16 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                 ub = 2048
             if ub:
                 cmd += ["--ub", str(ub)]
+            if getattr(eff, "n_batch", 0):
+                cmd += ["--batch", str(eff.n_batch)]
+            # Settings.cache_reuse does NOT apply here, deliberately: the
+            # engine's prefix_cache.cpp does its own exact-longest-common-
+            # prefix reuse unconditionally (Phase 6 above -- shipped as a
+            # correctness fix, not an opt-in feature, and there is no
+            # --cache-reuse flag on this binary to gate it with). That's a
+            # different, simpler contract than native llama-server's own
+            # chunked --cache-reuse N below; cache_reuse is a no-op knob for
+            # this branch, not a bug to fix.
             fa = eff.flash_attn
             if eff.kv_cache_type and fa == "auto":
                 fa = "on"  # a quantized V-cache requires flash attention
@@ -141,10 +210,17 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                 cmd += ["--ctk", eff.kv_cache_type, "--ctv", eff.kv_cache_type]
             if getattr(eff, "mlock", False):
                 cmd += ["--mlock"]
+            if mmproj and os.path.isfile(mmproj):
+                # Phase 9.4.2: the engine now implements vision (libmtmd,
+                # engine/CMakeLists.txt's LLAMA_BUILD_MTMD) -- see this
+                # function's own docstring for why this branch was previously
+                # scoped out of mmproj entirely and no longer is.
+                cmd += ["--mmproj", mmproj]
             why = (f"runtime=pleiades-native-engine (experimental) strategy={pl.strategy} "
                    f"n_ctx={launch_ctx} ngl={ngl}"
                    + (f" n_cpu_moe={pl.n_cpu_moe}" if (forced is None and pl.n_cpu_moe) else "")
                    + (f" ub={ub}" if ub else "")
+                   + (" +mmproj (vision)" if mmproj and os.path.isfile(mmproj) else "")
                    + f" est={pl.est_tps} tok/s -- {pl.reason}")
             if forced is not None:
                 why = (f"runtime=pleiades-native-engine (experimental) "

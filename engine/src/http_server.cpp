@@ -9,10 +9,12 @@
 //                                   default_generation_settings}
 //   GET  /health, /            -> {status:"ok", model}
 //
-// Not yet ported from server.py (out of Phase 3's explicit scope): /v1/models,
-// /tokenize, /extras/tokenize/count, /metrics, prompt-overflow auto-upshift.
-// kv_bytes_per_token is also omitted from /props -- that's hardware.py's KV-
-// cost formula, not yet ported to C++; add it here once it is.
+// Not yet ported from server.py (out of Phase 3's explicit scope): /tokenize,
+// /extras/tokenize/count, /metrics, prompt-overflow auto-upshift. Since
+// ported (docs/specs/2026-07-21-native-inference-engine-design.md, Phase 9):
+// GET /v1/models, kv_bytes_per_token in /props, POST /slots/0?action=
+// save|restore, --caps, --mmproj/vision (POST /v1/chat/completions accepts
+// OpenAI content-parts image_url as data: URIs).
 //
 // Chat templating (Stage B) uses REAL per-model jinja: the model's own
 // GGUF-embedded tokenizer.chat_template is compiled once at load
@@ -72,6 +74,7 @@
 // mlock left at their defaults above (i.e. unchanged from this binary's
 // pre-this-pass behavior). New callers should use flags.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -84,8 +87,11 @@
 #include <utility>
 #include <vector>
 
+#include "base64.hpp"     // public domain, header-only -- see CMakeLists.txt's include-dir comment
 #include "httplib.h"
 #include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 #include "nlohmann/json.hpp"
 #include "pleiades_engine/chat_template.h"
 #include "pleiades_engine/context_governor.h"
@@ -105,6 +111,33 @@ struct ServerState {
     std::mutex mu;  // serializes decode and resize -- see file header note.
 };
 
+// Port of pleiades/hardware.py::kv_bytes_per_token() -- the one field Phase 3
+// left out of /props vs. the Python server (server.py:189). Pure-recurrent
+// architectures genuinely have zero per-token KV growth (llama_model_is_recurrent),
+// matching hardware.py's memory_arch=="recurrent" branch exactly. For hybrid
+// models, hardware.py discounts recurrent layers when its GGUF-metadata-parsed
+// recurrent_layer_count is known, "falling back to the original conservative
+// all-layers estimate otherwise" (its own docstring) -- that fallback is what
+// this ports: llama_model_n_head_kv()/n_head()/n_layer() are model-wide public
+// API calls (no per-layer hybrid breakdown exposed there), so this always takes
+// hardware.py's conservative branch. Never UNDER-estimates; may over-estimate
+// KV cost for a hybrid model relative to Python's more precise metadata-aware
+// path -- same direction of error hardware.py itself accepts as the fallback.
+int64_t kv_bytes_per_token(const llama_model* model, int bytes_per_elem = 2) {
+    if (llama_model_is_recurrent(model)) {
+        return 0;
+    }
+    int32_t n_layer = llama_model_n_layer(model);
+    int32_t n_embd = llama_model_n_embd(model);
+    int32_t n_head = llama_model_n_head(model);
+    int32_t n_head_kv = llama_model_n_head_kv(model);
+    if (n_layer <= 0 || n_embd <= 0 || n_head <= 0) {
+        return static_cast<int64_t>(n_layer > 0 ? n_layer : 32) * 1024;  // order-of-magnitude fallback, matches hardware.py
+    }
+    int64_t head_dim = n_embd / n_head;
+    return static_cast<int64_t>(n_layer) * n_head_kv * head_dim * 2 * bytes_per_elem;
+}
+
 json props_json(ServerState& s) {
     std::vector<int> gears;
     for (int g : CONTEXT_GEARS) {
@@ -119,12 +152,18 @@ json props_json(ServerState& s) {
         {"resizable", true},
         {"model_path", s.models.path()},
         {"gears", gears},
+        {"kv_bytes_per_token", kv_bytes_per_token(s.models.model())},
+        {"modalities", {{"vision", s.models.mtmd() && mtmd_support_vision(s.models.mtmd())}}},
         {"default_generation_settings", {{"n_ctx", s.ctx.n_ctx()}}},
     };
 }
 
 std::string now_id() {
-    static int counter = 0;
+    // httplib dispatches concurrent connections across a worker-thread pool
+    // (see file header), and this is called for every request BEFORE s.mu is
+    // taken -- so the counter itself must be safe under concurrent increment,
+    // independent of the generation-serializing lock.
+    static std::atomic<uint64_t> counter{0};
     return "chatcmpl-pleiades-" + std::to_string(++counter);
 }
 
@@ -149,6 +188,83 @@ json tool_calls_json(const std::vector<ChatToolCall>& calls, bool streaming) {
     return arr;
 }
 
+// Phase 9.4.2 (docs/specs/2026-07-21-native-inference-engine-design.md):
+// rewrites `messages` IN PLACE, extracting any OpenAI content-parts
+// image_url entries into bitmaps and replacing each with a plain "text" part
+// containing the model's media marker -- so the chat template (which never
+// learns about images at all) renders a normal string prompt with the
+// marker(s) sitting exactly where each image was, ready for mtmd_tokenize().
+// This mirrors upstream llama-server's own approach (server-common.cpp's
+// image_url -> media_marker substitution before template rendering), done
+// independently here since that file is server/-scoped and never compiled
+// into this engine (see CMakeLists.txt's LLAMA_BUILD_COMMON=OFF rationale).
+//
+// Only data: URIs are supported; remote http(s):// fetching is deliberately
+// refused -- this is a locally-bound server, and fetching an
+// attacker-controlled URL server-side is a real SSRF surface neither Python
+// fallback this engine replaces implements either (see the design doc's own
+// recommendation on this point).
+//
+// Throws on: an image part with no --mmproj loaded, a non-data: URL, invalid
+// base64, or a bitmap the vision encoder can't decode (unsupported format /
+// corrupt data / video input, which is out of scope here).
+//
+// Returns a plain std::vector<mtmd::bitmap>, NOT mtmd.h's own `mtmd::bitmaps`
+// wrapper struct -- that struct declares `~bitmaps() = default`, which (a
+// real C++ rule-of-five gotcha, not a bug in our code) silently SUPPRESSES
+// the implicitly-generated move assignment operator, leaving only a copy
+// assignment that's itself deleted (bitmap owns a unique_ptr). Assigning a
+// `bitmaps` value -- exactly what `image_bitmaps = extract_and_replace_images(...)`
+// at the call site needs to do -- fails to compile as a result. A bare
+// std::vector<bitmap> has no such problem: vector's own move-assignment
+// swaps ownership of its internal buffer directly (for the default
+// std::allocator, always) and never needs bitmap's own assignment operator
+// at all, only its move CONSTRUCTOR (used solely for reallocation during
+// emplace_back, which mtmd::bitmap does declare, noexcept).
+std::vector<mtmd::bitmap> extract_and_replace_images(json& messages, mtmd_context* mtmd_ctx) {
+    std::vector<mtmd::bitmap> bitmaps;
+    for (auto& message : messages) {
+        if (!message.is_object() || !message.contains("content") || !message["content"].is_array()) {
+            continue;
+        }
+        for (auto& part : message["content"]) {
+            if (!part.is_object() || part.value("type", "") != "image_url") {
+                continue;
+            }
+            if (!mtmd_ctx) {
+                throw std::runtime_error("this model has no --mmproj loaded -- cannot accept image input");
+            }
+            std::string url = part.value("image_url", json::object()).value("url", "");
+            size_t comma = url.find(',');
+            if (url.rfind("data:", 0) != 0 || comma == std::string::npos) {
+                throw std::runtime_error(
+                    "image_url must be a data: URI (data:<mime>;base64,<data>) -- fetching remote URLs is disabled");
+            }
+            std::string raw;
+            try {
+                raw = base64::decode(url.substr(comma + 1));
+            } catch (const std::exception& e) {
+                throw std::runtime_error(std::string("invalid base64 image data: ") + e.what());
+            }
+            mtmd_helper_bitmap_wrapper wrapped = mtmd_helper_bitmap_init_from_buf(
+                mtmd_ctx, reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), /*placeholder=*/false);
+            if (wrapped.video_ctx) {
+                mtmd_helper_video_free(wrapped.video_ctx);
+                if (wrapped.bitmap) {
+                    mtmd_bitmap_free(wrapped.bitmap);
+                }
+                throw std::runtime_error("video input is not supported here, only static images");
+            }
+            if (!wrapped.bitmap) {
+                throw std::runtime_error("failed to decode image (unsupported format or corrupt data)");
+            }
+            bitmaps.emplace_back(wrapped.bitmap);
+            part = json{{"type", "text"}, {"text", mtmd_get_marker(mtmd_ctx)}};
+        }
+    }
+    return bitmaps;
+}
+
 void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response& res) {
     json body;
     try {
@@ -166,6 +282,22 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
             "application/json");
         return;
     }
+
+    // Phase 9.4.2: pull any image_url content-parts out into bitmaps and
+    // replace them with plain text markers BEFORE the chat template ever
+    // sees `messages` -- see extract_and_replace_images's own comment. Must
+    // run before tmpls.apply() below, since that's what renders `prompt`.
+    std::vector<mtmd::bitmap> image_bitmaps;
+    try {
+        image_bitmaps = extract_and_replace_images(body["messages"], s.models.mtmd());
+    } catch (const std::exception& e) {
+        res.status = 400;
+        res.set_content(json{{"error", {{"message", e.what()}, {"type", "invalid_request_error"}}}}.dump(),
+                        "application/json");
+        return;
+    }
+    const bool is_multimodal = !image_bitmaps.empty();
+
     int n_predict = body.value("max_tokens", 512);
     bool stream = body.value("stream", false);
 
@@ -255,6 +387,45 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     for (const auto& extra_stop : rendered.additional_stops()) {
         sampling.stop.push_back(extra_stop);
     }
+
+    // Phase 9.4.2: `prompt` now contains the media marker(s) exactly where
+    // each image was (the template rendered our text-part substitution like
+    // any other text). Turn it + the extracted bitmaps into mixed chunks.
+    // Resolved once here, synchronously, so any failure is a normal 400 --
+    // none of the three call sites below (including the async raw-streaming
+    // one) need their own tokenize-failure handling.
+    // shared_ptr, not mtmd.h's own unique_ptr alias: the raw-token-streaming
+    // call site further down captures this into a lambda handed to
+    // httplib::Server::set_chunked_content_provider(), whose signature is a
+    // std::function -- and std::function requires its target to be
+    // COPY-constructible (a real standard-library constraint, not a cpp-
+    // httplib choice), which a unique_ptr-capturing lambda is not, even when
+    // never actually copied in practice. shared_ptr's copy is cheap (just a
+    // refcount bump) and gives every call site the same *.get() access
+    // pattern a unique_ptr would, so this is the standard workaround rather
+    // than a compromise.
+    std::shared_ptr<mtmd_input_chunks> mm_chunks;
+    if (is_multimodal) {
+        mtmd_input_chunks* raw_chunks = mtmd_input_chunks_init();
+        mtmd_input_text input_text{prompt.c_str(), prompt.size(), /*add_special=*/true, /*parse_special=*/true};
+        std::vector<const mtmd_bitmap*> bptrs;
+        bptrs.reserve(image_bitmaps.size());
+        for (const mtmd::bitmap& b : image_bitmaps) {
+            bptrs.push_back(b.ptr.get());
+        }
+        int32_t tok_rc = mtmd_tokenize(s.models.mtmd(), raw_chunks, &input_text, bptrs.data(), bptrs.size());
+        if (tok_rc != 0) {
+            mtmd_input_chunks_free(raw_chunks);
+            res.status = 400;
+            const char* why = tok_rc == 1
+                ? "number of images does not match the number of media markers the chat template rendered"
+                : "image preprocessing error";
+            res.set_content(json{{"error", {{"message", why}, {"type", "invalid_request_error"}}}}.dump(),
+                            "application/json");
+            return;
+        }
+        mm_chunks = std::shared_ptr<mtmd_input_chunks>(raw_chunks, mtmd_input_chunks_free);
+    }
     // Streaming can only carry structured tool_calls (not raw markup) if we
     // buffer the whole turn and parse it before emitting SSE. That's only
     // needed when a tool call could actually appear -- i.e. tools were offered
@@ -268,7 +439,8 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
 
     if (!stream) {
         std::lock_guard<std::mutex> lock(s.mu);
-        GenerationResult r = s.engine.complete(prompt, n_predict, sampling);
+        GenerationResult r = is_multimodal ? s.engine.complete_multimodal(mm_chunks.get(), n_predict, sampling)
+                                            : s.engine.complete(prompt, n_predict, sampling);
         // Prove-it-fires observability (Phase 6): report how much of the
         // prompt was served from the KV prefix cache vs. re-decoded. On a
         // pure-attention model a repeated persona/system prefix shows a high
@@ -378,7 +550,8 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         GenerationResult r;
         {
             std::lock_guard<std::mutex> lock(s.mu);
-            r = s.engine.complete(prompt, n_predict, sampling);
+            r = is_multimodal ? s.engine.complete_multimodal(mm_chunks.get(), n_predict, sampling)
+                              : s.engine.complete(prompt, n_predict, sampling);
         }
         std::fprintf(stderr,
                      "[pleiades-engine-server] chat(stream,tools): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
@@ -454,7 +627,15 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     // model's real template above, so any assistant tool_calls history still
     // round-trips for a streamed turn.
     res.set_chunked_content_provider(
-        "text/event-stream", [&s, prompt, n_predict, id, created, sampling](size_t /*offset*/, httplib::DataSink& sink) {
+        "text/event-stream",
+        // mm_chunks captured by (cheap, refcounted) copy -- this lambda runs
+        // AFTER handle_chat() returns, per the class of bug this file's
+        // header already warns about for exactly this content-provider
+        // pattern (a captured reference to a local would dangle); a plain
+        // capture-by-value of a shared_ptr is exactly what keeps the
+        // pointee alive that long. is_multimodal is a trivial bool copy.
+        [&s, prompt, n_predict, id, created, sampling, is_multimodal,
+         mm_chunks](size_t /*offset*/, httplib::DataSink& sink) {
             std::lock_guard<std::mutex> lock(s.mu);
             auto write_chunk = [&](const json& delta, const char* finish_reason) {
                 json chunk = {
@@ -467,9 +648,10 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
             };
             write_chunk({{"role", "assistant"}}, nullptr);
             try {
-                GenerationResult sr = s.engine.generate(
-                    prompt, n_predict,
-                    [&](const std::string& piece) { return write_chunk({{"content", piece}}, nullptr); }, sampling);
+                auto on_piece = [&](const std::string& piece) { return write_chunk({{"content", piece}}, nullptr); };
+                GenerationResult sr = is_multimodal
+                    ? s.engine.generate_multimodal(mm_chunks.get(), n_predict, on_piece, sampling)
+                    : s.engine.generate(prompt, n_predict, on_piece, sampling);
                 std::fprintf(stderr,
                              "[pleiades-engine-server] chat(stream): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
                              sr.n_prompt_tokens, sr.n_prompt_cached, sr.n_prompt_tokens - sr.n_prompt_cached);
@@ -510,17 +692,86 @@ struct Args {
     std::string cache_type_v = "f16";
     std::string alias = "pleiades-engine";
     bool use_mlock = false;
+    std::string slot_save_path;  // empty = /slots disabled, matching llama-server's own gate
+    std::string mmproj;          // empty = vision disabled, matching llama-server's own --mmproj gate
 };
+
+// Phase 9.4 (docs/specs/2026-07-21-native-inference-engine-design.md): a
+// deliberately simpler stand-in for llama.cpp's own fs_validate_filename()
+// (common/common.cpp) -- that function does full UTF-8 codepoint validation
+// because arbitrary user filenames are a real input there. Every caller on
+// our side (pleiades/models.py's _slot_save/_slot_restore) only ever sends
+// the single hardcoded constant "latest.bin", so a strict ASCII allowlist is
+// both sufficient for the real threat model and avoids pulling in more of
+// common/'s UTF-8 machinery than chat templating already needs. Still a real
+// path-traversal guard, not a formality: rejects separators, "..", and
+// leading/trailing dots regardless of what a caller actually sends.
+bool is_safe_slot_filename(const std::string& name) {
+    if (name.empty() || name.size() > 255) {
+        return false;
+    }
+    if (name.find("..") != std::string::npos) {
+        return false;
+    }
+    if (name.front() == '.' || name.back() == '.') {
+        return false;
+    }
+    for (unsigned char c : name) {
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
 
 void print_usage(const char* prog) {
     std::fprintf(stderr,
         "usage: %s --model PATH [--host HOST] [--port PORT] [--ctx N] [--ngl N]\n"
         "       [--n-cpu-moe N] [--ub N] [--batch N] [--fa on|off|auto]\n"
         "       [--ctk TYPE] [--ctv TYPE] [--alias NAME] [--threads N] [--mlock]\n"
+        "       [--slot-save-path DIR] [--mmproj PATH] [--caps]\n"
         "\n"
         "legacy positional mode (still accepted): %s <model.gguf> <host> <port>"
         " [n_ctx] [n_gpu_layers] [alias]\n",
         prog, prog);
+}
+
+// Phase 9.2 (docs/specs/2026-07-21-native-inference-engine-design.md): a
+// machine-readable, per-BUILD capability report, printed and exited before
+// any model is touched -- this replaces pleiades/runtime.py::caps()'s old
+// approach of grepping --help text (which can only ever say what flags this
+// binary parses, not what the resolved backend can actually do). Consumers:
+// autofit.place() should degrade MoE placement when moe_offload is false
+// rather than silently mis-sizing VRAM for a split that can't happen (see
+// Phase 9's Risk R1 -- this flag is what makes that risk *observable*, not
+// what proves the offload is correct on non-CUDA backends).
+void print_caps() {
+    json caps = {
+        {"backend", PLEIADES_ENGINE_BACKEND},
+        // model_manager.cpp's tensor_buft_overrides mechanism (--n-cpu-moe)
+        // is implemented generically against ggml_backend_cpu_buffer_type(),
+        // not gated to any one GPU backend in this engine's own code -- so
+        // the MECHANISM is present whenever there's a GPU backend to split
+        // against (nothing to offload between CPU and itself on a CPU-only
+        // build). Whether it's numerically CORRECT/fast on non-CUDA backends
+        // is unverified -- see Phase 9's Risk R1 -- this flag reports
+        // presence, not a correctness guarantee.
+        {"moe_offload", std::string(PLEIADES_ENGINE_BACKEND) != "cpu"},
+        // Build-time capability (this binary links mtmd and understands
+        // --mmproj), NOT runtime state -- --caps prints before any --model/
+        // --mmproj is ever parsed, so it cannot know whether THIS invocation
+        // will actually load one. A caller planning whether to pass --mmproj
+        // at all wants exactly this answer; whether a specific mmproj file
+        // loaded successfully is only knowable after boot (see the startup
+        // log, and mtmd_support_vision() once a model is live).
+        {"vision", true},
+        {"slots", false},    // save/restore not wired in yet -- Phase 9.4.1
+        {"resize", true},    // POST /resize -- live since Phase 3
+        {"engine_version", "0.1.0"},
+    };
+    std::printf("%s\n", caps.dump().c_str());
 }
 
 // Mirrors common/arg.cpp's common_arg_utils::is_truthy/is_falsey/is_autoy
@@ -598,6 +849,10 @@ Args parse_args(int argc, char** argv) {
     }
 
     std::string first = argv[1];
+    if (first == "--caps") {
+        print_caps();
+        std::exit(0);
+    }
     bool flag_mode = !first.empty() && first[0] == '-';
 
     if (!flag_mode) {
@@ -650,6 +905,10 @@ Args parse_args(int argc, char** argv) {
             a.alias = next(i);
         } else if (arg == "--threads") {
             a.n_threads = std::stoi(next(i));
+        } else if (arg == "--slot-save-path") {
+            a.slot_save_path = next(i);
+        } else if (arg == "--mmproj") {
+            a.mmproj = next(i);
         } else if (arg == "--mlock") {
             a.use_mlock = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -696,7 +955,12 @@ int main(int argc, char** argv) {
         cparams.type_v = parse_cache_type(args.cache_type_v);
 
         ModelManager models;
-        models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock);
+        models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock,
+                    /*statewise_map=*/"", args.mmproj);
+        if (!args.mmproj.empty()) {
+            std::fprintf(stderr, "[pleiades-engine] mmproj loaded: %s (vision: %s)\n", args.mmproj.c_str(),
+                         mtmd_support_vision(models.mtmd()) ? "supported" : "NOT supported by this mmproj");
+        }
         // Chat templating is built once here (ModelManager::load(), from the
         // model's own GGUF jinja template) -- logged loudly, including which
         // template llama.cpp resolved and whether it advertises tool-calling
@@ -718,6 +982,23 @@ int main(int argc, char** argv) {
         });
         svr.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
             res.set_content(json{{"status", "ok"}, {"model", state.alias}}.dump(), "application/json");
+        });
+        svr.Get("/v1/models", [&](const httplib::Request&, httplib::Response& res) {
+            // pleiades/models.py's ModelManager.state()/_is_our_server() poll this
+            // (not /health) as the "server is actually up" signal, and match a
+            // running registry entry by `id` == the alias this process was
+            // launched with -- never the GGUF path. Without this route those two
+            // functions 404 forever: state() never leaves "loading", and
+            // `pleiades model start`/`pleiades serve` time out on an otherwise
+            // healthy server. See docs/specs/2026-07-21-native-inference-engine-
+            // design.md's cutover-phase note on this gap.
+            res.set_content(json{{"object", "list"},
+                                 {"data", json::array({{{"id", state.alias},
+                                                        {"object", "model"},
+                                                        {"created", 0},
+                                                        {"owned_by", "pleiades"}}})}}
+                                 .dump(),
+                             "application/json");
         });
         svr.Get("/props", [&](const httplib::Request&, httplib::Response& res) {
             std::lock_guard<std::mutex> lock(state.mu);
@@ -745,9 +1026,137 @@ int main(int argc, char** argv) {
                 return;
             }
             auto t0 = std::chrono::steady_clock::now();
-            int actual = state.ctx.resize(requested);
-            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            res.set_content(json{{"n_ctx", actual}, {"took_ms", static_cast<int>(ms)}}.dump(), "application/json");
+            try {
+                int actual = state.ctx.resize(requested);
+                double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                res.set_content(json{{"n_ctx", actual}, {"took_ms", static_cast<int>(ms)}}.dump(), "application/json");
+            } catch (const std::exception& e) {
+                // Same shape as server.py's /resize handler ("surface load
+                // failures honestly"): a failed grow -- routine on low-VRAM
+                // hardware -- must be a clean JSON 500, not cpp-httplib's
+                // bare no-body 500 from its routing try/catch. The governor
+                // rolled back to the previous n_ctx (see
+                // ContextGovernor::resize), so the server stays up; n_ctx
+                // reports where the engine actually is (0 only if even the
+                // rollback failed).
+                res.status = 500;
+                res.set_content(json{{"error", std::string("resize failed: ") + e.what()},
+                                     {"n_ctx", state.ctx.n_ctx()}}.dump(),
+                                "application/json");
+            }
+        });
+        // Phase 9.4 (docs/specs/2026-07-21-native-inference-engine-design.md):
+        // wire contract matches upstream llama-server's /slots/:id_slot
+        // exactly (pleiades/models.py's _slot_save/_slot_restore already
+        // speak it -- POST .../slots/0?action=save|restore, JSON
+        // {"filename": "..."}, 200 on success) so ModelManager needed zero
+        // changes. Every character restart currently gets a warm-state load
+        // this way; without it every restart is a full cold persona/memory
+        // reprocess -- this session's design doc calls that the single most
+        // visible regression a native-engine cutover could introduce.
+        // Single sequence (id 0) only -- this engine has no multi-slot
+        // concept (--parallel is effectively always 1, see http_server.cpp's
+        // one global request mutex).
+        svr.Post(R"(/slots/(\d+))", [&](const httplib::Request& req, httplib::Response& res) {
+            if (args.slot_save_path.empty()) {
+                res.status = 501;
+                res.set_content(json{{"error", "This server does not support slots action. "
+                                                "Start it with --slot-save-path"}}.dump(),
+                                "application/json");
+                return;
+            }
+            if (req.matches[1] != "0") {
+                res.status = 400;
+                res.set_content(json{{"error", "invalid slot id -- only 0 exists"}}.dump(), "application/json");
+                return;
+            }
+            std::string action = req.has_param("action") ? req.get_param_value("action") : "";
+            if (action != "save" && action != "restore") {
+                res.status = 400;
+                res.set_content(json{{"error", "action must be save or restore"}}.dump(), "application/json");
+                return;
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const std::exception&) {
+                res.status = 400;
+                res.set_content(json{{"error", "filename (string) required"}}.dump(), "application/json");
+                return;
+            }
+            if (!body.contains("filename") || !body["filename"].is_string()) {
+                res.status = 400;
+                res.set_content(json{{"error", "filename (string) required"}}.dump(), "application/json");
+                return;
+            }
+            std::string filename = body["filename"].get<std::string>();
+            if (!is_safe_slot_filename(filename)) {
+                res.status = 400;
+                res.set_content(json{{"error", "invalid filename"}}.dump(), "application/json");
+                return;
+            }
+            std::string filepath = args.slot_save_path;
+            if (!filepath.empty() && filepath.back() != '/' && filepath.back() != '\\') {
+                filepath += '/';  // matches llama-server's own params.slot_save_path convention (trailing sep expected)
+            }
+            filepath += filename;
+
+            std::lock_guard<std::mutex> lock(state.mu);
+            llama_context* ctx = state.ctx.ctx();
+            if (!ctx) {
+                res.status = 500;
+                res.set_content(json{{"error", "no live context"}}.dump(), "application/json");
+                return;
+            }
+            auto t0 = std::chrono::steady_clock::now();
+            if (action == "save") {
+                // Whatever PrefixCache currently tracks as resident for
+                // sequence 0 IS the true token sequence in the KV -- Engine's
+                // generate() keeps the two in lockstep on every call (Phase 6),
+                // so there's no separate "ask the KV what it holds" step
+                // needed the way upstream's per-slot `prompt.tokens` does.
+                const std::vector<llama_token>& tokens = state.engine.prefix_cache().tokens();
+                size_t nwrite = llama_state_seq_save_file(ctx, filepath.c_str(), /*seq_id=*/0,
+                                                          tokens.data(), tokens.size());
+                double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0).count();
+                res.set_content(json{{"filename", filename}, {"n_tokens", tokens.size()},
+                                     {"n_bytes", nwrite}, {"took_ms", static_cast<int>(ms)}}.dump(),
+                                "application/json");
+            } else {
+                std::vector<llama_token> buf(static_cast<size_t>(std::max(state.ctx.n_ctx(), 1)));
+                size_t token_count = 0;
+                size_t nread = llama_state_seq_load_file(ctx, filepath.c_str(), /*seq_id=*/0,
+                                                         buf.data(), buf.size(), &token_count);
+                if (nread == 0) {
+                    // Missing file, corrupt blob, or a save that doesn't fit
+                    // this context's n_ctx -- all "nothing usable," never a
+                    // partial/inconsistent restore. Match models.py's own
+                    // contract (best-effort, never worse than a cold start):
+                    // clear whatever the failed attempt may have touched so
+                    // the next request cold-decodes cleanly rather than
+                    // inheriting a half-restored KV.
+                    llama_memory_clear(llama_get_memory(ctx), /*data=*/true);
+                    state.engine.reset_prefix_cache();
+                    res.status = 400;
+                    res.set_content(json{{"error", "unable to restore slot -- missing/invalid save file "
+                                                    "or incompatible with this context"}}.dump(),
+                                    "application/json");
+                    return;
+                }
+                buf.resize(token_count);
+                // The KV now physically holds these tokens at their saved
+                // positions (llama_state_seq_load_file restores that
+                // verbatim) -- seed_prefix_cache brings PrefixCache's
+                // bookkeeping back into agreement with it. See that method's
+                // own comment for what silently breaks if this is skipped.
+                state.engine.seed_prefix_cache(buf);
+                double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0).count();
+                res.set_content(json{{"filename", filename}, {"n_tokens", token_count},
+                                     {"n_bytes", nread}, {"took_ms", static_cast<int>(ms)}}.dump(),
+                                "application/json");
+            }
         });
         svr.Post("/v1/chat/completions", [&](const httplib::Request& req, httplib::Response& res) {
             try {

@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "mtmd.h"
+
 namespace pleiades_engine {
 
 namespace {
@@ -30,7 +32,7 @@ std::string ffn_exps_block_regex(int layer_idx) {
 ModelManager::~ModelManager() { unload(); }
 
 void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe, bool use_mlock,
-                        const std::string& statewise_map) {
+                        const std::string& statewise_map, const std::string& mmproj_path) {
     unload();
     llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = n_gpu_layers;
@@ -104,9 +106,34 @@ void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe
                      e.what());
         chat_templates_ = ChatTemplates::create(model_, /*template_override=*/"chatml");
     }
+
+    // Phase 9.4.2: vision/mmproj. Opt-in only -- a model with no mmproj_path
+    // never touches libmtmd at all, so every existing text-only model/test is
+    // completely unaffected. use_gpu mirrors whether ANY GPU offload was
+    // requested for the text model: a CPU-only launch (n_gpu_layers == 0) has
+    // no GPU backend resident to put the vision encoder on either.
+    if (!mmproj_path.empty()) {
+        mtmd_context_params mparams = mtmd_context_params_default();
+        mparams.use_gpu = (n_gpu_layers != 0);
+        mtmd_ = mtmd_init_from_file(mmproj_path.c_str(), model_, mparams);
+        if (!mtmd_) {
+            // Explicitly requested and failed: throw rather than silently
+            // serve this model text-only. A caller who asked for --mmproj and
+            // gets a model that quietly can't see images is worse off than
+            // one told plainly at startup that it didn't load.
+            llama_model_free(model_);
+            model_ = nullptr;
+            path_.clear();
+            throw std::runtime_error("pleiades_engine: failed to load mmproj: " + mmproj_path);
+        }
+    }
 }
 
 void ModelManager::unload() {
+    if (mtmd_) {
+        mtmd_free(mtmd_);
+        mtmd_ = nullptr;
+    }
     if (model_) {
         llama_model_free(model_);
         model_ = nullptr;

@@ -71,6 +71,18 @@ pleiades_add_test(test_prefix_cache)
 # model: each points at the given path if it exists and SKIPs cleanly
 # (SKIP_RETURN_CODE below) otherwise, so they run for real where a suitable
 # model is resident and never fail a bare checkout.
+#
+# POSIX-only: both spawn the server binary via fork/execl and reap it via
+# SIGTERM + waitpid (see ServerProcess in each file), none of which exists
+# under MSVC/MinGW -- building them unconditionally would break `cmake
+# --build` for the WHOLE engine on Windows (tests default ON in the parent
+# CMakeLists). Gate the two targets, not the whole test suite: everything
+# above still builds and runs on Windows. A Windows port would need a
+# CreateProcess-based ServerProcess; until then these run only where the
+# multi-hundred-MB dev-box fixtures they need actually live.
+if (WIN32)
+  message(STATUS "pleiades: skipping POSIX-only HTTP end-to-end tests (fork/execl-based) on Windows")
+else()
 set(PLEIADES_TEST_QWEN_GGUF "$ENV{HOME}/.anamnesis/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
     CACHE FILEPATH "Qwen-family GGUF (with a tool chat_template) for the end-to-end HTTP tool-call test; SKIPs if absent")
 
@@ -97,3 +109,4 @@ target_link_libraries(test_http_cross_family PRIVATE pleiades_engine pleiades_ht
 add_test(NAME test_http_cross_family
   COMMAND test_http_cross_family $<TARGET_FILE:pleiades-engine-server> "${PLEIADES_TEST_CROSS_GGUF}")
 set_tests_properties(test_http_cross_family PROPERTIES SKIP_RETURN_CODE 77)
+endif()  # NOT WIN32 (POSIX-only HTTP e2e tests -- see the gate comment above)

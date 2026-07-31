@@ -804,8 +804,404 @@ CUDA/Linux is the proving ground (Phases 1-6). Once cut over:
   the Phase 3 HTTP shim. Explicitly deferred; not attempted until desktop
   platforms are solid.
 
+**Correction, 2026-07-30 (Phase 9 kickoff):** this phase's "no new engine-core
+work expected" was an assumption someone wrote down, not a measured result —
+see Phase 9's Risk R1. Kept here for history; do not treat it as settled.
+
+## Phase 9 — Sole-engine cutover (kicked off 2026-07-30, in progress)
+
+**Goal (Fleagle, 2026-07-30):** finish this engine and make it the *only* way
+Pleiades runs models — replacing both `pleiades/inference/server.py` (the
+Python "elastic" fallback) and the autodetected upstream `llama-server` path —
+working optimally across Windows/macOS/Linux and NVIDIA/AMD/Apple-Silicon/
+CPU-only hardware at any VRAM tier, with zero capability regression.
+
+Investigation run as a 5-agent workflow (3x Sonnet mapping, 2x Opus design
+synthesis) plus direct empirical verification on this box. Full agent output
+archived at `/tmp/claude-1000/-home-fleabag/690e6859-54e6-4bfa-b64d-5c9430a5c994/tasks/wwkhufbvm.output`
+if the compressed version below needs expanding later.
+
+### 9.0 — Corrected landscape: four backends, not two
+
+`pleiades/launch.py::build_command()` is the one function that picks a
+backend. There are **four**, not the two this doc has mostly discussed:
+(a) autodetected upstream `llama-server` (today's real default whenever a
+binary is found — `runtime.py::find_native()`), (b) this repo's own hand-rolled
+Python "elastic" server (`pleiades/inference/server.py` — the actual fallback
+when no native binary exists and `PLEIADES_ENGINE` is unset; its whole reason
+to exist is live `/resize` without a restart), (c) `llama_cpp.server`
+(pip-installed fallback, `PLEIADES_ENGINE=llama_cpp`, explicit opt-in only),
+(d) this engine (`PLEIADES_ENGINE=pleiades_native`). Capability matrix,
+installer coverage, and full backend-selection code map are in the archived
+agent output above rather than reproduced here.
+
+### 9.1 — DONE: the engine could not actually run through Pleiades' own launch path
+
+**Finding, verified directly on this box, not inferred:** `GET /v1/models`
+was never implemented (Phase 3 above says so explicitly — "not yet ported").
+`pleiades/models.py::ModelManager.state()` polls exactly that route as its
+"is the server actually up" signal; a 404 makes `state()` fall through to
+`_pid_alive()` and return `"loading"` forever. Consequence, confirmed live:
+
+```
+$ curl .../health      -> 200
+$ curl .../v1/models   -> 404
+$ PLEIADES_ENGINE=pleiades_native pleiades model start storiestest
+model 'storiestest' server exited early ...   # via _wait_ready()'s 180s timeout path, pre-fix
+```
+
+This directly contradicts Phase 5's "verified end-to-end via the REAL
+production path" claim above. Most likely explanation: that verification
+checked `models-running.json` had an entry (written unconditionally on
+process spawn, before any health gate) and a manual `curl` to
+`/v1/chat/completions`, not `ModelManager.state()`/`_wait_ready()` — i.e. the
+registry-entry-exists and health-gate-passes claims got conflated. Correcting
+the record here rather than leaving Phase 5 looking more proven than it was.
+
+**Fix shipped:** `GET /v1/models` added to `engine/src/http_server.cpp`,
+returning `{"data":[{"id":<alias>,...}]}` — `id` must be the alias
+(`ModelManager._is_our_server()` matches on it, not the GGUF path).
+
+**Verification (this session, this box):**
+- Direct HTTP: `/v1/models` now 200s with the right shape.
+- Full `ctest`: 8/8 (7 run, 1 skip — `test_http_cross_family`, unrelated
+  fixture requirement), including the two real end-to-end HTTP suites.
+- **Real production path, not a unit test:** `pleiades model add` →
+  `PLEIADES_ENGINE=pleiades_native pleiades model start` → registry shows
+  running → `ModelManager.state()` returns `"running"` (was stuck on
+  `"loading"` pre-fix) → real `/v1/chat/completions` round-trip → clean
+  `pleiades model stop` → state `"stopped"`. All green.
+- Side finding, not a regression from this fix: the tiny CI fixture model
+  (`n_embd_head_k=48`) can't use the *default* quantized KV cache
+  (`kv_cache_type="q8_0"`, `config.py`'s newer default — q8_0's block size 32
+  doesn't divide 48); had to set `PLEIADES_KV_CACHE_TYPE=""` for this test.
+  Real production models (128-dim heads etc.) aren't affected, but the engine
+  should probably reject/degrade this combination with a clear error instead
+  of a bare `llama_init_from_model` failure — tracked for 9.3.
+
+### 9.2 — DONE (partial): `--caps`, `kv_bytes_per_token`, launch.py wiring
+
+Shipped this pass: **`--caps`** (`http_server.cpp::print_caps()`) — prints
+`{"backend","moe_offload","vision","slots","resize","engine_version"}` as one
+JSON line and exits before touching a model. `moe_offload` reflects whether
+this *build* has a GPU backend to offload experts to (`false` on a CPU-only
+build — nothing to split against), not a correctness claim about non-CUDA
+placement (Risk R1 is about correctness, this flag is about presence).
+**`kv_bytes_per_token`** added to `/props`, ported from
+`hardware.py::kv_bytes_per_token()` — takes that function's own documented
+"conservative all-layers" fallback path always, since the public
+`llama_model_n_head_kv()`/etc. API is model-wide, not per-layer (no hybrid
+discount available at this layer the way Python's GGUF-metadata parse gets
+one). **`launch.py`'s engine branch** now passes `--threads` (previously
+silently dropped entirely — every native-engine launch ran pinned at ggml's
+hardcoded default of 4 threads regardless of the real machine) and `--batch`;
+`cpp_caps` is no longer hardcoded `RuntimeCaps(moe_offload=True, native=True)`
+— `_query_engine_caps()` actually runs `<binary> --caps` and parses the real
+answer, falling back to the old assumption only if the query itself fails.
+`Settings.cache_reuse` deliberately does NOT get a `--cache-reuse` flag on the
+engine (documented in a launch.py comment instead) — `prefix_cache.cpp`
+already does its own unconditional exact-prefix reuse, a different, simpler
+contract than llama-server's chunked one; adding a flag to gate something
+that's already always-on and correct would be motion, not a fix.
+
+**Verification:** full engine `ctest` 8/8 (both this build and the 9.3
+Vulkan build below); live server: `--caps` reports `{"backend":"cpu",
+"moe_offload":false,...}` on a CPU build; `/props`'s `kv_bytes_per_token`
+checked by hand against the fixture model's real shape (6 layers × 6 KV-heads
+× 48 head-dim × 2 × 2 bytes = 6912 — matched exactly); full Python suite 580
+passed after the `launch.py` changes.
+
+**Still not done:** `POST /v1/completions`, `GET /metrics`, `POST /tokenize`,
+`POST /extras/tokenize/count`. `Settings.moe_prefill_opts` is confirmed dead
+code post-rebase (the `chore/llamacpp-rebase` above dropped the fork commit
+it depended on) but wasn't retired this pass — harmless to leave, not wired
+into this branch either way.
+
+### 9.3 — DONE: `engine/CMakeLists.txt` backend matrix, validated on TWO real backends
+
+Shipped: `PLEIADES_ENGINE_BACKEND=auto|cuda|hip|vulkan|metal|cpu` replaces the
+old `PLEIADES_ENGINE_CUDA` boolean (kept as a one-release deprecated alias,
+`message(DEPRECATION ...)`, only takes effect if the new variable is left at
+its `auto` default). Auto-detect order matches `runtime.py::_backend_priority()`:
+Apple+arm64 → metal; else `find_package(CUDAToolkit)` → cuda,
+`find_package(hip)+find_package(hipblas)` → hip,
+`find_package(Vulkan COMPONENTS glslc)` → vulkan, else cpu. An **explicit**
+backend request with no toolchain found is a hard `FATAL_ERROR` at configure
+time — auto-detect degrading silently to CPU is exactly the
+`-DGGML_HIPBLAS=on`-silently-ignored footgun `install.sh` already had to
+learn to avoid; this restructure does not reintroduce it in the engine's own
+build. HIP gets a `PLEIADES_ENGINE_HIP_ARCHITECTURES` escape hatch mirroring
+the existing CUDA one (`CMAKE_HIP_ARCHITECTURES`, forwarded before
+`ggml-hip`'s own `GPU_TARGETS` fallback runs). Metal forces
+`GGML_METAL_EMBED_LIBRARY=ON` (mandatory for a binary that gets moved after
+building — packaging always relocates it). The resolved backend is baked into
+the binary via `target_compile_definitions` so `--caps` (9.2) can report it
+without re-probing hardware at runtime.
+
+**Verified for real, not just configured** — this box turned out to have a
+genuine second backend available (Intel UHD 620 iGPU, Vulkan 1.4.350 loader +
+`glslc` present; `vulkan-headers`/`vulkan-devel` were missing and installed
+this session to get a real compile, not just a configure-time check):
+
+| backend | configure | build | `ctest` | live inference |
+|---|---|---|---|---|
+| `cpu` (explicit) | clean | clean | 8/8 | n/a (health/caps/props checked) |
+| `auto` (no flags, headers missing) | resolved to `cpu` — **correct**, no dev headers present | — | — | — |
+| `auto` (headers installed) | resolved to `vulkan` — **correct**, priority order confirmed | — | — | — |
+| `vulkan` (explicit) | clean | clean, 0 errors | 8/8 | **real**: `ggml_vulkan` detected "Intel(R) UHD Graphics 620 (KBL GT2)", 7/7 layers offloaded to `Vulkan0`, coherent chat completion produced |
+| `PLEIADES_ENGINE_CUDA=OFF` (deprecated alias) | clean, prints the deprecation warning, resolves to `cpu` | — | — | — |
+
+The auto-detect-resolves-to-CPU-when-headers-missing case is not a bug — it's
+the "never silently produce a broken build" behavior working as designed:
+this box had the Vulkan *runtime* (loader, `glslc`) but not the *development
+headers*, and `find_package(Vulkan COMPONENTS glslc)` correctly reported not
+found until the real SDK package was installed.
+
+**Still genuinely unverified** (no hardware on this box): CUDA, HIP/ROCm,
+Metal — configure/build logic is written and matches what each backend's own
+`ggml-<backend>/CMakeLists.txt` actually requires (checked against the vendored
+source, not assumed), but none of the three have been compiled here. Same
+caveat as the original doc's "What needs real hardware" list below.
+
+### 9.4 — feature parity before cutover is safe (1, 2, 4 DONE; 3 deliberately deferred)
+
+Ordered by regression severity.
+
+**(1) slot save/restore — DONE.** `--slot-save-path DIR`, `POST
+/slots/0?action=save|restore` implemented in `http_server.cpp` matching
+upstream llama-server's exact wire contract (`llama_state_seq_save_file`/
+`llama_state_seq_load_file`, same query/body shape) — `pleiades/models.py`'s
+`_slot_save`/`_slot_restore` needed zero changes. `launch.py`'s engine branch
+now passes `--slot-save-path` (it didn't before). The subtle part flagged when
+this item was first written turned out to be real: a restore repopulates the
+live KV directly, but `PrefixCache` had no way to know that happened — a new
+`Engine::seed_prefix_cache()` closes it, called right after a successful
+restore with the tokens `llama_state_seq_load_file` just returned.
+
+*Verification, this session:* full `ctest` 8/8. Then the actual thing that
+matters — a real save/kill/restart/restore round-trip through raw HTTP, not a
+mock: server 1 boots, one chat turn (57 tokens resident), `POST
+/slots/0?action=save` (395,068 bytes written). Server 1 killed outright.
+**Fresh** server 2 process boots from nothing, `POST
+/slots/0?action=restore` succeeds (57 tokens), and a follow-up request
+resending that same conversation logs `prompt_tokens=95 prefix_cached=51
+decoded=44` — real prefix-cache reuse on a process that never itself decoded
+those tokens, which is only possible if `seed_prefix_cache()` actually
+worked (an unseeded restore would show `prefix_cached=0`, a full cold
+re-decode). Three failure paths also verified live: no `--slot-save-path` →
+`501` with upstream's own error text; restoring a missing/corrupt file →
+clean `400`, server stays up (confirmed via a follow-up `/health` 200, not
+inferred); a `../../etc/evil.bin`-style filename → `400` from a new
+`is_safe_slot_filename()` guard (a deliberately simpler ASCII allowlist than
+upstream's full UTF-8-codepoint `fs_validate_filename()`, adequate because
+every real caller only ever sends the one hardcoded constant `"latest.bin"`,
+but still a genuine path-traversal check regardless of what a caller sends).
+
+**(4) escape hatch — DONE.** `pleiades model add <name> --external-url URL`
+registers an already-running OpenAI-compatible server Pleiades never spawns,
+health-manages by process, or stops — the permanent, backend-agnostic answer
+to "what if the engine doesn't work on my exotic hardware," and a much
+better one than keeping a whole Python fallback alive forever just for that
+case. `Model` gained an `external_url` field; `base_url()`/`state()`/
+`start()`/`stop()` all special-case it (`state()` does a direct reachability
+check against the external server instead of consulting `running.json`,
+which never gets an entry for it; `stop()` needed no change at all — it
+already no-ops cleanly on "nothing in running.json," which is exactly true
+here). One real bug caught while wiring this in: `_prune_missing()`'s
+GGUF-file check (`Path("").is_file()`) would have silently deleted every
+external-model registry entry on the very next load — fixed with an explicit
+skip. New `tests/test_external_model.py`, 7/7 passing, against a real HTTP
+server (not a mock) — add/base_url/reachable-state/unreachable-start-raises/
+stop-is-noop/list-survives-prune/CLI-mutual-exclusivity. Not done: the webui
+(`/api/models` POST) doesn't expose `external_url` yet — CLI-only for now,
+deliberately scoped that way rather than also touching desktop UI this pass.
+
+**(2) vision/mmproj — DONE.** Turned out exactly as cheap as predicted:
+`set(LLAMA_BUILD_MTMD ON CACHE BOOL "" FORCE)` before `add_subdirectory`,
+`target_link_libraries(pleiades_engine PUBLIC ... mtmd)`. `ModelManager`
+gained an optional `mmproj_path` param to `load()`, owning an `mtmd_context*`
+(`mtmd_init_from_file`, freed in `unload()`). `--mmproj PATH` added to
+`parse_args()`; `--caps`'s `vision` field now reports build-time capability
+(this binary always links mtmd) rather than the old static `false`.
+`launch.py`'s engine branch — previously documented as deliberately
+excluding `mmproj` because the engine had no vision support at all — now
+passes `--mmproj` the same way the native-llama-server branch does.
+
+`handle_chat()` extracts OpenAI content-parts `image_url` entries (walking
+`messages` before the chat template ever sees them), decodes `data:` URIs
+via `common/base64.hpp` (public-domain, header-only, no `LLAMA_BUILD_COMMON`
+needed), builds bitmaps via `mtmd_helper_bitmap_init_from_buf`, and replaces
+each image part with a plain text part containing the model's own media
+marker (`mtmd_get_marker`) — so the template renders a normal string prompt
+with the marker exactly where the image was, independent of whatever
+image-content-part convention that specific model's template natively
+expects (SmolVLM's own template, for one, expects HF-style `"image"` parts,
+not OpenAI's `"image_url"` — irrelevant here, since the template never sees
+either, only the pre-flattened marker text). Remote `http(s)://` URLs are
+refused outright (SSRF guard, matches this doc's own earlier recommendation
+and what the Python fallbacks already do — nothing).
+
+`Engine` gained `generate_multimodal()`/`complete_multimodal()`, sharing the
+token-by-token sampling loop with the text path via a new private
+`run_sampling_loop()` (extracted from what `generate()` used to do inline).
+The multimodal path always treats the turn as a cache-busting boundary —
+full KV clear before AND an invalidated (never populated) `PrefixCache`
+after — because `PrefixCache` is a plain `llama_token` vector assumed to
+align 1:1 with KV positions, and an image-spanned KV region holds
+vision-encoder embeddings, not token IDs; there is no honest way to
+represent that. Prompt admission for the mixed prompt goes through
+`mtmd_helper_eval_chunks()` (handles text-chunk `llama_decode` and
+image-chunk `mtmd_encode_chunk`+embedding+`llama_decode` internally,
+including whatever non-causal masking a model like Gemma needs), after which
+`run_sampling_loop()` proceeds completely unchanged from the text path.
+
+Two real, non-obvious C++ issues surfaced and got fixed during this pass,
+both worth flagging since they'd bite anyone else using mtmd.h's C++
+wrappers the "obvious" way: `mtmd::bitmaps` and `mtmd::input_chunks` both
+declare `~T() = default`, which (per the standard's rule-of-five interaction)
+silently SUPPRESSES their implicitly-generated move-assignment operator,
+leaving only a copy-assignment that's itself deleted (both own move-only
+members) — assigning either type (`x = f()`, the obvious pattern) fails to
+compile with "use of deleted function." Fixed by using the underlying
+`std::vector<mtmd::bitmap>` / a `std::shared_ptr<mtmd_input_chunks>` directly
+instead of the wrapper structs. The `shared_ptr` (not `unique_ptr`, mtmd.h's
+own alias) was itself forced by a second issue: the raw-token-streaming
+response path captures the chunks into a lambda handed to
+`httplib::Server::set_chunked_content_provider()`, whose signature is a
+`std::function` — which requires its target to be copy-constructible even if
+never actually copied, so a `unique_ptr`-capturing (move-only) lambda fails
+`std::function`'s own `static_assert`. `shared_ptr`'s cheap refcounted copy
+sidesteps both problems at once.
+
+**Verification, this session, all against a REAL downloaded model
+(`ggml-org/SmolVLM-500M-Instruct-GGUF`, both the text GGUF and its mmproj
+sidecar — not a synthetic fixture), using the vendored
+`third_party/llama.cpp/tools/mtmd/test-1.jpeg` as the test image:**
+- Clean build, 0 errors (after fixing the two C++ issues above); full engine
+  `ctest` 8/8 unaffected.
+- Startup log confirms `mtmd_support_vision()` true for this mmproj.
+- **Non-streaming, real image, real answer:** a request with the vendored
+  test JPEG got back *"A newspaper article about astronomers collecting
+  rocks and plant flags."* — coherent and specific to the actual image
+  content, not a generic non-answer. Server log shows real vision-encoder
+  activity, not a stub: `clip_image_batch_encode: ... nx=512, ny=512`,
+  `image slice encoded in 1669 ms`, `image decoded (batch 1/1) in 256 ms`.
+  `prefix_cached=0` in the observability log confirms the cache-busting
+  design held.
+- **Streaming, same image, different question:** real per-token SSE chunks
+  spelling out *"A newspaper article about astronomers finding a new
+  moon."*, ending in a proper `finish_reason:"stop"` + `[DONE]` — the
+  multimodal path through the async content-provider lambda (the one that
+  needed the `shared_ptr` fix) works end to end, not just the synchronous
+  non-streaming path.
+- **Remote URL rejected:** `image_url: "http://evil.example.com/..."` → 400,
+  `"fetching remote URLs is disabled"` — the SSRF guard actually fires.
+- **No-mmproj rejected:** the identical image request against a second
+  server instance started without `--mmproj` → 400, `"this model has no
+  --mmproj loaded"` — confirms a non-vision model doesn't silently accept
+  (and presumably choke on) image input.
+- Full Python suite still 587 passed after all of this (no Python paths
+  touch vision at all this pass — `--mmproj` wiring in `launch.py` was
+  verified separately via `test_launch.py`'s updated assertion).
+
+**(3) speculative decoding — deliberately deferred, not a regression, not
+started.** `launch.py` already treats `spec_type="auto"` as off by default
+(measured harmful for persona chat), so the default user loses nothing; just
+needs a loud warning if a user has actually set `draft_model_path`.
+
+### 9.5 — NOT STARTED: Windows/macOS build + release CI
+
+**Decision to make explicitly:** ship prebuilt release binaries (our own
+GitHub release, fetched by `pleiades runtime install`, same shape as today's
+upstream-binary fetch), do not compile on end-user machines — building
+`engine/` in `install.sh`/`install.ps1` would require a full C++20 toolchain +
+GPU SDK on every user's box, strictly worse than today. Needs: a compile-only
+CI matrix (ubuntu × cpu/vulkan/cuda/hip, windows-latest × cpu/vulkan/cuda,
+macos-14 arm64 × metal, macos-13 x64 × cpu) — this would be the **first ever**
+MSVC and AppleClang compile of this code; budget for real fallout despite
+zero `#ifdef`s in the core (that's a portability *asset*, not proof of a clean
+build). Also: `engine/tests/CMakeLists.txt` currently disables
+`test_http_tool_calls`/`test_http_cross_family` on Windows because their
+shared `ServerProcess` helper uses `fork`/`execl`/`waitpid` — needs a
+`CreateProcess`-based Windows implementation before CI can catch a
+Windows-specific HTTP-layer regression at all.
+
+### 9.6 — NOT STARTED: retiring the other three backends
+
+Staged, three releases, nothing deleted at cutover: **Release N** — engine
+becomes the default whenever resolvable; legacy `PLEIADES_ENGINE` values keep
+working with a one-line deprecation pointing at `--external-url` (9.4); a new
+explicit `PLEIADES_ENGINE=llama_server` name is added for what's today an
+unnamed autodetect fallback, so exotic-hardware users have something to opt
+into. **Release N+1** — legacy values warn and are ignored (engine runs
+regardless); `llama-cpp-python[server]` moves to an optional extra in
+`pyproject.toml`. **Release N+2** — delete `inference/server.py`,
+`launch.py`'s two Python branches, `runtime.py::find_native()`; drop
+`llama-cpp-python` entirely; update this doc's own Phase 0/§3 architecture
+description in `CLAUDE.md`, which is auto-loaded every session and will be
+factually wrong about the stack by then.
+
+### Risk register (ranked by severity, full detail in the archived output)
+
+- **R1 (critical, genuinely unknown):** MoE expert offload
+  (`model_manager.cpp`'s `tensor_buft_overrides`) has only ever been built and
+  measured against CUDA on one 2080 Ti. Whether it's correct on
+  Vulkan/HIP/Metal is unverified — the Phase 8 "no new engine-core work
+  expected" line above was an assumption, not a result. Mitigation: `--caps`
+  (9.2) reports `moe_offload` per build so `autofit` can degrade to dense
+  placement rather than silently mis-sizing VRAM; does not answer whether
+  it's *correct*, only contains the blast radius to "slower," not "OOMs."
+- **R2 (high, near-certain to surface something):** first-ever MSVC/AppleClang
+  compile. Compile-time, CI-catchable, but budget real time for it.
+- **R3 (high, silent-failure class):** prefix-cache correctness once slot
+  restore (9.4.1) and image chunks (9.4.2) exist — either can produce a cache
+  "hit" against KV that isn't actually resident, which manifests as subtly
+  wrong output, not a crash.
+- **R4 (high, correctness):** tool-calling parity across model families needs
+  real per-family regression testing (Qwen, Llama-3.x, Mistral, Gemma, GLM,
+  DeepSeek-R1-distill) — `exec_policy=allow` means a tool call that silently
+  doesn't fire is real-world harm, not a cosmetic bug.
+- **R5 (medium, schedule risk):** ~10 release artifacts × code signing
+  (neither macOS notarization nor Windows Authenticode configured today,
+  per `desktop/electron-builder.yml`) × CUDA/HIP shared-lib bundling × desktop
+  app size budget (ship CPU+Vulkan in the installer, offer CUDA/ROCm/Metal as
+  a first-run download — Vulkan alone covers most non-NVIDIA hardware with no
+  SDK required).
+
+### What needs real hardware (cannot be closed from this box)
+
+Windows+NVIDIA (first MSVC binary, CUDA DLL resolution, Windows process
+lifecycle); Windows+AMD/Vulkan (the actual default path for every Windows AMD
+user per `install.ps1`'s own policy — MoE offload correctness here is R1's
+highest-value experiment); Apple Silicon (Metal build after packaging
+relocation, unified-memory VRAM accounting — `autofit`'s margins were tuned
+for discrete VRAM and unified memory is a different physics problem, MoE
+offload semantics are genuinely unclear when CPU/GPU share memory,
+codesign/notarization); Linux+AMD ROCm on a real `gfx` target. None of this
+is closeable by code review — it needs the actual machines.
+
+**Sequencing:** 9.1 is done and was worth doing in isolation — it's what
+makes an honest engine-vs-llama-server A/B on real models possible at all
+through Pleiades' own tooling, not just via `engine/tests` talking to the
+binary directly. 9.2 (partial), 9.3, and now all of 9.4's real-work items
+(slot save/restore, vision/mmproj, the external-model escape hatch — only
+speculative decoding stays deliberately deferred, a no-op today either way)
+are done as of this pass — feature parity with the other backends is
+essentially closed. 9.3 is backed by real evidence from a second backend
+(Vulkan on this box's Intel iGPU) and 9.4.2 by a real downloaded vision
+model actually answering questions about a real image, not just code review
+or a compile check, in both cases. Next up: 9.5 (CI matrix — the
+MSVC/AppleClang compile is still a complete unknown, and this is the phase
+that would catch it) and 9.6 (retirement staging) -- both still need real
+Windows/macOS/AMD hardware to actually finish, same as R1's MoE-offload
+correctness question in the "what needs real hardware" list below.
+
 ---
 *Written 2026-07-21 following a qwen3.8-max + Opus council consult, per
 Fleagle's direction. See `~/Documents/Claude/Projects/.../memory/pleiades-project.md`
 for session history; this file is the living design doc going forward —
-update it in place as phases complete, don't create parallel docs.*
+update it in place as phases complete, don't create parallel docs. Phase 9
+added 2026-07-30 per Fleagle's direction to finish the engine and make it the
+sole backend; see companion `2026-07-21-context-free-model-architecture-design.md`
+for the separate (lower-priority, "bonus lane") cascading-cache/streaming-lab
+work, which stays behind this cutover per Fleagle's 2026-07-30 call.*

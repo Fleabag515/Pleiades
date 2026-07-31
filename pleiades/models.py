@@ -20,7 +20,6 @@ import json
 import os
 import signal
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -40,23 +39,10 @@ def _running_json() -> Path:
     return config.PLEIADES_HOME / "models-running.json"
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
-    """write_text() truncates in place -- a reader hitting the file mid-write
-    can see a torn/partial JSON body. Write to a sibling temp file and
-    os.replace() it in, which is atomic on both POSIX and Windows (same
-    pattern as scheduler.py's registry writes)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, indent=2))
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+# Re-exported for existing call sites in this module; now shared with
+# profiles.py / chats.py / searxng_runtime.py / anamnesis_runtime.py so every
+# writer of small state-tracking JSON gets the same torn-read protection.
+_atomic_write_json = config.atomic_write_json
 
 
 @dataclass
@@ -101,6 +87,14 @@ class Model:
     # no local file to sniff and no entry in this registry at all; see
     # Profile.model_capabilities for where the cloud-model equivalent lives.
     capabilities: str = ""
+    # Phase 9.4.4 (docs/specs/2026-07-21-native-inference-engine-design.md):
+    # the permanent, backend-agnostic escape hatch for hardware this repo's
+    # own engine builds don't (yet, or ever) run on -- points this registry
+    # entry at ANY already-running OpenAI-compatible server instead of one
+    # Pleiades spawns/manages itself. When set, `path` is not a GGUF file and
+    # is never opened; start()/stop() become no-ops and base_url() returns
+    # this verbatim. See ModelManager.add()'s external_url param.
+    external_url: str = ""
 
     @property
     def vision(self) -> bool:
@@ -154,14 +148,10 @@ def _port_free(host: str, port: int) -> bool:
             return False
 
 
-def _pid_alive(pid: Optional[int]) -> bool:
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+# Shared implementation: os.kill(pid, 0) is a real CTRL_C_EVENT on Windows,
+# not a probe -- see config.pid_alive's docstring. Module-level alias (not a
+# call-site rewrite) so tests can keep monkeypatching models._pid_alive.
+_pid_alive = config.pid_alive
 
 
 # Fixed filename: one slot (--parallel 1, see launch.py), one save per model
@@ -232,20 +222,27 @@ def _pid_on_port(host: str, port: int) -> Optional[int]:
     return None
 
 
+# Guards models.json/models-running.json read-modify-write sequences. The
+# webui runs sync endpoints in a threadpool (many threads in one process),
+# and add()/start() each do read -> compute -> write with no protection --
+# two characters starting the same shared model in the same second could
+# both see is_running()==False and both spawn a llama-server on the same
+# port. MODULE level (not per-instance) because nearly every call site
+# (engine.py's per-turn _resolve_upstream, webui endpoints, cli commands)
+# constructs its own throwaway ModelManager(), and per-instance locks on
+# throwaway instances never contend, guarding nothing -- same reasoning as
+# scheduler.py's _registry_lock. RLock (not Lock): start() and add() call
+# the already-lock-wrapped _load()/_save() etc. from inside their own
+# `with self._lock:` section, on the same thread.
+_registry_lock = threading.RLock()
+
+
 class ModelManager:
     """Register, run, stop, and assign local GGUF models."""
 
     def __init__(self) -> None:
         config.ensure_home()
-        # Guards models.json/models-running.json read-modify-write sequences.
-        # The webui runs sync endpoints in a threadpool (many threads in one
-        # process), and add()/start() each do read -> compute -> write with
-        # no protection -- two characters starting the same shared model in
-        # the same second could both see is_running()==False and both spawn
-        # a llama-server on the same port. RLock (not Lock): start() and
-        # add() call the already-lock-wrapped _load()/_save() etc. from
-        # inside their own `with self._lock:` section, on the same thread.
-        self._lock = threading.RLock()
+        self._lock = _registry_lock
 
     # -- registry ----------------------------------------------------------- #
     def _load(self) -> dict:
@@ -280,6 +277,8 @@ class ModelManager:
         """
         changed = False
         for name in list(reg.keys()):
+            if reg[name].get("external_url"):
+                continue  # no local file to prune against -- see add()'s external_url branch
             path = Path(reg[name].get("path", "")).expanduser()
             try:
                 exists = path.is_file()
@@ -294,10 +293,28 @@ class ModelManager:
         with self._lock:
             _atomic_write_json(_models_json(), data)
 
-    def add(self, name: str, path: str, *, n_ctx: "int | str" = "auto",
+    def add(self, name: str, path: str = "", *, n_ctx: "int | str" = "auto",
             n_gpu_layers: "int | str" = "auto",
             chat_format: str = "", port: int = 0,
-            mmproj: str = "", capabilities: str = "") -> dict:
+            mmproj: str = "", capabilities: str = "",
+            external_url: str = "") -> dict:
+        if external_url:
+            # Escape hatch (Phase 9.4.4): no local file, no port of our own to
+            # manage -- base_url()/start()/stop()/state() all special-case
+            # external_url below. `path` is deliberately left blank rather
+            # than storing the URL there too: every other code path that
+            # reads `path` (remove()'s _delete_model_files, log tailing by
+            # name, etc.) assumes it names a real file on disk, and an empty
+            # string trips their existing "nothing to do" branches instead of
+            # a URL tripping something that tries to open/delete it.
+            with self._lock:
+                reg = self._load()
+                reg[name] = asdict(Model(name=name, path="", n_ctx=n_ctx,
+                                         n_gpu_layers=n_gpu_layers, chat_format=chat_format,
+                                         mmproj=mmproj, capabilities=capabilities,
+                                         external_url=external_url))
+                self._save(reg)
+                return reg[name]
         p = Path(path).expanduser()
         if not p.is_file():
             raise ModelError(f"No such model file: {p}")
@@ -405,11 +422,23 @@ class ModelManager:
         m = self.get(name)
         if not m:
             raise ModelError(f"unknown model '{name}'")
+        if m.get("external_url"):
+            return m["external_url"]
         return f"http://{m['host']}:{m['port']}/v1"
 
     def state(self, name: str) -> str:
         """'running' (HTTP healthy) | 'loading' (process up, API not yet) |
         'crashed' (process died while registered) | 'stopped'."""
+        m = self.get(name)
+        if m and m.get("external_url"):
+            # No process of ours to track -- "running" means "answered just
+            # now", full stop. Never "loading"/"crashed": those describe a
+            # lifecycle we don't own for a server we didn't spawn.
+            try:
+                r = httpx.get(f"{m['external_url'].rstrip('/')}/models", timeout=3.0)
+                return "running" if r.status_code == 200 else "stopped"
+            except httpx.HTTPError:
+                return "stopped"
         run = self._load_running().get(name)
         if not run:
             return "stopped"
@@ -470,6 +499,16 @@ class ModelManager:
                 raise ModelError(
                     f"unknown model '{name}'. Add it first: pleiades model add {name} <path.gguf>"
                 )
+            if m.get("external_url"):
+                # Nothing to spawn -- confirm it's actually reachable (a
+                # start() that returns a URL nothing answers on is a worse
+                # failure mode than an honest error here) and hand back the
+                # same URL base_url() would.
+                if self.state(name) != "running":
+                    raise ModelError(
+                        f"external model '{name}' at {m['external_url']} is not reachable"
+                    )
+                return self.base_url(name)
             if self.is_running(name):
                 return self.base_url(name)
 

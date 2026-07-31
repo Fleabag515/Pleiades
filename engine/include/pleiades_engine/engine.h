@@ -10,6 +10,11 @@
 #include "pleiades_engine/model_manager.h"
 #include "pleiades_engine/prefix_cache.h"
 
+// Opaque forward declaration -- see model_manager.h's identical note on
+// mtmd_context. Callers that build chunks (http_server.cpp, via
+// mtmd_tokenize()) #include "mtmd.h" themselves.
+struct mtmd_input_chunks;
+
 namespace pleiades_engine {
 
 // Per-request sampling knobs, threaded from the HTTP shim's request body
@@ -100,11 +105,41 @@ public:
                                const std::function<bool(const std::string&)>& on_token = nullptr,
                                const SamplingParams& sampling = {});
 
+    // Phase 9.4.2: mixed text+image generation. `chunks` must already be
+    // built via mtmd_tokenize() against a prompt string containing the
+    // model's media marker(s) (mtmd_get_marker(models.mtmd())), with the
+    // bitmaps that were tokenized supplying the actual image data in that
+    // same order -- caller (http_server.cpp) owns both and frees them after
+    // this returns. Throws if models.mtmd() is null (no --mmproj loaded).
+    //
+    // ALWAYS cold-decodes and leaves the prefix cache empty afterward, both
+    // before and after: PrefixCache is a plain llama_token vector assumed to
+    // align 1:1 with real KV positions, but positions spanned by an image
+    // chunk hold vision-encoder embeddings, not token IDs -- there is no
+    // honest way to represent that in prefix_'s token vector. So an image
+    // turn neither reuses a prior prefix nor leaves one for the next request
+    // (multimodal or not) to reuse -- an opaque cache-busting boundary, by
+    // design, not a missed optimization.
+    GenerationResult complete_multimodal(const mtmd_input_chunks* chunks, int n_predict = 128,
+                                         const SamplingParams& sampling = {});
+    GenerationResult generate_multimodal(const mtmd_input_chunks* chunks, int n_predict = 128,
+                                         const std::function<bool(const std::string&)>& on_token = nullptr,
+                                         const SamplingParams& sampling = {});
+
     // Drop the KV prefix cache and hard-clear the live context's KV for
     // sequence 0. Normally unnecessary (generate() self-manages the cache),
     // but exposed for callers that want an explicit fresh start and for
     // tests. Safe to call before the first generate().
     void reset_prefix_cache();
+
+    // Replace the tracked prefix-cache sequence wholesale without touching the
+    // live KV -- for a caller (POST /slots/0?action=restore, Phase 9.4) that
+    // just repopulated the KV by some OTHER means (llama_state_seq_load_file)
+    // and needs PrefixCache's bookkeeping to agree with what's now resident.
+    // Tags with the CURRENT epoch (a restore doesn't resize/recreate the
+    // context) -- see .cpp for why an uncalled restore silently reintroduces
+    // the exact bug class Phase 6 exists to prevent.
+    void seed_prefix_cache(std::vector<llama_token> tokens);
 
     // Prefix-cache introspection (used by tests and benchmarks).
     const PrefixCache& prefix_cache() const { return prefix_; }
@@ -113,6 +148,15 @@ private:
     ModelManager& models_;
     ContextGovernor& ctx_;
     PrefixCache prefix_;
+
+    // Shared tail: token-by-token sampling, stop-string handling, and
+    // streaming -- identical for the text and multimodal paths once the
+    // prompt (however it got there) is decoded and the context holds fresh
+    // logits at the last position. `track_prefix_cache` is false for the
+    // multimodal path (see generate_multimodal's own comment on why).
+    GenerationResult run_sampling_loop(int n_predict, const std::function<bool(const std::string&)>& on_token,
+                                       const SamplingParams& sampling, double prompt_seconds,
+                                       int n_prompt_tokens, int n_prompt_cached, bool track_prefix_cache);
 };
 
 }  // namespace pleiades_engine

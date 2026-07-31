@@ -442,6 +442,7 @@ def work(task: tuple[str, ...], character: str | None, tier: str | None,
     from .harness.builtins.memory import bind_memory
     from .harness.builtins.tasks import bind_job
     from .harness.anamnesis import Anamnesis as WorkingMemory
+    from .harness.mcp_client import mount_configured_servers
 
     bind_job(uuid.uuid4().hex[:12])  # scope create_task/update_task/list_tasks to this run
 
@@ -452,6 +453,11 @@ def work(task: tuple[str, ...], character: str | None, tier: str | None,
     cfg = Config.load()
     if policy:
         cfg.exec_policy = policy
+
+    # Mount any configured MCP tool sources (e.g. a claude-mcp sidecar) into the
+    # global tool registry before the agent reads it -- Agent.__init__ snapshots
+    # registry.all() once at construction, so this must run first.
+    mount_configured_servers(cfg)
 
     if character:
         try:
@@ -817,7 +823,7 @@ def model() -> None:
 
 @model.command("add")
 @click.argument("name")
-@click.argument("path")
+@click.argument("path", required=False, default="")
 @click.option("--ctx", "n_ctx", default="auto", show_default=True,
               help="Context window: 'auto' (planned from VRAM at each launch, "
                    "elastic at runtime) or a number to pin it.")
@@ -832,20 +838,35 @@ def model() -> None:
 @click.option("--capabilities", default="", help="Manual capability override, comma-separated "
                                                   "(e.g. 'vision'). Usually unnecessary for "
                                                   "local models -- --mmproj already implies it.")
+@click.option("--external-url", default="", help="Register an already-running OpenAI-compatible "
+                                                  "server instead of a local GGUF (e.g. "
+                                                  "http://host:port/v1) -- PATH is omitted. "
+                                                  "Pleiades never spawns/stops/manages it; "
+                                                  "start/stop/status just check reachability. "
+                                                  "The permanent escape hatch for hardware this "
+                                                  "repo's own engine builds don't run on.")
 def model_add(name: str, path: str, n_ctx: str, n_gpu_layers: str,
-              chat_format: str, port: int, mmproj: str, capabilities: str) -> None:
-    """Register a GGUF model file under NAME."""
+              chat_format: str, port: int, mmproj: str, capabilities: str,
+              external_url: str) -> None:
+    """Register a GGUF model file under NAME, or --external-url an already-running server."""
     from .models import ModelManager, ModelError
+    if bool(external_url) == bool(path):
+        console.print("[red]Give exactly one of PATH or --external-url.[/red]")
+        sys.exit(1)
     try:
         m = ModelManager().add(name, path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers,
                                chat_format=chat_format, port=port,
-                               mmproj=mmproj, capabilities=capabilities)
+                               mmproj=mmproj, capabilities=capabilities,
+                               external_url=external_url)
     except ModelError as e:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
-    vision_note = f" (vision: mmproj={m['mmproj']})" if m.get("mmproj") else ""
-    console.print(f"[green]Added model '{name}'[/green] → {m['path']} "
-                  f"(port {m['port']}, gpu_layers {m['n_gpu_layers']}){vision_note}.")
+    if external_url:
+        console.print(f"[green]Added external model '{name}'[/green] → {external_url}.")
+    else:
+        vision_note = f" (vision: mmproj={m['mmproj']})" if m.get("mmproj") else ""
+        console.print(f"[green]Added model '{name}'[/green] → {m['path']} "
+                      f"(port {m['port']}, gpu_layers {m['n_gpu_layers']}){vision_note}.")
     console.print(f"Start it: [bold]pleiades model start {name}[/bold]")
 
 
