@@ -1215,6 +1215,27 @@ def create_app() -> FastAPI:
             "engine": engine_info,
         }
 
+    @app.get("/api/hardware/live")
+    def hardware_live() -> dict:
+        """One live CPU/GPU/RAM utilization sample -- polled at ~1Hz by the
+        desktop app's Hardware tab for its Task-Manager/Mission-Center style
+        live graphs. Separate from /api/hardware (a capacity/placement
+        snapshot, includes per-model offload plans that are too expensive
+        to recompute every second) -- this stays cheap per call. See
+        perf_monitor.py's own docstring for why GPU utilization can be null
+        on some hardware/drivers (that's an honest "unavailable", not a bug)."""
+        from .. import perf_monitor
+        s = perf_monitor.sample()
+        return {
+            "cpu_percent": s.cpu_percent,
+            "cpu_percent_per_core": s.cpu_percent_per_core,
+            "ram_total": s.ram_total,
+            "ram_used": s.ram_used,
+            "gpus": [{"vendor": g.vendor, "name": g.name, "vram_total": g.vram_total,
+                      "vram_used": g.vram_used, "utilization": g.utilization}
+                     for g in s.gpus],
+        }
+
     @app.get("/api/browser/status")
     def browser_status_api() -> dict:
         """Camoufox/Playwright backend, profile dir, and last launch error —

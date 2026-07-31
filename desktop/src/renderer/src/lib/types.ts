@@ -265,6 +265,26 @@ export interface HardwareInfo {
   engine: EngineInfo | null
 }
 
+// GET /api/hardware/live -- one ~1Hz-polled sample for the Hardware tab's
+// Task-Manager/Mission-Center style live graphs. `utilization: null` is an
+// honest "this driver/vendor/OS doesn't expose GPU busy% here", not 0 --
+// see pleiades/perf_monitor.py's own docstring for exactly which platforms.
+export interface GPUUtilSample {
+  vendor: string
+  name: string
+  vram_total: number
+  vram_used: number
+  utilization: number | null
+}
+
+export interface PerfSample {
+  cpu_percent: number
+  cpu_percent_per_core: number[]
+  ram_total: number
+  ram_used: number
+  gpus: GPUUtilSample[]
+}
+
 // ---- Model Foundry (Phase G): HF search, quant planning, downloads, cloud ----
 
 export interface HfSearchResult {

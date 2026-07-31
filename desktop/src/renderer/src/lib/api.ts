@@ -10,6 +10,7 @@ import type {
   EmailPresets,
   FetchStatus,
   HardwareInfo,
+  PerfSample,
   HfSearchResult,
   ModelEntry,
   PendingApproval,
@@ -479,6 +480,10 @@ export async function deleteVaultEntry(base: string, name: string, key: string):
 
 export async function getHardware(base: string): Promise<HardwareInfo> {
   return asJson(await fetch(`${base}/api/hardware`))
+}
+
+export async function getHardwareLive(base: string): Promise<PerfSample> {
+  return asJson(await fetch(`${base}/api/hardware/live`))
 }
 
 export async function hfSearch(base: string, q: string, limit = 8): Promise<HfSearchResult[]> {

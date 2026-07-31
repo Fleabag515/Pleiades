@@ -1,11 +1,17 @@
-import { useEffect, useState } from 'react'
-import { getHardware } from '../../lib/api'
-import type { HardwareInfo, ModelPlan } from '../../lib/types'
+import { useEffect, useRef, useState } from 'react'
+import { getHardware, getHardwareLive } from '../../lib/api'
+import type { HardwareInfo, ModelPlan, PerfSample } from '../../lib/types'
 import { formatGiB } from '../../lib/format'
+import LiveGraph from './LiveGraph'
 
 interface HardwareTabProps {
   base: string
 }
+
+// 60 samples at ~1s each = a 1-minute rolling window, matching Task
+// Manager's/Mission Center's own default history length.
+const LIVE_WINDOW = 60
+const LIVE_POLL_MS = 1000
 
 const STRATEGY_LABEL: Record<string, string> = {
   full_gpu: 'fits fully on GPU',
@@ -69,6 +75,122 @@ function PlanCard({ plan }: { plan: ModelPlan }): React.JSX.Element {
   )
 }
 
+/** Live, ~1Hz-polled CPU/RAM/GPU graphs -- the actual "Task Manager /
+ * Mission Center" behavior: real-time, scrolling, not a static snapshot.
+ * Polls GET /api/hardware/live on its own timer (independent of the parent
+ * tab's one-shot /api/hardware fetch) and keeps a rolling client-side
+ * window; the backend itself is stateless per request. */
+function LivePerfSection({ base }: { base: string }): React.JSX.Element {
+  const [history, setHistory] = useState<PerfSample[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const inFlight = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const tick = async (): Promise<void> => {
+      if (inFlight.current) return // a slow request (unlikely at 1Hz) shouldn't stack up
+      inFlight.current = true
+      try {
+        const sample = await getHardwareLive(base)
+        if (!cancelled) {
+          setHistory((prev) => [...prev.slice(-(LIVE_WINDOW - 1)), sample])
+          setError(null)
+        }
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message)
+      } finally {
+        inFlight.current = false
+      }
+    }
+    tick()
+    const id = setInterval(tick, LIVE_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [base])
+
+  const latest = history[history.length - 1]
+
+  if (error && !latest) {
+    return (
+      <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+        {error}
+      </div>
+    )
+  }
+  if (!latest) {
+    return <p className="text-xs text-ink-dim">Starting live monitor…</p>
+  }
+
+  const cpuSeries = history.map((s) => s.cpu_percent)
+  const ramSeries = history.map((s) => s.ram_used)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <span className="text-ink-dim">CPU</span>
+          <span className="text-ink">{latest.cpu_percent.toFixed(0)}%</span>
+        </div>
+        <LiveGraph data={cpuSeries} max={100} height={72} />
+        {latest.cpu_percent_per_core.length > 1 && (
+          <div
+            className="mt-2 grid gap-1"
+            style={{ gridTemplateColumns: `repeat(${Math.min(latest.cpu_percent_per_core.length, 8)}, 1fr)` }}
+          >
+            {latest.cpu_percent_per_core.map((_, coreIdx) => (
+              <div key={coreIdx} className="rounded bg-bg-surface-hover/50 p-0.5">
+                <LiveGraph
+                  data={history.map((s) => s.cpu_percent_per_core[coreIdx] ?? 0)}
+                  max={100}
+                  height={20}
+                  color="var(--color-ink-dim)"
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <span className="text-ink-dim">Memory</span>
+          <span className="text-ink">
+            {formatGiB(latest.ram_used)} / {formatGiB(latest.ram_total)} GiB
+          </span>
+        </div>
+        <LiveGraph data={ramSeries} max={latest.ram_total} height={72} color="#34d399" />
+      </div>
+
+      {latest.gpus.map((g, i) => {
+        const utilSeries = history.map((s) => s.gpus[i]?.utilization ?? 0)
+        return (
+          <div key={i}>
+            <div className="mb-1 flex items-center justify-between text-xs">
+              <span className="text-ink-dim">
+                GPU · {g.name} ({g.vendor})
+              </span>
+              <span className="text-ink">
+                {g.utilization !== null ? `${g.utilization.toFixed(0)}%` : 'utilization unavailable'}
+                {g.vram_total > 0 && ` · ${formatGiB(g.vram_used)} / ${formatGiB(g.vram_total)} GiB VRAM`}
+              </span>
+            </div>
+            {g.utilization !== null ? (
+              <LiveGraph data={utilSeries} max={100} height={72} color="#a78bfa" />
+            ) : (
+              <p className="text-xs text-ink-dim/70">
+                This GPU's driver doesn't expose live utilization on this OS/generation — see hardware detection
+                notes. VRAM capacity is still shown above when known.
+              </p>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 /** Hardware tab: this machine's detected GPU(s)/VRAM, RAM, CPU, native
  * runtime state, and the planned GPU/CPU layer split for each registered
  * model. All values come straight from GET /api/hardware — no placeholders. */
@@ -96,6 +218,11 @@ function HardwareTab({ base }: HardwareTabProps): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
+      <section className="rounded-xl border border-border bg-bg-app p-4">
+        <h3 className="mb-3 text-sm font-semibold text-ink">Live performance</h3>
+        <LivePerfSection base={base} />
+      </section>
+
       <section className="rounded-xl border border-border bg-bg-app p-4">
         <h3 className="mb-3 text-sm font-semibold text-ink">This machine</h3>
         <div className="flex flex-col gap-3">
