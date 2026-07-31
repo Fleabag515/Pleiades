@@ -462,6 +462,12 @@ def create_app() -> FastAPI:
     mm = ModelManager()
     an = Anamnesis(settings.anamnesis_control_url)
 
+    # Mount any configured MCP tool sources (e.g. a claude-mcp sidecar) into the
+    # global tool registry once at process startup -- every Agent(...) built later
+    # (see _launch_work_job below) snapshots that same registry at construction.
+    from ..harness.mcp_client import mount_configured_servers
+    mount_configured_servers(settings)
+
     # ----------------------------- dashboard ------------------------------- #
     @app.get("/api/status")
     def status() -> dict:

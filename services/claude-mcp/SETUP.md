@@ -70,6 +70,26 @@ pleiades chat --as vern-claude
 
 Anamnesis handles persistent memory automatically.
 
+## Connect natively (no Anamnesis)
+
+Point Pleiades itself at a running claude-mcp server -- either as a backend
+tier, or as an MCP tool (`ask_claude`) any agent can call, or both:
+
+```bash
+export PLEIADES_CLAUDE_MCP_URL="http://<tailscale-ip>:3456"
+export PLEIADES_CLAUDE_MCP_TOKEN="<token from config.json>"
+export PLEIADES_CLAUDE_MCP_TOOLS=1   # optional: also mount ask_claude as a tool
+
+pleiades chat --tier claude-mcp      # backend tier
+pleiades work "..." --tier claude-mcp   # agent harness, ask_claude tool available if TOOLS=1
+```
+
+The same three keys (`claude_mcp_url`, `claude_mcp_token`, `claude_mcp_tools`)
+work in `config.json` instead of env vars. No `ANTHROPIC_API_KEY` needed --
+the bearer token rides in the URL for the backend tier (`/t/<token>/v1`,
+since the `openai` backend sends no `Authorization` header) and in headers
+for the MCP connection. See `pleiades/config.py`'s `claude_mcp_*` fields.
+
 ## Customise identity
 
 Edit `CLAUDE.md` — loaded on each server start as the default system prompt.
