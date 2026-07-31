@@ -15,12 +15,17 @@ working directory, so `Config.workspace_root` applies when set).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
 from ..tools import tool
 
 _GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+# git blame --porcelain commit header: "<40-hex-sha> <orig-line> <final-line>[ <num-lines>]"
+# (the trailing group-size field only appears on the first line of each hunk group).
+_BLAME_HEADER_RE = re.compile(r"^[0-9a-f]{40} \d+ \d+(?: \d+)?$")
 
 
 def _git(args: list[str], cwd: str | None = None,
@@ -106,13 +111,17 @@ def git_log(n: int = 12, file: str = "", oneline: bool = True,
     if root is None:
         return f"Error: {cwd!r} is not inside a git repository."
 
-    fmt = "--oneline" if oneline else "--format=%H %an %ad %s --date=short"
-    args = ["log", f"-{n}", fmt]
+    if oneline:
+        args = ["log", f"-{n}", "--oneline"]
+    else:
+        args = ["log", f"-{n}", "--date=short", "--format=%H %an %ad %s"]
     if file:
         args += ["--", file]
 
     out, rc = _git(args, cwd=root)
-    return out or "(no commits)" if rc == 0 else f"git log failed:\n{out}"
+    if rc != 0:
+        return f"git log failed:\n{out}"
+    return out or "(no commits)"
 
 
 @tool(safe=True, tags=("git", "read"))
@@ -154,10 +163,8 @@ def git_blame(path: str, start_line: int = 1, end_line: int = 0) -> str:
             author = line[7:]
         elif line.startswith("summary "):
             summary = line[8:]
-        elif len(line) == 40 + 1 + 6 + 1 + 5 and line[:40].replace("0","").isalnum():
-            parts = line.split()
-            if len(parts) >= 1:
-                commit = parts[0]
+        elif _BLAME_HEADER_RE.match(line):
+            commit = line.split(" ", 1)[0]
 
     return "\n".join(lines_out) or raw
 
@@ -222,7 +229,9 @@ def git_add(paths: list, cwd: str = ".") -> str:
     if root is None:
         return f"Error: {cwd!r} is not inside a git repository."
     out, rc = _git(["add", "--"] + list(paths), cwd=root)
-    return out or "Staged." if rc == 0 else f"git add failed:\n{out}"
+    if rc != 0:
+        return f"git add failed:\n{out}"
+    return out or "Staged."
 
 
 @tool(tags=("git",))
@@ -241,4 +250,6 @@ def git_checkout(ref: str, create_branch: bool = False, cwd: str = ".") -> str:
         args.append("-b")
     args.append(ref)
     out, rc = _git(args, cwd=root)
-    return out or f"Checked out {ref!r}." if rc == 0 else f"git checkout failed:\n{out}"
+    if rc != 0:
+        return f"git checkout failed:\n{out}"
+    return out or f"Checked out {ref!r}."

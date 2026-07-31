@@ -25,22 +25,32 @@ function CharactersTab({ base, profiles }: CharactersTabProps): React.JSX.Elemen
     if (!selected && profiles.length > 0) setSelected(profiles[0].name)
   }, [profiles, selected])
 
-  const load = async (name: string): Promise<void> => {
+  useEffect(() => {
+    if (!selected) return
+    // Guard against out-of-order resolution: switching characters quickly
+    // can let an earlier fetch's response land after a later one's, which
+    // would otherwise overwrite the correct detail (and let child sections
+    // save edits under the wrong profile name). Same pattern as
+    // DownloadTab/CloudModelsTab/Composer/RightPanel.
+    let cancelled = false
     setLoading(true)
     setError(null)
-    try {
-      setDetail(await getProfile(base, name))
-    } catch (e) {
-      setError((e as Error).message)
-      setDetail(null)
-    } finally {
-      setLoading(false)
+    getProfile(base, selected)
+      .then((d) => {
+        if (!cancelled) setDetail(d)
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setError((e as Error).message)
+          setDetail(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
     }
-  }
-
-  useEffect(() => {
-    if (selected) load(selected)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, selected])
 
   if (profiles.length === 0) {

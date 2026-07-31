@@ -13,7 +13,7 @@
 # Output: ~\Pleiades\desktop\backend-build\dist\pleiades-backend\
 #   (a folder containing the pleiades-backend.exe launcher + _internal\ deps
 #   -- onedir, not onefile, same reasoning as the Linux build)
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 

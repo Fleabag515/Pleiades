@@ -127,11 +127,20 @@ class PersonaManager {
     const interval = this.cfg.drift?.checkEveryNTurns ?? 4;
     if (this._turnCount[sessionKey] < interval) return;
 
+    // Re-entrancy guard: a low checkEveryNTurns (or concurrently-active
+    // sessions of the same character) can otherwise fire overlapping drift
+    // checks that both read-then-clobber the single-row character_profile
+    // and duplicate consolidation work on the same pending observations.
+    if (this._driftActive) return;
+
     this._turnCount[sessionKey] = 0;
+    this._driftActive = true;
     // Fire-and-forget — never let this crash the proxy
-    this._runDriftCheck(sessionKey, turnId, responseText).catch((err) =>
-      log.warn('drift check error:', err.message)
-    );
+    this._runDriftCheck(sessionKey, turnId, responseText)
+      .catch((err) => log.warn('drift check error:', err.message))
+      .finally(() => {
+        this._driftActive = false;
+      });
   }
 
   // ─── Private: loading & extraction ────────────────────────────────────────
@@ -341,7 +350,10 @@ class PersonaManager {
       const pending = this.history.countPendingObservations();
       const threshold2 = this.cfg.evolution?.consolidateAfterNObservations ?? 8;
       if (pending >= threshold2) {
-        this._consolidateGrowth().catch((err) =>
+        // Awaited (not fire-and-forget) so consolidation completes before
+        // observeResponse() clears _driftActive — otherwise the re-entrancy
+        // guard would release before this write-then-clobber-prone step is done.
+        await this._consolidateGrowth().catch((err) =>
           log.warn('persona: consolidation error:', err.message)
         );
       }

@@ -388,10 +388,22 @@ function makeStreamingThinkingFilter(clientRes) {
  *   Only invoked when a fresh read is actually needed.
  * @returns {number|null}
  */
+// Caps snapshotMap's size so a long-running daemon serving many distinct
+// session keys (one per bearer token / OpenClaw session id — see
+// getSessionKey()) doesn't grow the Map without bound over weeks of uptime.
+// Map preserves insertion order, so re-inserting a key on touch (delete then
+// set) turns it into a cheap LRU: the oldest (first) key is always the
+// least-recently-touched one and is evicted first.
+const MAX_TASK_ACTIVITY_SNAPSHOT_ENTRIES = 5000;
+
 function resolveTaskActivitySnapshot(isNewUserTurn, sessionKey, snapshotMap, readFreshTimestamp) {
   if (isNewUserTurn) {
     const fresh = readFreshTimestamp();
+    snapshotMap.delete(sessionKey); // move to most-recently-used position
     snapshotMap.set(sessionKey, fresh);
+    while (snapshotMap.size > MAX_TASK_ACTIVITY_SNAPSHOT_ENTRIES) {
+      snapshotMap.delete(snapshotMap.keys().next().value);
+    }
     return fresh;
   }
   if (snapshotMap.has(sessionKey)) {

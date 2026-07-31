@@ -26,13 +26,57 @@ install hint if neither library is present:
 
 from __future__ import annotations
 
+import functools
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..tools import tool
 
 # module-level singleton browser state (one window, reused across tool calls)
-_B: dict[str, object] = {"page": None, "ctx": None, "pw": None, "backend": None}
+# "profile" records the profile dir the live browser was actually launched
+# from, so bind_browser_profile can tell a real character switch from a
+# same-character rebind.
+_B: dict[str, object] = {"page": None, "ctx": None, "pw": None, "backend": None,
+                         "profile": None}
+
+# Every Playwright/Camoufox call is funneled onto one dedicated worker thread.
+# Two reasons this is load-bearing, not defensive: (1) the sync API has hard
+# thread affinity — its greenlet event loop is bound to the thread that
+# launched the browser, and calling a Page from any other thread crashes;
+# (2) subagents genuinely do call these tools from multiple threads at once
+# (subagent.py's dispatch_subagents_parallel runs "research"/"fast" roles,
+# whose tag sets include "web", in a ThreadPoolExecutor). A lock alone would
+# fix the interleaving but not the affinity, so the browser gets its own
+# thread and everyone else marshals onto it.
+_EXEC_LOCK = threading.Lock()
+_EXEC: ThreadPoolExecutor | None = None
+_EXEC_THREAD: threading.Thread | None = None
+
+
+def _executor() -> ThreadPoolExecutor:
+    global _EXEC, _EXEC_THREAD
+    with _EXEC_LOCK:
+        if _EXEC is None:
+            _EXEC = ThreadPoolExecutor(max_workers=1,
+                                       thread_name_prefix="pleiades-browser")
+            _EXEC_THREAD = _EXEC.submit(threading.current_thread).result()
+        return _EXEC
+
+
+def _on_browser_thread(func):
+    """Run `func` on the dedicated browser thread; direct call when already
+    there (so wrapped functions may call each other without deadlocking the
+    single-worker executor)."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        ex = _executor()
+        if threading.current_thread() is _EXEC_THREAD:
+            return func(*args, **kwargs)
+        return ex.submit(func, *args, **kwargs).result()
+    return wrapper
+
 
 _CHALLENGE_MARKERS = (
     "recaptcha", "hcaptcha", "g-recaptcha", "cf-challenge", "challenge-platform",
@@ -48,6 +92,13 @@ def bind_browser_profile(path: str) -> None:
     """Pin the persistent browser profile dir (e.g. a character's browser_dir),
     so the work-path browser shares one profile with the chat-path browser."""
     _BOUND_PROFILE["dir"] = path or None
+    # Rebinding to a different character while a browser launched from the old
+    # profile is still open must not be a silent no-op: _ensure_page would keep
+    # returning the old page, leaking one character's live session (cookies,
+    # logins) into another's turn — per-character isolation is load-bearing
+    # (CLAUDE.md). Close it; the next tool call relaunches from the new profile.
+    if _B["page"] is not None and _B["profile"] != _profile_dir():
+        browser_close()
 
 
 def _profile_dir() -> str:
@@ -128,7 +179,8 @@ def _ensure_page():
                                user_data_dir=profile, timeout=60000)
                 ctx = cam.start() if hasattr(cam, "start") else cam.__enter__()
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                _B.update(page=page, ctx=ctx, pw=cam, backend="camoufox")
+                _B.update(page=page, ctx=ctx, pw=cam, backend="camoufox",
+                          profile=base)
                 return page
             except ImportError:
                 raise
@@ -152,7 +204,7 @@ def _ensure_page():
     ctx = pw.firefox.launch_persistent_context(user_data_dir=profile,
                                                headless=headless)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    _B.update(page=page, ctx=ctx, pw=pw, backend="playwright")
+    _B.update(page=page, ctx=ctx, pw=pw, backend="playwright", profile=base)
     return page
 
 
@@ -212,6 +264,7 @@ def _hint(label: str, items: list[str]) -> str:
 
 # ---- tools ----------------------------------------------------------------
 @tool(tags=("browser", "web"))
+@_on_browser_thread
 def browser_open(url: str) -> str:
     """Open a URL in the persistent browser (cookies/logins are saved across runs).
 
@@ -234,6 +287,7 @@ def browser_open(url: str) -> str:
 
 
 @tool(safe=True, tags=("browser", "web", "read"))
+@_on_browser_thread
 def browser_read(max_chars: int = 8000) -> str:
     """Return the readable text of the current page. If a human-verification challenge is present, says so and hands off (does not attempt to bypass it).
 
@@ -256,6 +310,7 @@ def browser_read(max_chars: int = 8000) -> str:
 
 
 @tool(tags=("browser", "web"))
+@_on_browser_thread
 def browser_click(target: str) -> str:
     """Click an element by visible text or CSS selector.
 
@@ -278,6 +333,7 @@ def browser_click(target: str) -> str:
 
 
 @tool(tags=("browser", "web"))
+@_on_browser_thread
 def browser_fill(selector: str, value: str) -> str:
     """Type a value into an input field. Tries the selector as a CSS selector first, then as a visible label/placeholder text. For passwords or payment fields, stop and let the user fill them in the visible window instead.
 
@@ -312,6 +368,7 @@ def browser_fill(selector: str, value: str) -> str:
 
 
 @tool(safe=True, tags=("browser", "web", "read"))
+@_on_browser_thread
 def browser_screenshot(path: str = "screenshot.png") -> str:
     """Save a screenshot of the current browser page as a PNG file — useful for showing the user what the page looks like or capturing a result.
 
@@ -331,6 +388,7 @@ def browser_screenshot(path: str = "screenshot.png") -> str:
 
 
 @tool(safe=True, tags=("browser", "web", "read"))
+@_on_browser_thread
 def browser_links(limit: int = 25) -> str:
     """List the clickable things on the current page (links/buttons by their visible text). Call this when you're unsure what to click or a click failed.
 
@@ -346,6 +404,7 @@ def browser_links(limit: int = 25) -> str:
 
 
 @tool(tags=("browser", "web"))
+@_on_browser_thread
 def browser_press(key: str = "Enter") -> str:
     """Press a keyboard key on the page — most useful as 'Enter' to submit a search box or form after browser_fill.
 
@@ -363,6 +422,7 @@ def browser_press(key: str = "Enter") -> str:
 
 
 @tool(tags=("browser", "web"))
+@_on_browser_thread
 def browser_back() -> str:
     """Go back to the previous page in this browser's history."""
     page = _B["page"]
@@ -376,6 +436,7 @@ def browser_back() -> str:
 
 
 @tool(safe=True, tags=("browser", "web", "read"))
+@_on_browser_thread
 def browser_wait_for(selector: str, timeout_ms: int = 15000) -> str:
     """Wait for a CSS element to appear on the page — use on JS-heavy pages before reading or clicking content that loads asynchronously.
 
@@ -393,6 +454,7 @@ def browser_wait_for(selector: str, timeout_ms: int = 15000) -> str:
 
 
 @tool(tags=("browser", "web"))
+@_on_browser_thread
 def browser_scroll(amount: int = 1) -> str:
     """Scroll the page down (positive) or up (negative) by `amount` viewport-heights — needed to trigger lazy-loaded / infinite-scroll content before reading it.
 
@@ -410,6 +472,7 @@ def browser_scroll(amount: int = 1) -> str:
 
 
 @tool(tags=("browser",))
+@_on_browser_thread
 def browser_close() -> str:
     """Close the browser window (the saved profile/cookies persist)."""
     try:
@@ -419,5 +482,5 @@ def browser_close() -> str:
             _B["pw"].stop()
     except Exception:
         pass
-    _B.update(page=None, ctx=None, pw=None, backend=None)
+    _B.update(page=None, ctx=None, pw=None, backend=None, profile=None)
     return "Browser closed; profile saved."

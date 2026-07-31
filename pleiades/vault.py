@@ -56,9 +56,18 @@ def load_key() -> bytes:
 
     config.ensure_home()
     key = generate_key()
-    path.write_bytes(key)
+    # O_CREAT|O_EXCL so two processes racing to bootstrap the first-ever key can't
+    # clobber each other: the loser's open() fails with FileExistsError and it falls
+    # back to reading the winner's key instead of overwriting it (see vault.py history
+    # -- a plain write_bytes() here let the second writer silently stomp the first,
+    # permanently orphaning whatever was already encrypted under the lost key).
     try:
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, stat.S_IRUSR | stat.S_IWUSR)
+    except FileExistsError:
+        return path.read_bytes().strip()
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
     except OSError:
         pass
     return key

@@ -29,6 +29,8 @@ ceiling is the main backstop against a runaway background job.
 from __future__ import annotations
 
 import collections
+import os
+import signal
 import subprocess
 import threading
 from dataclasses import dataclass, field
@@ -94,12 +96,25 @@ def start_process(command: str, cwd: str = "") -> str:
     except _sb.SandboxViolation as e:
         return f"Error: {e}"
 
+    # shell=True means `proc` is the shell wrapper (/bin/sh -c … or cmd /c …),
+    # not the command itself. Detach it into its own process group so
+    # kill_process can take down the whole tree — terminate() on the wrapper
+    # alone orphans anything the shell spawned (pipelines, `npm run dev`,
+    # `a && b`), which keeps running while we report a clean stop.
+    group_kwargs: dict = {}
+    if os.name == "nt":
+        group_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        group_kwargs["start_new_session"] = True
+
     try:
         proc = subprocess.Popen(
             command, shell=True,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace",
             cwd=cwd or None,
+            **group_kwargs,
         )
     except Exception as e:
         return f"Error starting process: {e}"
@@ -176,12 +191,25 @@ def kill_process(pid: int) -> str:
         return f"Error: no such process PID={pid}."
     if p.done:
         return f"Process PID={pid} already exited (code {p.returncode})."
+    # Signal the whole process group/tree, not just the shell wrapper (see
+    # start_process: shell=True + its own group). While p.done is False the
+    # wrapper is unreaped, so its pid — the group id on POSIX — can't have
+    # been recycled and the group kill can't hit an unrelated process.
     try:
-        p.proc.terminate()
+        if os.name == "nt":
+            # taskkill /T walks the tree; TerminateProcess on cmd.exe wouldn't.
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.proc.pid)],
+                           capture_output=True)
+        else:
+            os.killpg(p.proc.pid, signal.SIGTERM)
         p.proc.wait(timeout=5)
     except Exception:
         try:
-            p.proc.kill()
+            if os.name == "nt":
+                p.proc.kill()
+            else:
+                os.killpg(p.proc.pid, signal.SIGKILL)
+            p.proc.wait(timeout=5)
         except Exception:
             pass
     if p.watchdog is not None:

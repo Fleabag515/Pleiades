@@ -10,12 +10,14 @@
 #   --dir DIR             install location     (default: ~/Pleiades, or $PLEIADES_DIR)
 #   --branch NAME         git branch           (default: main, or $PLEIADES_BRANCH)
 #   --cpu                 force CPU build of llama-cpp-python
-#   --gpu                 force GPU build of llama-cpp-python
+#   --gpu                  force GPU build of llama-cpp-python (CUDA on Linux, Metal on macOS)
+#   --gpu=cuda|rocm|vulkan|metal   force a specific GPU backend explicitly
 #   --core                core only (skip browser, SearXNG, Discord, native runtime)
 #   --no-browser          skip browser automation (Camoufox + desktop panel's Playwright/Chromium)
 #   --no-searxng          skip SearXNG (local web search)
 #   --no-discord          skip the Discord extra
 #   --no-native-runtime   skip 'pleiades runtime install' (native llama-server)
+#   --no-desktop-app      skip building/installing the Linux desktop app (.deb/.AppImage)
 #   -h, --help            show this help
 set -euo pipefail
 
@@ -38,6 +40,36 @@ err()  { printf "%sxx  %s%s\n" "$R" "$*" "$N" >&2; }
 die()  { err "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# ---- help -------------------------------------------------------------------
+# Self-contained (not `sed`-extracted from "$0"'s own header comment): the
+# documented primary usage is `curl -fsSL .../install.sh | bash -s -- -h`,
+# where $0 is just "bash" -- there is no script file on disk to read back,
+# so extracting help text from our own source would silently print nothing.
+print_help() {
+  cat <<'EOT'
+Pleiades one-line installer  (Linux / macOS)
+
+  curl -fsSL https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.sh | bash
+
+Pass options after the pipe, e.g.:
+  curl -fsSL .../install.sh | bash -s -- --gpu --dir ~/apps/Pleiades
+
+Options:
+  --dir DIR             install location     (default: ~/Pleiades, or $PLEIADES_DIR)
+  --branch NAME         git branch           (default: main, or $PLEIADES_BRANCH)
+  --cpu                 force CPU build of llama-cpp-python
+  --gpu                  force GPU build of llama-cpp-python (CUDA on Linux, Metal on macOS)
+  --gpu=cuda|rocm|vulkan|metal   force a specific GPU backend explicitly
+  --core                core only (skip browser, SearXNG, Discord, native runtime)
+  --no-browser          skip browser automation (Camoufox + desktop panel's Playwright/Chromium)
+  --no-searxng          skip SearXNG (local web search)
+  --no-discord          skip the Discord extra
+  --no-native-runtime   skip 'pleiades runtime install' (native llama-server)
+  --no-desktop-app      skip building/installing the Linux desktop app (.deb/.AppImage)
+  -h, --help            show this help
+EOT
+}
+
 # ---- args ------------------------------------------------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,13 +77,14 @@ while [ $# -gt 0 ]; do
     --branch) BRANCH="${2:?}"; shift 2;;
     --cpu) GPU_MODE="cpu"; shift;;
     --gpu) GPU_MODE="gpu"; shift;;
+    --gpu=*) GPU_MODE="${1#--gpu=}"; shift;;
     --core) WITH_BROWSER=0; WITH_SEARXNG=0; WITH_DISCORD=0; WITH_NATIVE_RUNTIME=0; shift;;
     --no-browser) WITH_BROWSER=0; shift;;
     --no-searxng) WITH_SEARXNG=0; shift;;
     --no-discord) WITH_DISCORD=0; shift;;
     --no-native-runtime) WITH_NATIVE_RUNTIME=0; shift;;
     --no-desktop-app) WITH_DESKTOP_APP=0; shift;;
-    -h|--help) sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0;;
+    -h|--help) print_help; exit 0;;
     *) warn "ignoring unknown option: $1"; shift;;
   esac
 done
@@ -78,7 +111,12 @@ pm_install() {
   case "$PM" in
     apt-get) $SUDO apt-get update -y >/dev/null && $SUDO apt-get install -y "$@";;
     dnf)     $SUDO dnf install -y "$@";;
-    pacman)  $SUDO pacman -Sy --noconfirm "$@";;
+    # -Syu (not bare -Sy): Arch explicitly documents partial upgrades (syncing
+    # the package db without upgrading already-installed packages) as
+    # unsupported -- freshly-synced packages here (git/python/cmake/nodejs)
+    # can end up built against newer shared libs than what's currently on
+    # disk, risking breakage outside this install, not just within it.
+    pacman)  $SUDO pacman -Syu --noconfirm "$@";;
     zypper)  $SUDO zypper --non-interactive install "$@";;
     brew)    brew install "$@";;
     *) return 1;;
@@ -122,15 +160,31 @@ ensure_python() {
   info "Using $("$PYBIN" --version 2>&1)"
 }
 
+# anamnesis/package.json declares "engines": {"node": ">=20"}; npm only warns
+# (advisory-only, no engine-strict configured anywhere here) rather than
+# failing, so an old Node silently proceeds into confusing dependency/syntax
+# failures instead of a clear message at install time.
+node_version_ok() {
+  have node || return 1
+  local major
+  major="$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null)"
+  [ -n "$major" ] && [ "$major" -ge 20 ] 2>/dev/null
+}
+
 ensure_node() {
-  have npm && return 0
-  say "Installing Node.js + npm (for Anamnesis + the desktop app build)"
+  if have npm && node_version_ok; then return 0; fi
+  if have npm && ! node_version_ok; then
+    warn "Found Node $(node --version 2>/dev/null) but Anamnesis needs Node >=20; installing a newer Node."
+  else
+    say "Installing Node.js + npm (for Anamnesis + the desktop app build)"
+  fi
   case "$PM" in
     apt-get|dnf|zypper) pm_install nodejs npm;;
     pacman)             pm_install nodejs npm;;
     brew)               pm_install node;;
-    *) warn "Could not auto-install Node. Install Node.js + npm, then re-run this installer.";;
+    *) warn "Could not auto-install Node. Install Node.js >=20 + npm, then re-run this installer.";;
   esac
+  node_version_ok || warn "Node is still older than the >=20 Anamnesis requires (found $(node --version 2>/dev/null || echo 'none')). Install Node >=20 yourself (e.g. via nvm) and re-run."
 }
 
 
@@ -145,13 +199,23 @@ resolve_gpu() {
       if [ "$PLATFORM" = "macos" ]; then CMAKE_ARGS="-DGGML_METAL=on"; GPU_DESC="Apple Metal (forced)";
       else CMAKE_ARGS="-DGGML_CUDA=on"; GPU_DESC="CUDA (forced)"; fi
       return;;
+    # Bare --gpu only ever targets CUDA/Metal (there's no single GPU vendor
+    # it could guess otherwise), so AMD Linux users need an explicit way to
+    # force their own backend instead of getting a CUDA attempt that can
+    # only fail-then-fall-back-to-CPU. Mirrors install.ps1's -Gpu cuda/vulkan.
+    cuda)   CMAKE_ARGS="-DGGML_CUDA=on";   GPU_DESC="CUDA (forced)";   return;;
+    rocm)   CMAKE_ARGS="-DGGML_HIP=on";    GPU_DESC="AMD ROCm (forced)"; return;;
+    vulkan) CMAKE_ARGS="-DGGML_VULKAN=on"; GPU_DESC="Vulkan (forced)"; return;;
+    metal)  CMAKE_ARGS="-DGGML_METAL=on";  GPU_DESC="Apple Metal (forced)"; return;;
   esac
   if [ "$PLATFORM" = "macos" ] && [ "$(uname -m)" = "arm64" ]; then
     CMAKE_ARGS="-DGGML_METAL=on"; GPU_DESC="Apple Metal (auto)"
   elif have nvidia-smi && nvidia-smi -L >/dev/null 2>&1; then
     CMAKE_ARGS="-DGGML_CUDA=on"; GPU_DESC="NVIDIA CUDA (auto)"
   elif have rocminfo; then
-    CMAKE_ARGS="-DGGML_HIPBLAS=on"; GPU_DESC="AMD ROCm (auto)"
+    # GGML_HIP, not the pre-rename GGML_HIPBLAS: cmake silently ignores unknown
+    # -D vars, so the old name "succeeds" as a CPU-only build with no error.
+    CMAKE_ARGS="-DGGML_HIP=on"; GPU_DESC="AMD ROCm (auto)"
   elif ls /sys/class/drm/card*/device/vendor 2>/dev/null | xargs grep -l 0x1002 >/dev/null 2>&1 && have vulkaninfo; then
     # AMD GPU present but no ROCm toolkit — Vulkan backend needs no ROCm install.
     CMAKE_ARGS="-DGGML_VULKAN=on"; GPU_DESC="AMD via Vulkan (auto — install ROCm for best speed)"
@@ -205,9 +269,20 @@ install_python_pkg() {
   say "Installing Pleiades — $GPU_DESC build of llama-cpp-python (this can take several minutes)"
   if ! ( cd "$INSTALL_DIR" && CMAKE_ARGS="$CMAKE_ARGS" pip install -e "$spec" ); then
     if [ -n "$CMAKE_ARGS" ]; then
-      warn "GPU build failed (missing CUDA/ROCm toolkit?). Retrying with a CPU build."
+      # Message names the toolkit actually attempted (CUDA/ROCm/Vulkan), not
+      # a hardcoded "CUDA" -- misleading the ROCm/Vulkan (AMD) path used
+      # above by resolve_gpu()/--gpu would send AMD users off to install the
+      # wrong toolkit entirely.
+      case "$CMAKE_ARGS" in
+        *GGML_CUDA*)   missing_toolkit="CUDA toolkit";;
+        *GGML_HIP*)    missing_toolkit="ROCm toolkit";;
+        *GGML_VULKAN*) missing_toolkit="Vulkan SDK";;
+        *GGML_METAL*)  missing_toolkit="Xcode command line tools";;
+        *)             missing_toolkit="GPU toolkit";;
+      esac
+      warn "GPU build failed (missing $missing_toolkit?). Retrying with a CPU build."
       ( cd "$INSTALL_DIR" && pip install -e "$spec" ) || die "pip install failed."
-      GPU_DESC="CPU (GPU build failed — install the CUDA toolkit and reinstall to enable GPU)"
+      GPU_DESC="CPU (GPU build failed — install the $missing_toolkit and reinstall to enable GPU)"
     else
       die "pip install failed."
     fi
@@ -296,8 +371,15 @@ install_searxng() {
   # plan.md's phase 3 for the plan this implements.
   [ "$WITH_SEARXNG" = "1" ] || return 0
   local searxng_dir="$INSTALL_DIR/searxng-src"
-  if [ -x "$searxng_dir/.venv/bin/python" ] && "$searxng_dir/.venv/bin/python" -c "import searx" >/dev/null 2>&1; then
-    return 0  # already fetched + installed, nothing to do
+  # Skip only if already installed AND at the current pin -- otherwise a
+  # future SEARXNG_PIN bump (e.g. a security or JSON-format fix upstream)
+  # would silently never take effect on re-runs of this idempotent-by-design
+  # installer (the documented recovery flow is `git reset --hard` + re-run),
+  # short of manually `rm -rf searxng-src` first.
+  if [ -x "$searxng_dir/.venv/bin/python" ] \
+    && "$searxng_dir/.venv/bin/python" -c "import searx" >/dev/null 2>&1 \
+    && [ "$(git -C "$searxng_dir" rev-parse HEAD 2>/dev/null)" = "$SEARXNG_PIN" ]; then
+    return 0  # already fetched + installed at the current pin, nothing to do
   fi
   if ! have git; then warn "git missing; skipping SearXNG."; return; fi
   say "Fetching SearXNG (pinned commit, no Docker required)"
@@ -407,12 +489,12 @@ install_desktop_app() {
     return 0
   fi
 
-  say "Installing the desktop app ($DEB) — this needs sudo to register it system-wide"
+  say "Installing the desktop app ($DEB) — this needs root to register it system-wide"
   if have apt-get; then
-    sudo apt-get install -y "$DEB" || { sudo dpkg -i "$DEB" && sudo apt-get install -f -y; } \
+    $SUDO apt-get install -y "$DEB" || { $SUDO dpkg -i "$DEB" && $SUDO apt-get install -f -y; } \
       || { warn "Could not install the .deb automatically. Install it yourself: sudo apt install $DEB"; return 0; }
   else
-    sudo dpkg -i "$DEB" \
+    $SUDO dpkg -i "$DEB" \
       || { warn "Could not install the .deb automatically. Install it yourself: sudo dpkg -i $DEB"; return 0; }
   fi
   info "Pleiades is now in your application menu/search."

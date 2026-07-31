@@ -30,11 +30,15 @@ function request(method, urlPath, body) {
       },
     };
     const req = http.request(options, (res) => {
-      let data = '';
+      // Collect raw Buffer chunks and decode once at the end — `data += d`
+      // would coerce each chunk to a string independently, corrupting any
+      // multi-byte UTF-8 character that straddles a chunk boundary.
+      const chunks = [];
       res.on('data', (d) => {
-        data += d;
+        chunks.push(d);
       });
       res.on('end', () => {
+        const data = Buffer.concat(chunks).toString('utf8');
         try {
           resolve({ status: res.statusCode, body: JSON.parse(data) });
         } catch {
@@ -51,6 +55,7 @@ function request(method, urlPath, body) {
 const client = {
   get: (p) => request('GET', p),
   post: (p, body) => request('POST', p, body),
+  patch: (p, body) => request('PATCH', p, body),
   delete: (p) => request('DELETE', p),
 
   status: () => client.get('/status'),
@@ -59,6 +64,7 @@ const client = {
   startCharacter: (name) => client.post(`/characters/${name}/start`),
   stopCharacter: (name) => client.post(`/characters/${name}/stop`),
   createCharacter: (name, config) => client.post('/characters', { name, config }),
+  updateCharacter: (name, config) => client.patch(`/characters/${name}`, { config }),
   deleteCharacter: (name) => client.delete(`/characters/${name}`),
 };
 

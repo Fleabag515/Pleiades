@@ -110,9 +110,10 @@ class ProfileManager:
     def _save(self, profile: Profile) -> None:
         config.ensure_home()
         config.profile_dir(profile.name).mkdir(parents=True, exist_ok=True)
-        config.profile_json_path(profile.name).write_text(
-            json.dumps(profile.to_json(), indent=2), encoding="utf-8"
-        )
+        # Atomic (tempfile + os.replace) so a concurrent reader (e.g. the webui
+        # threadpool serving GET /api/profiles/<name> from another request)
+        # never observes a torn/partial JSON body mid-write.
+        config.atomic_write_json(config.profile_json_path(profile.name), profile.to_json())
 
     def _load(self, name: str) -> Profile:
         path = config.profile_json_path(name)

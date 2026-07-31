@@ -57,7 +57,13 @@ public:
 
     // Free the current context and recreate at `requested` (clamped via
     // clamp_gear), reapplying the ContextParams passed to create(). Returns
-    // the actual n_ctx used.
+    // the actual n_ctx used. If the new context can't be created (routine
+    // when growing on a memory-tight box) this throws, but first rolls back
+    // by recreating at the previous n_ctx -- the governor stays serviceable
+    // at the old size rather than holding a null context. Only if that
+    // rollback ALSO fails is there no live context afterward: then ctx() is
+    // nullptr and n_ctx() reports 0 (never a stale size), and a later
+    // successful resize() recovers.
     int resize(int requested);
 
     int clamp_gear(int requested) const;

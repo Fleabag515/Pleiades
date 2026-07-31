@@ -1,6 +1,7 @@
 // Requires the tiny fixture GGUF (see tests/CMakeLists.txt) as argv[1].
 #include "pleiades_engine/context_governor.h"
 
+#include <exception>
 #include <string>
 
 #include "llama.h"
@@ -166,6 +167,56 @@ int main(int argc, char** argv) {
         PLEIADES_CHECK(actual == 4096);
         PLEIADES_CHECK(ctx4.ctx() != nullptr);
         PLEIADES_CHECK(ctx4.params().type_k == GGML_TYPE_BF16);
+    }
+
+    // -- resize() failure leaves no stale state ------------------------- //
+    // The regression this pins: a resize whose new context couldn't be
+    // created (llama_init_from_model returns null -- routine when growing on
+    // a memory-tight box) used to leave ctx_ null while n_ctx() still
+    // reported the old size, so the next decode dereferenced nullptr and
+    // killed the process. Forcing a REAL allocation failure portably is
+    // hazardous (on overcommit-happy platforms a huge KV malloc can lazily
+    // "succeed", and the init-time buffer clear then OOMs the machine), so
+    // this simulates llama_init_from_model failing on the recreate path via
+    // its cheapest deterministic rejection instead: n_batch == n_ubatch == 0
+    // is refused up front (llama-context.cpp), before any allocation, on
+    // every backend. The same broken params make the rollback recreate fail
+    // too, so this exercises the WORST case of the resize contract (see
+    // context_governor.h): failed resize + failed rollback must still throw
+    // (not abort), report a null ctx() with n_ctx() == 0 -- never the stale
+    // pre-resize size -- and recover on a later valid resize(). (The common
+    // case -- rollback succeeds and the governor stays at the old n_ctx --
+    // differs only in create_ctx(prev) succeeding, which the passing resizes
+    // above already cover.)
+    {
+        pleiades_engine::ContextGovernor ctx5;
+        ctx5.create(models.model(), /*n_ctx=*/1024, /*n_ctx_max=*/32768);
+        PLEIADES_CHECK(ctx5.ctx() != nullptr);
+
+        // params() is const-ref only because production callers never mutate
+        // it; the member itself isn't const, so this cast is well-defined.
+        // It's the only external seam that makes the recreate fail without
+        // real allocation pressure.
+        auto& live_params = const_cast<pleiades_engine::ContextParams&>(ctx5.params());
+        const pleiades_engine::ContextParams good_params = live_params;
+        live_params.n_batch = 0;
+        live_params.n_ubatch = 0;
+
+        bool threw = false;
+        try {
+            ctx5.resize(4096);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        PLEIADES_CHECK(threw);
+        PLEIADES_CHECK(ctx5.ctx() == nullptr);
+        PLEIADES_CHECK(ctx5.n_ctx() == 0);
+
+        live_params = good_params;
+        int recovered = ctx5.resize(4096);
+        PLEIADES_CHECK(recovered == 4096);
+        PLEIADES_CHECK(ctx5.ctx() != nullptr);
+        PLEIADES_CHECK(ctx5.n_ctx() == 4096);
     }
 
     // Default-constructed ContextParams must match

@@ -134,7 +134,10 @@ def grep_search(pattern: str, path: str = ".", glob_pattern: str = "**/*",
 
     pattern: regex to find (e.g. "def authenticate" or "class.*Error").
     path: root directory to search in (default current directory).
-    glob_pattern: file filter (e.g. "**/*.py", "**/*.{ts,js}"). Default: all files.
+    glob_pattern: file filter (e.g. "**/*.py"). Uses Python's glob syntax, which
+        does NOT support brace expansion (no "**/*.{ts,js}") — call this tool
+        once per extension instead, or match broadly and filter in the pattern.
+        Default: all files.
     context: lines of context before/after each match (default 2).
     max_matches: cap on total matches returned (default 40).
     """

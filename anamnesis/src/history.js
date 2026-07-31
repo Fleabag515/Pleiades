@@ -232,7 +232,14 @@ class HistoryStore {
   // ─── Turns ────────────────────────────────────────────────────────────────
 
   insertTurn(sessionKey, role, content, embedding, tokenEst, embeddingModel = null, category = 'fleagle') {
-    const blob = embedding ? Buffer.from(embedding.buffer) : null;
+    // Bound to the view's own byteOffset/byteLength, not the whole
+    // underlying ArrayBuffer — mirrors the guard toFloat32() below already
+    // documents on the decode side. embedding may be a subarray/view into a
+    // larger (e.g. pooled/batched) buffer; using .buffer directly would
+    // silently store neighbouring bytes into the BLOB.
+    const blob = embedding
+      ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
+      : null;
     return this.db
       .prepare(
         `
@@ -304,7 +311,14 @@ class HistoryStore {
     category = 'other',
     embeddingModel = null
   ) {
-    const blob = embedding ? Buffer.from(embedding.buffer) : null;
+    // Bound to the view's own byteOffset/byteLength, not the whole
+    // underlying ArrayBuffer — mirrors the guard toFloat32() below already
+    // documents on the decode side. embedding may be a subarray/view into a
+    // larger (e.g. pooled/batched) buffer; using .buffer directly would
+    // silently store neighbouring bytes into the BLOB.
+    const blob = embedding
+      ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
+      : null;
     const cat = CATEGORIES.includes(category) ? category : 'other';
     return this.db
       .prepare(
@@ -403,7 +417,14 @@ class HistoryStore {
     avgImportance = 0.5,
     embeddingModel = null
   ) {
-    const blob = embedding ? Buffer.from(embedding.buffer) : null;
+    // Bound to the view's own byteOffset/byteLength, not the whole
+    // underlying ArrayBuffer — mirrors the guard toFloat32() below already
+    // documents on the decode side. embedding may be a subarray/view into a
+    // larger (e.g. pooled/batched) buffer; using .buffer directly would
+    // silently store neighbouring bytes into the BLOB.
+    const blob = embedding
+      ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
+      : null;
     return this.db
       .prepare(
         `
@@ -423,7 +444,14 @@ class HistoryStore {
   }
 
   updateScene(sceneId, title, summary, embedding, engramIds, avgImportance, embeddingModel = null) {
-    const blob = embedding ? Buffer.from(embedding.buffer) : null;
+    // Bound to the view's own byteOffset/byteLength, not the whole
+    // underlying ArrayBuffer — mirrors the guard toFloat32() below already
+    // documents on the decode side. embedding may be a subarray/view into a
+    // larger (e.g. pooled/batched) buffer; using .buffer directly would
+    // silently store neighbouring bytes into the BLOB.
+    const blob = embedding
+      ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
+      : null;
     this.db
       .prepare(
         `
@@ -471,7 +499,14 @@ class HistoryStore {
     embeddingModel = null
   ) {
     const tf = TIMEFRAMES.includes(timeframe) ? timeframe : 'soon';
-    const blob = embedding ? Buffer.from(embedding.buffer) : null;
+    // Bound to the view's own byteOffset/byteLength, not the whole
+    // underlying ArrayBuffer — mirrors the guard toFloat32() below already
+    // documents on the decode side. embedding may be a subarray/view into a
+    // larger (e.g. pooled/batched) buffer; using .buffer directly would
+    // silently store neighbouring bytes into the BLOB.
+    const blob = embedding
+      ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
+      : null;
     return this.db
       .prepare(
         `

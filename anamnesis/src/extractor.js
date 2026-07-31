@@ -92,9 +92,11 @@ class Extractor {
     }
 
     let facts = null;
+    let succeeded = false; // true once any attempt completes without throwing
     for (let attempt = 0; attempt <= this.cfg.maxRetries; attempt++) {
       try {
         facts = await this._callLLM(turn.content, turn.role);
+        succeeded = true;
         if (facts?.length) break;
       } catch (err) {
         if (attempt === this.cfg.maxRetries)
@@ -103,6 +105,13 @@ class Extractor {
     }
 
     if (!facts?.length) {
+      if (!succeeded) {
+        // Every attempt threw (timeout, brain queue full, etc.) — leave
+        // extracted=0 so processBacklog() retries this turn on next startup,
+        // per this module's documented recovery guarantee. Only a genuinely
+        // successful "the LLM found nothing" call is permanently done.
+        return;
+      }
       this.history.markExtracted(turn.id);
       return;
     }

@@ -79,9 +79,11 @@ class ForesightExtractor {
     this._autoFulfill(turn).catch(() => {});
 
     let items = null;
+    let succeeded = false; // true once any attempt completes without throwing
     for (let attempt = 0; attempt <= this.cfg.maxRetries; attempt++) {
       try {
         items = await this._callLLM(turn.content);
+        succeeded = true;
         if (items !== null) break;
       } catch (err) {
         if (attempt === this.cfg.maxRetries)
@@ -90,6 +92,12 @@ class ForesightExtractor {
     }
 
     if (!items?.length) {
+      if (!succeeded) {
+        // Every attempt threw — leave foresight_scanned unset so
+        // processBacklog() retries this turn on next startup, instead of
+        // permanently losing it to a transient infra error.
+        return;
+      }
       this.history.markForesightScanned(turn.id);
       return;
     }

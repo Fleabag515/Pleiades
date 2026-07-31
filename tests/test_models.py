@@ -1,5 +1,7 @@
 """Model registry/assignment + Anamnesis adoption (no real llama server launched)."""
 
+import os
+
 import pytest
 
 from pleiades import config
@@ -261,8 +263,16 @@ def test_stop_calls_slot_save_before_sending_the_kill_signal(monkeypatch):
     monkeypatch.setattr(models_mod, "_slot_save", lambda host, port: calls.append((host, port)))
     monkeypatch.setattr(models_mod, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(models_mod, "_pid_on_port", lambda host, port: None)
-    monkeypatch.setattr(models_mod.os, "killpg", lambda pgid, sig: None)
-    monkeypatch.setattr(models_mod.os, "getpgid", lambda pid: pid)
+    # os.killpg/os.getpgid only exist on POSIX -- stop() itself branches on
+    # os.name (see pleiades/models.py) and only touches them there, so mirror
+    # that branch here rather than monkeypatching attributes that don't exist
+    # on the os module at all on Windows (monkeypatch.setattr raises
+    # AttributeError for a nonexistent target by default).
+    if os.name == "posix":
+        monkeypatch.setattr(models_mod.os, "killpg", lambda pgid, sig: None)
+        monkeypatch.setattr(models_mod.os, "getpgid", lambda pid: pid)
+    else:
+        monkeypatch.setattr(models_mod.os, "kill", lambda pid, sig: None)
     assert mm.stop("savetest") is True
     assert calls == [("127.0.0.1", 55001)]
 

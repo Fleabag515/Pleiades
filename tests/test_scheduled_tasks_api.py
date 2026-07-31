@@ -10,7 +10,18 @@ import pytest
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from pleiades import config  # noqa: E402
 from pleiades.webui import create_app  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_scheduled_tasks_registry(tmp_path, monkeypatch):
+    """The API routes construct their own ScheduledTaskManager() per request
+    (pleiades/webui/server.py), which resolves its JSON registry from
+    config.PLEIADES_HOME -- set once, process-wide, by conftest.py. Without
+    this, every test in this file (and test_scheduler.py) reads/writes the
+    same on-disk scheduled_tasks.json and tasks accumulate across tests."""
+    monkeypatch.setattr(config, "PLEIADES_HOME", tmp_path)
 
 
 def _client() -> TestClient:

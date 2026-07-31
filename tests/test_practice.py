@@ -1,5 +1,7 @@
 """Self-directed practice: stats recording, status report, study guidance."""
 
+import json
+
 import pleiades.harness.builtins.practice as practice
 from pleiades.harness.builtins.practice import (practice_status, record_outcome,
                                                 study_tool)
@@ -40,5 +42,11 @@ def test_study_unknown_tool_suggests(tmp_path, monkeypatch):
 
 
 def test_record_outcome_never_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(practice, "STATS_PATH", tmp_path / "no" / "such" / "x.json")
+    stats_path = tmp_path / "no" / "such" / "x.json"
+    monkeypatch.setattr(practice, "STATS_PATH", stats_path)
     record_outcome("x", True)  # parent dirs created, or swallowed — no raise
+    # Must-not-raise alone doesn't prove the write actually happened -- confirm
+    # the missing parent dirs really did get created and the record landed.
+    assert json.loads(stats_path.read_text(encoding="utf-8")) == {
+        "x": {"ok": 1, "err": 0, "last_errors": []}
+    }

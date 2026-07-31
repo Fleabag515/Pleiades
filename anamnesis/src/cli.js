@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 'use strict';
 
-const { execFileSync, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const pid = require('./lib/pid.js');
 const client = require('./lib/client.js');
+const service = require('./service.js');
 
 const DAEMON_JS = path.join(__dirname, 'daemon.js');
 
@@ -48,13 +49,12 @@ async function ensureDaemon() {
   process.exit(1);
 }
 
+// Delegates to service.js, which checks the platform-appropriate managed-service
+// mechanism (systemd on Linux, Task Scheduler on Windows, launchd on macOS) —
+// checking systemd alone here would misdetect an installed Windows/macOS service
+// as unmanaged and spawn a duplicate ad-hoc daemon alongside it.
 function isManagedService() {
-  try {
-    execFileSync('systemctl', ['is-enabled', 'anamnesis'], { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
+  return service.isInstalled();
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────────

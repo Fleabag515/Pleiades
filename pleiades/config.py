@@ -15,10 +15,107 @@ are stored in this module; secrets live in the per-profile vault.
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+
+# --------------------------------------------------------------------------- #
+# Shared JSON persistence helper
+# --------------------------------------------------------------------------- #
+def atomic_write_json(path: Path, data: dict) -> None:
+    """write_text() truncates in place -- a reader hitting the file mid-write
+    can see a torn/partial JSON body. Write to a sibling temp file and
+    os.replace() it in, which is atomic on both POSIX and Windows. Shared by
+    every module that persists small state-tracking JSON (profiles, chats,
+    models, daemon running-state) so they don't each reinvent it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2))
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+# --------------------------------------------------------------------------- #
+# Shared process-liveness probe
+# --------------------------------------------------------------------------- #
+if os.name == "nt":
+    # Win32 plumbing for pid_alive(), resolved once at import (state polls
+    # call it twice a second while a model loads). restype/argtypes are set
+    # explicitly because ctypes' c_int default truncates 64-bit HANDLEs.
+    import ctypes
+    import ctypes.wintypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = (ctypes.wintypes.DWORD, ctypes.wintypes.BOOL,
+                                      ctypes.wintypes.DWORD)
+    _kernel32.GetExitCodeProcess.restype = ctypes.wintypes.BOOL
+    _kernel32.GetExitCodeProcess.argtypes = (ctypes.wintypes.HANDLE,
+                                             ctypes.wintypes.LPDWORD)
+    _kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (ctypes.wintypes.HANDLE,)
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _STILL_ACTIVE = 259
+    _ERROR_ACCESS_DENIED = 5
+
+
+def pid_alive(pid: "int | None") -> bool:
+    """Does a process with this pid exist right now? Never signals it.
+
+    POSIX: signal 0 is the standard no-op existence probe. Windows: os.kill's
+    signal 0 is NOT a probe -- 0 == signal.CTRL_C_EVENT, which CPython routes
+    to GenerateConsoleCtrlEvent(), delivering a REAL Ctrl+C to the target
+    process group. Every child Pleiades supervises (llama-server, SearXNG,
+    the Anamnesis daemon) is spawned with CREATE_NEW_PROCESS_GROUP, so its
+    pid names a valid target group: an os.kill(pid, 0) "probe" from a
+    console-sharing CLI would keep interrupting -- typically killing -- the
+    very server the poll loop is waiting on (and from a console-less GUI
+    process the call just fails, misreporting a live server as dead). Probe
+    the process handle instead.
+    """
+    if not pid:
+        return False
+    if os.name == "nt":
+        if pid < 0:
+            return False
+        handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # It exists, we just can't open it -- the same "alive but not
+            # ours" answer as the POSIX PermissionError branch below.
+            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+        try:
+            code = ctypes.wintypes.DWORD()
+            if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            # OpenProcess also succeeds on exited processes whose handles are
+            # still held (e.g. our own Popen object), so ask for the exit
+            # code: STILL_ACTIVE means it genuinely hasn't exited. A process
+            # that really exited WITH code 259 reads as alive -- the standard
+            # Win32 ambiguity; every caller pairs this probe with an HTTP
+            # health check, so the cost is a delayed "crashed" verdict.
+            return code.value == _STILL_ACTIVE
+        finally:
+            _kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just not ours to signal
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +261,21 @@ DEFAULT_TIERS: dict[str, dict] = {
     "cloud":      {"backend": "anthropic", "model": OPUS,   "effort": "high",   "max_tokens": 8192},
     "cloud-fast": {"backend": "anthropic", "model": SONNET, "effort": "medium", "max_tokens": 8192},
     "ollama":     {"backend": "ollama", "model": "qwen2.5:7b", "max_tokens": 4096},
+    # A "claude-mcp" tier (services/claude-mcp: a Claude Code *subscription*
+    # behind an OpenAI-compatible endpoint — no ANTHROPIC_API_KEY involved) is
+    # deliberately NOT a static preset here: it is meaningless without a server
+    # URL + bearer token, so Settings.load() synthesizes it whenever
+    # claude_mcp_url is configured.
 }
+
+
+# Matches the /t/<token>/ URL-auth segment services/claude-mcp accepts; used to
+# mask tokens embedded in tier base_urls before settings are displayed.
+_URL_TOKEN = re.compile(r"(/t/)[^/]+")
+
+
+def _mask_url_token(url: str) -> str:
+    return _URL_TOKEN.sub(r"\1***", url or "")
 
 
 def mask_key(key: str) -> str:
@@ -245,6 +356,19 @@ class Settings:
     backend_base_url: str = ""
     backend_api_key: str = ""
 
+    # --- Optional claude-mcp sidecar (services/claude-mcp) ---
+    # A running claude-mcp server turns a Claude Code subscription into an
+    # OpenAI-compatible endpoint + an MCP tool server (ask_claude). Configure
+    # the pair below and load() synthesizes a "claude-mcp" tier; flip
+    # claude_mcp_tools on to also mount ask_claude via /sse. The tier's
+    # base_url embeds the token as a /t/<token>/ path segment because the
+    # "openai" backend posts with no Authorization header — the URL is the only
+    # per-tier channel that reaches the request, and the server accepts it
+    # (see services/claude-mcp/server.mjs isAuthorized).
+    claude_mcp_url: str = ""    # e.g. http://<tailscale-ip>:3456
+    claude_mcp_token: str = ""  # bearer token from services/claude-mcp/config.json
+    claude_mcp_tools: bool = False
+
     # --- Agent harness: model routing ---
     tiers: dict = field(default_factory=dict)
     default_tier: str = "local"
@@ -318,9 +442,15 @@ class Settings:
                 if k.startswith("_"):
                     continue
                 if k == "tiers" and isinstance(v, dict):
+                    known = {f.name for f in fields(Tier)}
                     for tn, tv in v.items():
+                        # Drop unknown keys instead of letting one typo'd field
+                        # TypeError the whole tier away — that used to silently
+                        # reroute requests to default_tier. Only a tier missing
+                        # its required backend/model is still skipped.
                         try:
-                            s.tiers[tn] = Tier(**tv)
+                            s.tiers[tn] = Tier(**{kk: vv for kk, vv in tv.items()
+                                                  if kk in known})
                         except TypeError:
                             pass
                 elif k == "openrouter_api_key" and v:
@@ -355,6 +485,12 @@ class Settings:
         s.autofit_preference = os.environ.get("PLEIADES_AUTOFIT", s.autofit_preference)
         s.backend_base_url = os.environ.get("PLEIADES_BACKEND_BASE_URL", s.backend_base_url)
         s.backend_api_key = os.environ.get("PLEIADES_BACKEND_API_KEY", s.backend_api_key)
+        s.claude_mcp_url = os.environ.get("PLEIADES_CLAUDE_MCP_URL", s.claude_mcp_url)
+        s.claude_mcp_token = os.environ.get("PLEIADES_CLAUDE_MCP_TOKEN", s.claude_mcp_token)
+        if os.environ.get("PLEIADES_CLAUDE_MCP_TOOLS"):
+            s.claude_mcp_tools = (
+                os.environ["PLEIADES_CLAUDE_MCP_TOOLS"].strip().lower() in ("1", "true", "yes")
+            )
         s.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", s.anthropic_api_key)
         s.openrouter_api_keys = _key_list(
             os.environ.get("OPENROUTER_API_KEYS"), s.openrouter_api_keys,
@@ -381,6 +517,27 @@ class Settings:
         if not s.openai_host:
             s.openai_host = s.inference_base_url
 
+        # claude-mcp sidecar: synthesize the tier (and, opted in, the MCP tool
+        # source) once the URL is known. An explicit "claude-mcp" tier from
+        # config.json wins; only its blank base_url is filled in.
+        if s.claude_mcp_url:
+            t = s.tiers.get("claude-mcp")
+            if t is None:
+                s.tiers["claude-mcp"] = Tier(backend="openai", model="claude",
+                                             base_url=s.claude_mcp_openai_url)
+            elif not t.base_url:
+                t.base_url = s.claude_mcp_openai_url
+            if s.claude_mcp_tools:
+                sse = s.claude_mcp_sse_url
+                if not any(isinstance(e, dict) and e.get("url") == sse
+                           for e in s.mcp_servers):
+                    s.mcp_servers.append({
+                        "name": "claude",
+                        "url": sse,
+                        "headers": {"Authorization": f"Bearer {s.claude_mcp_token}"},
+                        "safe_tools": ["ask_claude"],
+                    })
+
         # Resolve workspace/memory relative to root.
         if not Path(s.workspace_root).is_absolute():
             s.workspace_root = str(root_path / s.workspace_root)
@@ -401,6 +558,29 @@ class Settings:
         """What Anamnesis `upstream.baseUrl` should point at (our engine by default)."""
         return self.backend_base_url or self.inference_base_url
 
+    def _claude_mcp_root(self) -> str:
+        """claude_mcp_url normalized to the server root (tolerates a pasted /v1)."""
+        base = (self.claude_mcp_url or "").rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3].rstrip("/")
+        return base
+
+    @property
+    def claude_mcp_openai_url(self) -> str:
+        """The claude-mcp OpenAI-compatible base URL, token-in-path when we have one."""
+        base = self._claude_mcp_root()
+        if not base:
+            return ""
+        if self.claude_mcp_token:
+            return f"{base}/t/{self.claude_mcp_token}/v1"
+        return f"{base}/v1"
+
+    @property
+    def claude_mcp_sse_url(self) -> str:
+        """The claude-mcp MCP (SSE) endpoint; auth rides in headers, not the URL."""
+        base = self._claude_mcp_root()
+        return f"{base}/sse" if base else ""
+
     def to_dict(self) -> dict:
         from dataclasses import asdict
 
@@ -411,6 +591,21 @@ class Settings:
             d["anthropic_api_key"] = "***"
         if d.get("backend_api_key"):
             d["backend_api_key"] = "***"
+        if d.get("claude_mcp_token"):
+            d["claude_mcp_token"] = "***"
+        # Secrets can ride inside URLs (the claude-mcp /t/<token>/ segment) and
+        # inside MCP server headers — this dict feeds the web UI, so mask both.
+        for t in d["tiers"].values():
+            if isinstance(t, dict) and t.get("base_url"):
+                t["base_url"] = _mask_url_token(t["base_url"])
+        d["mcp_servers"] = [
+            {**e,
+             **({"url": _mask_url_token(e["url"])} if e.get("url") else {}),
+             **({"headers": {hk: "***" for hk in e["headers"]}}
+                if isinstance(e.get("headers"), dict) else {})}
+            if isinstance(e, dict) else e
+            for e in (d.get("mcp_servers") or [])
+        ]
         d["openrouter_api_keys"] = [mask_key(k) for k in self.openrouter_api_keys]
         d["ollama_cloud_api_keys"] = [mask_key(k) for k in self.ollama_cloud_api_keys]
         return d

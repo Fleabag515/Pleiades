@@ -15,15 +15,19 @@ If a secret is set, requests must carry it in the X-Webhook-Secret header.
 from __future__ import annotations
 
 import json
-import queue
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from ..tools import tool
 
+# `queue` is a plain list guarded by `cond`, not a queue.Queue: concurrent
+# wait_for_event() callers (parallel subagents, concurrent webui chat turns)
+# each need to scan the *whole* buffer for their own event_type and leave
+# everything else untouched, so a shared FIFO (which only one consumer can
+# pop from) isn't the right structure — see wait_for_event().
 _STATE: dict = {"server": None, "thread": None, "secret": "",
-                "queue": queue.Queue(), "log": []}
+                "queue": [], "cond": threading.Condition(), "log": []}
 _LOG_CAP = 200
 
 
@@ -46,7 +50,9 @@ class _Handler(BaseHTTPRequestHandler):
             "body": body,
             "received": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        _STATE["queue"].put(event)
+        with _STATE["cond"]:
+            _STATE["queue"].append(event)
+            _STATE["cond"].notify_all()
         _STATE["log"].append(event)
         del _STATE["log"][:-_LOG_CAP]
         self.send_response(200)
@@ -103,22 +109,18 @@ def wait_for_event(event_type: str = "", timeout: int = 300) -> str:
         return "Error: no listener running — call start_webhook_listener first."
     import time
     deadline = time.monotonic() + timeout
-    skipped = []
-    try:
+    cond = _STATE["cond"]
+    with cond:
         while True:
+            queue_ = _STATE["queue"]
+            for i, ev in enumerate(queue_):
+                if not event_type or ev["type"] == event_type:
+                    del queue_[i]     # only remove the event this waiter claims
+                    return json.dumps(ev, indent=2)[:20_000]
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return f"Timeout: no '{event_type or 'any'}' event within {timeout}s."
-            try:
-                ev = _STATE["queue"].get(timeout=min(remaining, 1.0))
-            except queue.Empty:
-                continue
-            if not event_type or ev["type"] == event_type:
-                return json.dumps(ev, indent=2)[:20_000]
-            skipped.append(ev)
-    finally:
-        for ev in skipped:           # put non-matching events back
-            _STATE["queue"].put(ev)
+            cond.wait(timeout=min(remaining, 1.0))
 
 
 @tool(safe=True, tags=("events", "read"))

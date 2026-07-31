@@ -181,8 +181,13 @@ async function run(args) {
 }
 
 async function edit(name) {
-  const registry = new Registry(REGISTRY_PATH);
-  const entry = registry.get(name);
+  // Resolve through the daemon (cli.js ran ensureDaemon() before us): its
+  // in-memory registry is the live truth for existence and running state.
+  const res = await client.getCharacter(name);
+  if (res.status !== 200) {
+    console.error(`character '${name}' not found`);
+    process.exit(1);
+  }
   const configPath = path.join(os.homedir(), '.anamnesis', 'characters', name, 'config.json');
   if (!fs.existsSync(configPath)) {
     console.error(`character '${name}' not found`);
@@ -217,17 +222,25 @@ async function edit(name) {
     initial: current.context.tokenBudget,
   });
 
-  current.upstream.baseUrl = upstreamUrl;
-  current.upstream.apiKey = apiKey;
-  current.proxy.port = port;
-  current.context.tokenBudget = tokenBudget;
-
-  fs.writeFileSync(configPath, JSON.stringify(current, null, 2), 'utf8');
-  registry.updatePort(name, port);
+  // PATCH through the daemon instead of writing config.json/registry.json
+  // directly: the daemon caches its Registry in memory for its whole lifetime
+  // and rewrites registry.json wholesale on every state change, so a direct
+  // file edit is silently clobbered and list/show/start keep using the old
+  // port. (Bonus: JSON serialization drops undefined values, so a cancelled
+  // prompt leaves that field unchanged instead of deleting it.)
+  const patchRes = await client.updateCharacter(name, {
+    upstream: { baseUrl: upstreamUrl, apiKey },
+    proxy: { port },
+    context: { tokenBudget },
+  });
+  if (patchRes.status !== 200) {
+    console.error('failed to update:', patchRes.body?.error || patchRes.body);
+    process.exit(1);
+  }
   console.log(`\n✓ ${name} updated`);
 
-  // Always restart if active (daemon holds old config in memory)
-  if (entry.active) {
+  // Always restart if active (the running proxy holds the old config in memory)
+  if (res.body.running) {
     console.log('restarting to apply changes...');
     await client.stopCharacter(name);
     await client.startCharacter(name);

@@ -67,17 +67,25 @@ class CharacterManager {
     if (!entry) throw new Error(`character '${name}' not found`);
 
     const config = this._loadConfig(name);
+    // config.json (re-read from disk on every start) is authoritative for the
+    // port: it can be edited from another process while this daemon's
+    // in-memory registry still holds the old value. startProxy() binds
+    // config.proxy.port, and the registry file is rewritten wholesale from
+    // memory on every _save() — so starting from entry.port would leave the
+    // registry advertising a port the proxy isn't actually listening on.
+    const desiredPort = Number.isInteger(config?.proxy?.port) ? config.proxy.port : entry.port;
+
     const reserved = this._registry.usedPorts();
     reserved.delete(entry.port);
     reserved.add(this._controlPort);
 
-    const freePort = await findFreePort(entry.port, reserved);
-    if (freePort !== entry.port) {
-      log.info(`port ${entry.port} in use — starting '${name}' on ${freePort} instead`);
+    const freePort = await findFreePort(desiredPort, reserved);
+    if (freePort !== desiredPort) {
+      log.info(`port ${desiredPort} in use — starting '${name}' on ${freePort} instead`);
       config.proxy.port = freePort;
-      this._registry.updatePort(name, freePort);
       this._saveConfig(name, config);
     }
+    if (freePort !== entry.port) this._registry.updatePort(name, freePort);
 
     const instance = await startProxy(config);
     this._running.set(name, instance);

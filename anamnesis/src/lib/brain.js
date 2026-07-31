@@ -45,8 +45,13 @@ function _onEngineError(err) {
 function _drainQueue() {
   const pending = _queue.splice(0);
   for (const item of pending) {
-    const { timeoutMs, ...engineOpts } = item.opts;
-    let call = _engine.chat(item.messages, engineOpts);
+    const { timeoutMs } = item.opts;
+    // Forward timeoutMs so the engine aborts the generation itself instead of
+    // leaving an orphan running to completion behind the serialize queue. The
+    // outer race stays as a backstop that starts counting at dequeue — the
+    // engine's own timer only starts once its serialized turn begins (and
+    // mock engines in tests ignore timeoutMs entirely).
+    let call = _engine.chat(item.messages, item.opts);
     if (timeoutMs != null) {
       const timer = new Promise((_, rej) =>
         setTimeout(() => rej(new Error(`inference timed out after ${timeoutMs}ms`)), timeoutMs)

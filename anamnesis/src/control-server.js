@@ -12,13 +12,16 @@ function json(res, status, body) {
 
 async function readBody(req) {
   return new Promise((resolve) => {
-    let buf = '';
+    // Collect raw Buffer chunks and decode once at the end — `buf += d`
+    // would coerce each chunk to a string independently, corrupting any
+    // multi-byte UTF-8 character that straddles a chunk boundary.
+    const chunks = [];
     req.on('data', (d) => {
-      buf += d;
+      chunks.push(d);
     });
     req.on('end', () => {
       try {
-        resolve(JSON.parse(buf));
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       } catch {
         resolve({});
       }

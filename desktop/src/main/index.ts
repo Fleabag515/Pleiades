@@ -32,14 +32,26 @@ import trayIconWin from '../../resources/tray-icon-16.png?asset'
 //      development against a live venv (fast iteration on the Python side)
 //      keeps working unmodified.
 const PLEIADES_ROOT = process.env.PLEIADES_ROOT ?? join(homedir(), 'Pleiades')
-// venv layout differs by platform: POSIX puts executables in bin/ (and this
-// repo's dev venv is pinned to python3.12 specifically -- see repo CLAUDE.md
-// on the python3.12/python3.13 split); Windows' `python -m venv` always
-// lays executables out under Scripts/python.exe regardless of version.
-const PYTHON_BIN =
-  process.platform === 'win32'
-    ? join(PLEIADES_ROOT, '.venv', 'Scripts', 'python.exe')
-    : join(PLEIADES_ROOT, '.venv', 'bin', 'python3.12')
+// venv layout differs by platform: POSIX puts executables in bin/; Windows'
+// `python -m venv` always lays executables out under Scripts/python.exe
+// regardless of version. On POSIX, bin/ only ever has the specific minor
+// version the venv was created with -- never python3.12 unless that's
+// literally what created it -- so probe the same fallback list
+// desktop/backend-build/build.sh uses rather than assuming one version.
+function resolvePythonBin(): string {
+  if (process.platform === 'win32') {
+    return join(PLEIADES_ROOT, '.venv', 'Scripts', 'python.exe')
+  }
+  const venvBin = join(PLEIADES_ROOT, '.venv', 'bin')
+  for (const candidate of ['python3.12', 'python3.11', 'python3.13', 'python3.10', 'python3']) {
+    const full = join(venvBin, candidate)
+    if (existsSync(full)) return full
+  }
+  // Nothing found: fall back to the most likely name so the resulting
+  // spawn error message at least names the file we expected.
+  return join(venvBin, 'python3.12')
+}
+const PYTHON_BIN = resolvePythonBin()
 
 const BACKEND_BIN_NAME = process.platform === 'win32' ? 'pleiades-backend.exe' : 'pleiades-backend'
 
@@ -203,6 +215,11 @@ function spawnBackend(port: number): void {
   const child = spawn(command, spawnArgs, {
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Windows only: the bundled backend (and the dev-mode python.exe
+    // fallback) is a console-subsystem executable. Spawned from Electron's
+    // GUI-subsystem main process without this, Windows allocates and shows
+    // a new console window for the child even though stdio is piped here.
+    windowsHide: true,
     env
   }) as BackendProcess
 

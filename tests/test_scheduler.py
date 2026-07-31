@@ -6,8 +6,20 @@ from datetime import datetime
 
 import pytest
 
+from pleiades import config
 from pleiades.scheduler import (ScheduledTaskManager, ScheduleError, cron_matches,
                                 next_cron_fire, parse_cron, set_job_launcher, tick)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_scheduled_tasks_registry(tmp_path, monkeypatch):
+    """ScheduledTaskManager() always resolves its JSON registry from
+    config.PLEIADES_HOME (see scheduler._tasks_json), and conftest.py sets
+    that once, process-wide, for the whole test session -- so without this,
+    every test in this file reads/writes the same on-disk file and tasks
+    accumulate across tests. Point each test at its own fresh tmp_path so
+    ScheduledTaskManager()'s state never leaks between tests."""
+    monkeypatch.setattr(config, "PLEIADES_HOME", tmp_path)
 
 
 # --------------------------------------------------------------------------- #

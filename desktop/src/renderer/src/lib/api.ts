@@ -97,11 +97,11 @@ export async function getChat(base: string, chatId: string): Promise<ChatDetail>
 }
 
 export async function deleteChat(base: string, chatId: string): Promise<void> {
-  await fetch(`${base}/api/chats/${chatId}`, { method: 'DELETE' })
+  await asJson(await fetch(`${base}/api/chats/${chatId}`, { method: 'DELETE' }))
 }
 
 export async function stopChat(base: string, chatId: string): Promise<void> {
-  await fetch(`${base}/api/chats/${chatId}/stop`, { method: 'POST' })
+  await asJson(await fetch(`${base}/api/chats/${chatId}/stop`, { method: 'POST' }))
 }
 
 export interface UploadedAttachment {
@@ -174,12 +174,20 @@ export async function getApproval(base: string, chatId: string): Promise<Pending
   return data.pending
 }
 
+/** Must throw on non-2xx (the backend 409s when nothing is awaiting
+ * approval anymore): chatStore's respondApproval clears the pending-approval
+ * card the moment this resolves, so a swallowed error would dismiss the card
+ * while the tool call is still blocked server-side waiting for an answer
+ * that never arrived -- a silent turn hang. On throw the card stays up and
+ * the approval poll re-syncs it with whatever is actually pending. */
 export async function postApproval(base: string, chatId: string, approve: boolean): Promise<void> {
-  await fetch(`${base}/api/chats/${chatId}/approval`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ approve })
-  })
+  await asJson(
+    await fetch(`${base}/api/chats/${chatId}/approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approve })
+    })
+  )
 }
 
 export async function listModels(base: string): Promise<ModelEntry[]> {
@@ -188,12 +196,20 @@ export async function listModels(base: string): Promise<ModelEntry[]> {
 }
 
 export async function startModel(base: string, name: string): Promise<void> {
-  await fetch(`${base}/api/models/${encodeURIComponent(name)}/start`, { method: 'POST' })
+  // Throws on non-2xx so the backend's real refusal (400 + ModelError detail,
+  // e.g. missing GGUF or a model that won't fit) reaches the UI instead of the
+  // Start toggle silently doing nothing; peers are only told to refetch when
+  // something actually changed.
+  await asJson(
+    await fetch(`${base}/api/models/${encodeURIComponent(name)}/start`, { method: 'POST' })
+  )
   notifyModelsChanged()
 }
 
 export async function stopModel(base: string, name: string): Promise<void> {
-  await fetch(`${base}/api/models/${encodeURIComponent(name)}/stop`, { method: 'POST' })
+  await asJson(
+    await fetch(`${base}/api/models/${encodeURIComponent(name)}/stop`, { method: 'POST' })
+  )
   notifyModelsChanged()
 }
 
@@ -618,7 +634,7 @@ export async function getAgent(base: string, id: string, since = 0): Promise<Age
 }
 
 export async function stopAgent(base: string, id: string): Promise<void> {
-  await fetch(`${base}/api/agents/${id}/stop`, { method: 'POST' })
+  await asJson(await fetch(`${base}/api/agents/${id}/stop`, { method: 'POST' }))
 }
 
 export async function setAgentsSettings(

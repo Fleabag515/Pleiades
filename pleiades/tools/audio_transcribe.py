@@ -348,6 +348,14 @@ def _save_running(data: dict) -> None:
 def _pid_alive(pid: "int | None") -> bool:
     if not pid:
         return False
+    if os.name == "nt":
+        # os.kill(pid, 0) is NOT a liveness probe on Windows: signal 0 is
+        # CTRL_C_EVENT, so it tries to deliver a console event and fails
+        # (OSError) for any process outside our console group -- making the
+        # managed whisper-server always look dead, so _ensure_server()
+        # respawned a new one (and fought over the port) on every call.
+        import psutil   # already a hard dep (sandbox.py's memory watchdog)
+        return psutil.pid_exists(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

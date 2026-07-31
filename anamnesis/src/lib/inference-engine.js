@@ -177,10 +177,10 @@ class InferenceEngine {
       const systemMsg = messages.find((m) => m.role === 'system')?.content;
       const userMsg = messages.filter((m) => m.role === 'user').pop()?.content ?? '';
 
-      let resultPromise;
+      let result;
       if (this._llamaFactory) {
         // Test path — mock doesn't do real inference
-        resultPromise = Promise.resolve(userMsg);
+        result = userMsg;
       } else {
         // Production path — use LlamaChatSession
         const { LlamaChatSession } = await import('node-llama-cpp');
@@ -188,18 +188,29 @@ class InferenceEngine {
           contextSequence: seq,
           ...(systemMsg ? { systemPrompt: systemMsg } : {}),
         });
-        resultPromise = session.prompt(userMsg, { maxTokens, temperature });
+
+        // Timeout must abort the generation and await its settlement — a
+        // Promise.race that abandons the in-flight prompt() would let the
+        // finally below dispose `seq` while decoding is still running on it,
+        // and would advance _serialize()'s queue while the sequence is still
+        // busy, breaking the one-inference-at-a-time guarantee. prompt()
+        // throws `signal.reason` (our timeout error) once the abort lands.
+        if (timeoutMs) {
+          const ac = new AbortController();
+          const timer = setTimeout(
+            () => ac.abort(new Error(`inference timed out after ${timeoutMs}ms`)),
+            timeoutMs
+          );
+          try {
+            result = await session.prompt(userMsg, { maxTokens, temperature, signal: ac.signal });
+          } finally {
+            clearTimeout(timer);
+          }
+        } else {
+          result = await session.prompt(userMsg, { maxTokens, temperature });
+        }
       }
 
-      if (timeoutMs) {
-        const timeout = new Promise((_, rej) =>
-          setTimeout(() => rej(new Error(`inference timed out after ${timeoutMs}ms`)), timeoutMs)
-        );
-        const result = await Promise.race([resultPromise, timeout]);
-        return (typeof result === 'string' ? result : String(result)).trim();
-      }
-
-      const result = await resultPromise;
       return (typeof result === 'string' ? result : String(result)).trim();
     } finally {
       await seq.dispose?.();

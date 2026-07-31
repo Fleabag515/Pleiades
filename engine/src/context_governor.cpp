@@ -72,11 +72,42 @@ int ContextGovernor::resize(int requested) {
     if (target == n_ctx_) {
         return n_ctx_;
     }
+    // Free-BEFORE-create is deliberate: the grow path must never need the old
+    // and new KV resident at once, or growing on a memory-tight box would fail
+    // even when the new size alone fits. The price is paid below: if the new
+    // context can't be created (llama_init_from_model returns null on any
+    // failed allocation -- a routine outcome when stepping up the gear ladder
+    // on low-VRAM hardware, not a can't-happen), recreate at the size that was
+    // live a moment ago. Its memory was just freed, so that near-certainly
+    // succeeds -- leaving the governor serviceable at the old n_ctx instead of
+    // holding a null ctx_ that still reports the old size and turns every
+    // subsequent decode into a process-killing null deref.
+    int prev = n_ctx_;
     if (ctx_) {
         llama_free(ctx_);
         ctx_ = nullptr;
     }
-    create_ctx(target);
+    try {
+        create_ctx(target);
+    } catch (...) {
+        // prev == 0 means there was no prior working size (an earlier double
+        // failure); skip rollback then -- llama treats n_ctx=0 as "use
+        // n_ctx_train", which would silently desync n_ctx_ from the real
+        // context. The rollback context starts with an empty KV; create_ctx
+        // bumps epoch_ on success, which is what invalidates any prefix cache
+        // tied to the freed context.
+        if (prev > 0) {
+            try {
+                create_ctx(prev);
+            } catch (...) {
+                // Even the previously-working size failed (e.g. another
+                // process grabbed the memory in between). No live context:
+                // report 0, never a stale size a caller could act on.
+                n_ctx_ = 0;
+            }
+        }
+        throw;  // surface the original resize failure whether or not rollback worked
+    }
     return n_ctx_;
 }
 

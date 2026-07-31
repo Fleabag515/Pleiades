@@ -44,7 +44,7 @@ auto-detects it:
 
 At runtime you just use `--gpu-layers`. To switch backends later, reinstall with the
 flag, e.g. `CMAKE_ARGS="-DGGML_CUDA=on" pip install -e ".[all]"` (NVIDIA) or
-`-DGGML_HIPBLAS=on` (AMD).
+`-DGGML_HIP=on` (AMD).
 
 ## 2. Start / stop a model
 

@@ -136,7 +136,7 @@ For manual installs, set the backend flag before pip:
 
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=on"   pip install -e ".[all]"  # NVIDIA
-CMAKE_ARGS="-DGGML_HIPBLAS=on" pip install -e ".[all]" # AMD ROCm
+CMAKE_ARGS="-DGGML_HIP=on"    pip install -e ".[all]"  # AMD ROCm
 CMAKE_ARGS="-DGGML_METAL=on"  pip install -e ".[all]"  # Apple Silicon
 ```
 

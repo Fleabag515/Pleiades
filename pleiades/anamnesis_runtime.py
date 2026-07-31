@@ -134,21 +134,14 @@ def _load_running() -> dict:
 
 def _save_running(data: dict) -> None:
     config.PLEIADES_HOME.mkdir(parents=True, exist_ok=True)
-    _running_json().write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # Atomic write -- a concurrent reader (e.g. CLI status check racing a
+    # start()/stop() from another process) must never see a torn/partial body.
+    config.atomic_write_json(_running_json(), data)
 
 
-def _pid_alive(pid: "int | None") -> bool:
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, just not ours to signal
-    except OSError:
-        return False
+# Shared implementation: os.kill(pid, 0) is a real CTRL_C_EVENT on Windows,
+# not a probe -- see config.pid_alive's docstring.
+_pid_alive = config.pid_alive
 
 
 def _health(timeout: float = 3.0) -> "dict | None":
@@ -269,7 +262,13 @@ class AnamnesisDaemon:
             time.sleep(0.2)
         if _pid_alive(pid):
             try:
-                os.kill(pid, signal.SIGKILL)
+                # signal.SIGKILL doesn't exist on Windows (no HAVE_SIGKILL) --
+                # os.kill(pid, SIGTERM) above already maps to TerminateProcess
+                # there, so a still-alive process just gets one more wait cycle.
+                if os.name == "posix":
+                    os.kill(pid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGTERM)
             except OSError:
                 pass
         _save_running({})

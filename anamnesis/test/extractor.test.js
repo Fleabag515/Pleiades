@@ -137,7 +137,11 @@ test('Extractor._extractTurn skips facts shorter than 10 chars', async () => {
   assert.equal(history._cells.length, 0, 'short fact should be skipped');
 });
 
-test('Extractor._extractTurn handles LLM failure gracefully', async () => {
+test('Extractor._extractTurn leaves the turn unmarked (for retry) when every LLM attempt throws', async () => {
+  // Every retry attempt failing with an infra error (timeout, queue full, ...)
+  // is NOT the same as the LLM legitimately finding nothing — the module's
+  // docstring promises extracted=0 turns are retried via processBacklog() on
+  // next startup, so this case must NOT be permanently marked extracted.
   const history = makeMockHistory();
   let marked = false;
   history.markExtracted = () => {
@@ -163,5 +167,29 @@ test('Extractor._extractTurn handles LLM failure gracefully', async () => {
     }
   );
 
-  assert.ok(marked, 'turn should be marked extracted even on LLM failure');
+  assert.ok(!marked, 'turn should stay unextracted so processBacklog() retries it');
+});
+
+test('Extractor._extractTurn marks the turn extracted when the LLM legitimately returns no facts', async () => {
+  const history = makeMockHistory();
+  let marked = false;
+  history.markExtracted = () => {
+    marked = true;
+  };
+
+  await withMockBrain(
+    async () => '[]',
+    (Extractor) => {
+      const e = new Extractor(makeConfig(), history, makeMockEmbedder());
+      return e._extractTurn({
+        id: 4,
+        session_key: 'sess',
+        content:
+          'Some content that would normally be processed by the extractor.\n' +
+          'It spans multiple lines so that shouldProcessTurn returns true.',
+      });
+    }
+  );
+
+  assert.ok(marked, 'a genuinely empty result should be marked extracted, not retried forever');
 });

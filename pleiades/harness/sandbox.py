@@ -267,6 +267,17 @@ def run_sandboxed(args, *, shell: bool, timeout: int,
     command_str = args if isinstance(args, str) else " ".join(args)
     check_command_safety(command_str, policy)  # hard floor: always runs
 
+    # preexec_fn runs after fork() but before exec() in the child -- and this
+    # process is multithreaded by design (memory watchdog, webhook listener,
+    # uvicorn workers, dispatch_subagents_parallel). fork() only clones the
+    # calling thread, so if another thread holds a libc/malloc or logging lock
+    # at the moment of fork, the child can deadlock before exec() ever runs.
+    # This is CPython's own documented subprocess/preexec_fn hazard, not
+    # theoretical here. It's intermittent (a heisenbug under load) and we
+    # accept it for the RLIMIT_AS memory ceiling because the alternative
+    # (no hard memory limit on POSIX, watchdog-only) is strictly worse; if it
+    # ever bites, the fix is to drop preexec_fn and rely on the psutil
+    # watchdog alone for memory enforcement.
     preexec = _preexec_rlimits(policy.mem_mb) if policy.enabled else None
     proc = subprocess.Popen(
         args, shell=shell,

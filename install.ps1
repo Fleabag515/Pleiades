@@ -51,6 +51,11 @@ $ErrorActionPreference = "Continue"
 # native call in the whole script (git clone) reliably killed the installer
 # under "Stop" and the exact same run completes normally under "Continue".
 
+# -Core deliberately does NOT set $NoNativeRuntime, unlike install.sh's --core
+# (which does disable the native runtime) -- on Windows the native Vulkan
+# llama-server runtime is the *primary* acceleration path for AMD/Intel GPUs
+# (see Resolve-Gpu's NativeFirst), not an optional extra, so skipping it here
+# would silently leave AMD/Intel -Core users on the slow CPU python engine.
 if ($Core) { $NoBrowser = $true; $NoSearxng = $true; $NoDiscord = $true }
 
 function Say($m)  { Write-Host "==> $m" -ForegroundColor Green }
@@ -75,7 +80,15 @@ function Winget-Install($id, $label) {
 
 # ---- prerequisites (auto-installed runtimes: Python, Node, native deps) ---
 function Ensure-Git {
-  if (-not (Have git)) { Winget-Install "Git.Git" "Git" }
+  if (-not (Have git)) {
+    Winget-Install "Git.Git" "Git"
+    # Winget-Install doesn't check winget's own exit status (a failed/
+    # interrupted/needs-elevation run silently looks like success), so
+    # re-verify git is actually resolvable on PATH now -- otherwise the
+    # unguarded `git clone`/`git -C ...` calls later throw a raw
+    # CommandNotFoundException instead of a friendly Die message.
+    if (-not (Have git)) { Die "git still not found after installing Git. Install it manually and re-run." }
+  }
 }
 
 function Get-PyBin {
@@ -101,8 +114,28 @@ function Ensure-Python {
   return $py
 }
 
+# anamnesis/package.json declares "engines": {"node": ">=20"}; npm only warns
+# (advisory-only) rather than failing on a too-old Node, so without this
+# check a stale pre-existing Node install (e.g. from an old installer, or
+# an org-managed machine image) silently proceeds into confusing dependency/
+# syntax failures instead of a clear message here at install time.
+function Node-VersionOk {
+  if (-not (Have node)) { return $false }
+  try {
+    $major = [int]((& node -e "console.log(process.versions.node.split('.')[0])") | Select-Object -First 1)
+    return $major -ge 20
+  } catch { return $false }
+}
+
 function Ensure-Node {
-  if (-not (Have npm)) { Winget-Install "OpenJS.NodeJS.LTS" "Node.js LTS" }
+  if ((Have npm) -and (Node-VersionOk)) { return }
+  if ((Have npm) -and -not (Node-VersionOk)) {
+    Warn "Found Node $(node --version 2>$null) but Anamnesis needs Node >=20; installing a newer Node."
+  }
+  Winget-Install "OpenJS.NodeJS.LTS" "Node.js LTS"
+  if (-not (Node-VersionOk)) {
+    Warn "Node is still older than the >=20 Anamnesis requires. Install Node >=20 manually and re-run."
+  }
 }
 
 # ---- GPU detection ---------------------------------------------------------
@@ -301,9 +334,17 @@ function Install-Searxng {
   if ($NoSearxng) { return }
   $searxngDir = Join-Path $Dir "searxng-src"
   $venvPy = Join-Path $searxngDir ".venv\Scripts\python.exe"
+  # Skip only if already installed AND at the current pin -- otherwise a
+  # future $script:SearxngPin bump (security/JSON-format fix upstream) would
+  # never take effect on a re-run of this idempotent-by-design installer.
   if (Test-Path $venvPy) {
     & $venvPy -c "import searx" *> $null
-    if ($LASTEXITCODE -eq 0) { return }  # already fetched + installed
+    if ($LASTEXITCODE -eq 0) {
+      # 2>&1 | Out-String (not 2>$null): matches Clone-Repo's own git-output
+      # handling above -- more reliable here than 2>$null in irm|iex context.
+      $currentHead = ((git -C $searxngDir rev-parse HEAD 2>&1 | Out-String)).Trim()
+      if ($currentHead -eq $script:SearxngPin) { return }  # already fetched + installed at the current pin
+    }
   }
   if (-not (Have git)) { Warn "git missing; skipping SearXNG."; return }
   Say "Fetching SearXNG (pinned commit, no Docker required)"

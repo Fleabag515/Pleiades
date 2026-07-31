@@ -28,6 +28,8 @@ each `user_injected` item when reconstructing history for a future turn.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -66,8 +68,20 @@ def create(character: str) -> dict:
 
 def save(chat: dict) -> None:
     chat["updated"] = time.time()
-    _path(chat["id"]).write_text(json.dumps(chat, ensure_ascii=False, indent=1),
-                                 encoding="utf-8")
+    path = _path(chat["id"])
+    # Atomic (tempfile + os.replace) so a concurrent reader never observes a
+    # torn/partial transcript mid-write (see config.atomic_write_json).
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(chat, ensure_ascii=False, indent=1))
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def load(chat_id: str) -> dict:

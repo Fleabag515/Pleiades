@@ -8,6 +8,32 @@ const os = require('os');
 const DAEMON_JS = path.join(__dirname, 'daemon.js');
 const NODE_BIN = process.execPath;
 const IS_WINDOWS = process.platform === 'win32';
+const WINDOWS_TASK_NAME = 'Anamnesis Daemon';
+
+// install runs under sudo, where os.userInfo() reports root — but the daemon
+// must run as the user who invoked sudo, or the installed service reads an
+// empty /root (or /var/root) ~/.anamnesis instead of the registry and
+// characters that `anamnesis new` created as the regular user.
+function serviceUser() {
+  return process.env.SUDO_USER || os.userInfo().username;
+}
+
+// Home directory of the service user. os.homedir() is wrong under sudo (it
+// resolves root's home), so look the user up in the directory service.
+function serviceUserHome(user) {
+  if (user === os.userInfo().username) return os.homedir();
+  try {
+    const out = execSync(
+      `dscl . -read ${JSON.stringify('/Users/' + user)} NFSHomeDirectory`,
+      { stdio: 'pipe' }
+    ).toString('utf8');
+    const m = out.match(/NFSHomeDirectory:\s*(.+)/);
+    if (m) return m[1].trim();
+  } catch {
+    /* dscl unavailable or user record odd — fall back to convention */
+  }
+  return path.join('/Users', user);
+}
 
 async function install() {
   if (IS_WINDOWS) {
@@ -30,7 +56,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=${os.userInfo().username}
+User=${serviceUser()}
 ExecStart=${NODE_BIN} ${DAEMON_JS}
 Restart=on-failure
 RestartSec=5
@@ -54,7 +80,7 @@ async function installWindows() {
   // Use Task Scheduler (schtasks) — no extra dependencies, works without elevation
   // for per-user ONLOGON tasks. Falls back to a warning if schtasks isn't available.
   const { execSync } = require('child_process');
-  const taskName = 'Anamnesis Daemon';
+  const taskName = WINDOWS_TASK_NAME;
 
   // Delete existing task silently before recreating
   try { execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'pipe' }); } catch {}
@@ -108,7 +134,21 @@ function installMacOS() {
     console.error('error: anamnesis install requires root — run with sudo');
     process.exit(1);
   }
-  const logPath = path.join(os.homedir(), '.anamnesis', 'daemon.log');
+  const user = serviceUser();
+  const home = serviceUserHome(user);
+  const logDir = path.join(home, '.anamnesis');
+  const logPath = path.join(logDir, 'daemon.log');
+  // launchd needs the log directory to exist before it can open
+  // StandardOutPath; we're root here, so hand it to the service user or the
+  // daemon can't write registry/config files into it later.
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+    execSync(`chown ${JSON.stringify(user)} ${JSON.stringify(logDir)}`, { stdio: 'pipe' });
+  } catch {
+    /* best-effort — daemon.js re-creates the dir on start as the user */
+  }
+  // HOME is set explicitly: launchd does not populate it for LaunchDaemons,
+  // and everything under ~/.anamnesis is resolved via the home directory.
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -119,13 +159,16 @@ function installMacOS() {
     <string>${NODE_BIN}</string>
     <string>${DAEMON_JS}</string>
   </array>
-  <key>UserName</key><string>${os.userInfo().username}</string>
+  <key>UserName</key><string>${user}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${logPath}</string>
   <key>StandardErrorPath</key><string>${logPath}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>ANAMNESIS_LOG</key><string>info</string></dict>
+  <dict>
+    <key>ANAMNESIS_LOG</key><string>info</string>
+    <key>HOME</key><string>${home}</string>
+  </dict>
 </dict>
 </plist>
 `;
@@ -191,7 +234,7 @@ function uninstallLinux() {
 
 async function uninstallWindows() {
   const { execSync } = require('child_process');
-  const taskName = 'Anamnesis Daemon';
+  const taskName = WINDOWS_TASK_NAME;
   try {
     execSync(`schtasks /End /TN "${taskName}"`, { stdio: 'pipe' });
   } catch {}
@@ -203,4 +246,26 @@ async function uninstallWindows() {
   }
 }
 
-module.exports = { install, uninstall };
+// Checks whether anamnesis is registered as a platform-managed service
+// (systemd unit / Task Scheduler task / launchd daemon) for the current
+// platform. Used by cli.js's ensureDaemon() to decide whether a momentarily
+// non-running daemon should be left to its managed supervisor to restart,
+// rather than having the CLI spawn a duplicate ad-hoc process alongside it.
+function isInstalled() {
+  try {
+    if (IS_WINDOWS) {
+      execSync(`schtasks /Query /TN "${WINDOWS_TASK_NAME}"`, { stdio: 'pipe' });
+      return true;
+    }
+    if (process.platform === 'darwin') {
+      execSync(`launchctl print system/${MACOS_LABEL}`, { stdio: 'pipe' });
+      return true;
+    }
+    execSync('systemctl is-enabled anamnesis', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { install, uninstall, isInstalled };
