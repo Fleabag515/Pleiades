@@ -396,6 +396,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('pleiades:get-backend-url', () => backendState.url)
   ipcMain.handle('pleiades:get-backend-status', () => ({ ...backendState }))
   ipcMain.handle('pleiades:get-app-version', () => app.getVersion())
+  // Lets the renderer show accurate "what happens when I click install"
+  // copy instead of unconditionally Windows-flavored text -- see the
+  // install-update-and-restart handler below for why this specific check
+  // (Linux + running from an AppImage) is the one case that self-updates.
+  ipcMain.handle(
+    'pleiades:is-self-updating-install',
+    () => process.platform === 'linux' && !!process.env.APPIMAGE
+  )
 
   // Custom title bar window controls (see createWindow's frame: false).
   ipcMain.handle('pleiades:window-minimize', () => mainWindow?.minimize())
@@ -413,7 +421,41 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('pleiades:get-update-status', () => updateStatus)
   ipcMain.handle('pleiades:install-update-and-restart', async () => {
-    // NOT autoUpdater.quitAndInstall(): that spawns the unsigned NSIS
+    // Real bug, found live (2026-07-31): the shell.openPath() workaround
+    // below was written for ONE specific case -- Windows' unsigned NSIS
+    // installer possibly getting SmartScreen-gated with no visible window
+    // (see the comment further down) -- but was applied unconditionally on
+    // EVERY platform, including Linux. On Linux, shell.openPath() on the
+    // downloaded .AppImage just LAUNCHES that file as a brand-new, separate
+    // process -- it does not replace the running installation at all. A
+    // user closing that new (disconnected) instance and reopening their
+    // existing shortcut/taskbar icon gets the OLD app back, having seen
+    // what looked like an "install" step (AppImageLauncher or a similar
+    // file-association handler intercepting the launch) that never actually
+    // touched their real install. That's the exact "did not update" report
+    // this fix is for.
+    //
+    // Linux AppImage genuinely doesn't have a Windows-SmartScreen-shaped
+    // problem: electron-updater's AppImage updater does a real in-place
+    // replace-and-relaunch (atomic file swap at the AppImage's own running
+    // path, then restarts the app itself) -- exactly the "folds the update
+    // into the app" behavior the Updates section is supposed to deliver, and
+    // exactly what autoUpdater.quitAndInstall() is designed for on this
+    // platform. So: real AppImage installs use quitAndInstall(); everything
+    // else (Windows NSIS today; a non-AppImage Linux install -- e.g. the
+    // .deb, which electron-updater cannot silently update at all since that
+    // needs root -- would also land here) keeps the existing visible-
+    // installer-launch fallback, since for those a background swap either
+    // isn't safe (Windows) or isn't possible without a privilege prompt this
+    // app can't issue on its own (a system-installed .deb).
+    const isLinuxAppImage = process.platform === 'linux' && !!process.env.APPIMAGE
+    if (isLinuxAppImage) {
+      await stopBackend()
+      autoUpdater.quitAndInstall()
+      return
+    }
+
+    // NOT autoUpdater.quitAndInstall() here: that spawns the unsigned NSIS
     // installer as a detached background process AFTER this app has already
     // quit, with no window of its own visible to react to. If Windows'
     // SmartScreen (or Defender) gates that unattended launch behind a
@@ -428,7 +470,14 @@ function registerIpcHandlers(): void {
     // watching for something to happen, matching how install.ps1's own
     // desktop-app build already hands off to the user rather than trying to
     // run its unsigned installer unattended (see that file's
-    // Install-DesktopApp comment).
+    // Install-DesktopApp comment). On a non-AppImage Linux install this
+    // downloads and opens the .AppImage too (the only format electron-
+    // updater's GitHub provider treats as the update payload, see
+    // latest-linux.yml's `path:` field) -- opening it launches a usable,
+    // up-to-date copy of the app, but does NOT replace a .deb-based
+    // install; that's a real, separate limitation (no way to self-update a
+    // system package without a privilege prompt this app doesn't issue),
+    // not something this fix claims to solve.
     if (!downloadedInstallerPath) {
       setUpdateStatus({
         phase: 'error',

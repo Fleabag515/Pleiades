@@ -48,6 +48,7 @@ function UpdatesSection(): React.JSX.Element {
     error: null
   })
   const [appVersion, setAppVersion] = useState<string | null>(null)
+  const [selfUpdating, setSelfUpdating] = useState(false)
 
   useEffect(() => {
     window.pleiades.getUpdateStatus().then(setStatus)
@@ -56,6 +57,10 @@ function UpdatesSection(): React.JSX.Element {
 
   useEffect(() => {
     window.pleiades.getAppVersion().then(setAppVersion)
+  }, [])
+
+  useEffect(() => {
+    window.pleiades.isSelfUpdatingInstall().then(setSelfUpdating)
   }, [])
 
   const busy = status.phase === 'checking' || status.phase === 'downloading'
@@ -85,8 +90,10 @@ function UpdatesSection(): React.JSX.Element {
             )}
             {status.phase === 'ready' && (
               <span className="text-[11px] text-ink-dim">
-                Opens the installer for you to run -- your OS may ask you to confirm it (e.g.
-                Windows SmartScreen), that&apos;s expected for this build.
+                {selfUpdating
+                  ? 'Updates and restarts Pleiades automatically -- no separate installer step.'
+                  : "Opens the downloaded installer for you to run -- your system may show a " +
+                    "security prompt to confirm it, that's expected."}
               </span>
             )}
           </div>

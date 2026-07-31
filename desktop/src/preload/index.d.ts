@@ -25,6 +25,7 @@ export interface PleiadesApi {
   windowIsMaximized: () => Promise<boolean>
   onWindowMaximizedChanged: (cb: (maximized: boolean) => void) => () => void
   getAppVersion: () => Promise<string>
+  isSelfUpdatingInstall: () => Promise<boolean>
   checkForUpdates: () => Promise<void>
   getUpdateStatus: () => Promise<PleiadesUpdateStatus>
   installUpdateAndRestart: () => Promise<void>

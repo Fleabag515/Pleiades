@@ -36,6 +36,12 @@ const pleiadesApi = {
   },
 
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('pleiades:get-app-version'),
+  /** True only for a Linux AppImage install -- the one case where
+   * "Install & restart" replaces the running app in place and relaunches
+   * automatically, with no separate installer step. See main/index.ts's
+   * install-update-and-restart handler. */
+  isSelfUpdatingInstall: (): Promise<boolean> =>
+    ipcRenderer.invoke('pleiades:is-self-updating-install'),
 
   // Auto-update (see main/index.ts's "Auto-update" section for the full flow).
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke('pleiades:check-for-updates'),
