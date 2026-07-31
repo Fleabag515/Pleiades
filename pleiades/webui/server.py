@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
 
@@ -472,12 +473,38 @@ def create_app() -> FastAPI:
     @app.get("/api/status")
     def status() -> dict:
         s = config.Settings.load()
-        anamnesis_up = _reachable(s.anamnesis_control_url, "/status")
-        try:
-            chars = an.list_characters()
-        except Exception:
-            chars = []
-        inference_up = _reachable(s.inference_base_url, "/models")
+
+        # The three service probes (+ list_characters) are independent network
+        # calls with no data dependency on each other, but were previously run
+        # sequentially -- each blocks up to _reachable's own timeout (1.2s) when
+        # its service is down, and list_characters can block up to Anamnesis's
+        # own 30s client timeout if the daemon itself is down. Stacked, a dev
+        # box with inference+searxng both off (a common state -- both start
+        # on-demand) took ~4.3-4.7s to answer, measured directly. The desktop
+        # app's readiness poller aborts each attempt at 2s
+        # (desktop/src/main/index.ts, BACKEND_READY_TIMEOUT_MS's fetch), so with
+        # two or more services down this endpoint could NEVER be observed as up
+        # inside the poll window -- every attempt died before the response was
+        # ready, for the full 90s, every time. Running the probes concurrently
+        # bounds total wall time to the SLOWEST single probe, not their sum,
+        # regardless of how many services are down.
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            f_anamnesis = pool.submit(_reachable, s.anamnesis_control_url, "/status")
+            f_chars = pool.submit(an.list_characters)
+            f_inference = pool.submit(_reachable, s.inference_base_url, "/models")
+            # searxng's own fallback (root path if /healthz 404s) is two
+            # sequential probes -- split into two futures too, else it alone
+            # reintroduces a 2x1.2s stack and stays the slowest thing in the pool.
+            f_searxng_healthz = pool.submit(_reachable, s.searxng_url, "/healthz")
+            f_searxng_root = pool.submit(_reachable, s.searxng_url)
+            anamnesis_up = f_anamnesis.result()
+            try:
+                chars = f_chars.result()
+            except Exception:
+                chars = []
+            inference_up = f_inference.result()
+            searxng_up = f_searxng_healthz.result() or f_searxng_root.result()
+
         from pathlib import Path as _P
         has_default = bool(s.model_path) and _P(s.model_path).expanduser().is_file()
         has_registry = bool(mm.list())
@@ -487,7 +514,6 @@ def create_app() -> FastAPI:
             inference_state = "on_demand"   # starts automatically on first chat
         else:
             inference_state = "no_model"
-        searxng_up = _reachable(s.searxng_url, "/healthz") or _reachable(s.searxng_url)
         models = mm.list()
         running = [m for m in models if m.get("running")]
         return {

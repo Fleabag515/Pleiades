@@ -106,6 +106,14 @@ function bundledAnamnesisDir(): string {
 // hashes; this timeout only needs to cover the cold case.
 const BACKEND_READY_TIMEOUT_MS = 90_000
 const BACKEND_POLL_INTERVAL_MS = 400
+// /api/status fans out to Anamnesis/inference/searxng reachability checks
+// (pleiades/webui/server.py). Even with those probes parallelized there
+// server-side (each up to ~1.2s), a genuinely slow/unresponsive Anamnesis
+// daemon can push list_characters() past 2s on its own. Measured ~1.4-1.5s
+// in the common case (one or two optional services down) after that fix --
+// this just needs enough margin that a single slow poll attempt isn't
+// mistaken for "not up yet" and silently retried for the full 90s.
+const BACKEND_POLL_TIMEOUT_MS = 5_000
 const SHUTDOWN_GRACE_MS = 5_000
 
 interface BackendState {
@@ -263,7 +271,7 @@ async function pollBackendReady(port: number): Promise<void> {
   while (Date.now() < deadline) {
     if (backendState.phase === 'error') return
     try {
-      const res = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(2000) })
+      const res = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(BACKEND_POLL_TIMEOUT_MS) })
       if (res.ok) {
         backendState.phase = 'ready'
         logLine(`[backend] ready on ${url}`)
