@@ -94,6 +94,30 @@ function bundledAnamnesisDir(): string {
   return join(process.resourcesPath, 'anamnesis')
 }
 
+/**
+ * Where the bundled native C++ engine binary (Phase 9.6 "Release N" --
+ * Pleiades' own from-scratch engine, now the DEFAULT inference backend
+ * whenever pleiades/runtime.py::find_native_cpp_engine() finds a binary)
+ * lives, in dev vs. packaged builds -- mirrors bundledAnamnesisDir() above.
+ *  - Packaged: electron-builder's `extraResources` (linux: section,
+ *    electron-builder.yml) copies engine/build/pleiades-engine-server to
+ *    <resources>/engine/.
+ *  - Dev: the same real checkout path find_native_cpp_engine() would find
+ *    on its own anyway (this override is redundant there but harmless --
+ *    keeps spawnBackend()'s logic uniform across dev/packaged).
+ * Windows/macOS: no engine build exists yet for either platform (Phase 9.5,
+ * not started) -- this resolves to a path that was never bundled there,
+ * which is fine: existsSync() below correctly reports false and the env
+ * var is simply omitted, same as Anamnesis's own "not bundled" fallback.
+ */
+function bundledEnginePath(): string {
+  const bin = process.platform === 'win32' ? 'pleiades-engine-server.exe' : 'pleiades-engine-server'
+  if (is.dev) {
+    return join(PLEIADES_ROOT, 'engine', 'build', bin)
+  }
+  return join(process.resourcesPath, 'engine', bin)
+}
+
 // 20s was fine on a warmed-up dev machine but too short for a real first
 // launch: verified live (2026-07-25, real Windows 11 install) that a fresh
 // NSIS install's pleiades-backend.exe -- a PyInstaller onedir bundle with
@@ -208,9 +232,20 @@ function spawnBackend(port: number): void {
   // omit it entirely so the backend's own default (plain repo-root
   // anamnesis/ checkout, system `node`) keeps working unmodified.
   const bundledAnamnesis = bundledAnamnesisDir()
-  const env = existsSync(bundledAnamnesis)
+  const env: NodeJS.ProcessEnv = existsSync(bundledAnamnesis)
     ? { ...process.env, PLEIADES_ANAMNESIS_DIR: bundledAnamnesis }
-    : process.env
+    : { ...process.env }
+
+  // Same idea for the native engine binary (see bundledEnginePath()) --
+  // PLEIADES_NATIVE_CPP_ENGINE_BIN is the exact env var
+  // runtime.find_native_cpp_engine() already checks first, so this is the
+  // only wiring needed on the Python side. Omitted (not just set to a
+  // nonexistent path) when the bundle isn't there, so find_native_cpp_engine()
+  // falls through to its own PATH/checkout probing unchanged.
+  const bundledEngine = bundledEnginePath()
+  if (existsSync(bundledEngine)) {
+    env.PLEIADES_NATIVE_CPP_ENGINE_BIN = bundledEngine
+  }
 
   const child = spawn(command, spawnArgs, {
     cwd,

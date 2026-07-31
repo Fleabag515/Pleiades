@@ -101,6 +101,37 @@ linux:
   extraResources:
     - from: ../anamnesis/build-native/dist/node-runtime/linux-x64
       to: anamnesis-node-runtime
+    # Phase 9.6 "Release N" (docs/specs/2026-07-21-native-inference-engine-
+    # design.md): Pleiades' own from-scratch C++ engine is now the DEFAULT
+    # inference backend whenever runtime.find_native_cpp_engine() resolves a
+    # binary -- without this, a packaged app has nothing for that lookup to
+    # find (it only checks a real git checkout's engine/build/ or PATH,
+    # neither of which exist in an installed app) and silently falls back to
+    # the old autodetected-llama-server/python chain, defeating the whole
+    # cutover for every real user. Copied to <resources>/engine/ so
+    # src/main/index.ts's bundledEnginePath() can find it and set
+    # PLEIADES_NATIVE_CPP_ENGINE_BIN when spawning the backend -- mirrors
+    # the anamnesis-node-runtime entry directly above.
+    #
+    # Linux-only for now, matching what's actually been built: this repo has
+    # no Windows/macOS engine build yet (that's Phase 9.5, not started --
+    # first-ever MSVC/AppleClang compile, tracked in the design doc as a
+    # real unknown). A win:/mac: equivalent entry needs to be added once
+    # those builds exist; shipping this Linux binary path unconditionally on
+    # other platforms would just point PLEIADES_NATIVE_CPP_ENGINE_BIN at a
+    # file that was never copied there.
+    #
+    # Only the single executable -- verified via `ldd` that this build has
+    # zero vendored .so dependencies (statically linked llama.cpp/ggml),
+    # only ordinary system libraries (libvulkan.so.1, libstdc++, libgomp,
+    # libc) a real Linux desktop is expected to already have. A machine with
+    # literally no Vulkan loader installed at all would fail to launch this
+    # binary (a hard dynamic-link failure, not a graceful CPU fallback) --
+    # a real, currently-unmitigated risk, matching the design doc's own R5
+    # ("ship CPU+Vulkan in the installer" was the eventual plan, not yet
+    # built); not solved in this pass, flagged honestly rather than ignored.
+    - from: ../engine/build/pleiades-engine-server
+      to: engine/pleiades-engine-server
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
