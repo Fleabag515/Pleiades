@@ -19,6 +19,17 @@ project(pleiades_engine LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# MSVC reports __cplusplus as 199711L regardless of /std:c++20 unless this is
+# passed. That silently breaks the vendored llama.cpp: llama-chat.cpp guards its
+# LU8() macro on `#if __cplusplus >= 202000L` to cast u8"" literals back to
+# const char* (they are const char8_t* in C++20). With the wrong __cplusplus the
+# guard picks the C++17 branch and every LU8() use fails to compile (C2664/C2280).
+# Only bites here because CMAKE_CXX_STANDARD 20 above propagates into llama.cpp's
+# subdirectory -- its own `target_compile_features(llama PRIVATE cxx_std_17)`
+# sets a floor and cannot lower it back down.
+if(MSVC)
+  add_compile_options(/Zc:__cplusplus)
+endif()
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
