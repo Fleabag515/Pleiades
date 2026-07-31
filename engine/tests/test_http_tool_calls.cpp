@@ -42,7 +42,7 @@
 // test's earlier version had to sidestep: two successive requests against one
 // running server, where the second's prompt shares a long prefix with what the
 // KV/prefix-cache still holds from the first (Engine::generate's Phase 6 reuse
-// -- see prefix_cache.cpp), corrupted generation on the second call. Root
+// -- see resident_map.cpp), corrupted generation on the second call. Root
 // cause (fixed in engine.cpp): this pinned llama.cpp's FLASH-ATTENTION kernel
 // leaks stale K/V from cells that llama_memory_seq_rm() freed but the shorter
 // second prompt didn't overwrite -- a numerical perturbation that flipped a

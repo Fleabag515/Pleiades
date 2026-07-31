@@ -250,7 +250,8 @@ target_compile_features(pleiades_chat PUBLIC cxx_std_17)
 add_library(pleiades_engine STATIC
   src/model_manager.cpp
   src/context_governor.cpp
-  src/prefix_cache.cpp
+  src/resident_map.cpp
+  src/compaction_plan.cpp
   src/engine.cpp
   src/chat_template.cpp
 )

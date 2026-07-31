@@ -1,8 +1,9 @@
-// Phase 6 prefix-cache tests. Requires the tiny fixture GGUF (see
-// tests/CMakeLists.txt) as argv[1].
+// Phase 6 prefix-cache tests (Phase 4 bonus-lane rename, 2026-07-30:
+// PrefixCache -> ResidentMap, behavior unchanged -- see resident_map.h).
+// Requires the tiny fixture GGUF (see tests/CMakeLists.txt) as argv[1].
 //
 // Two layers here:
-//   1. Pure PrefixCache bookkeeping (no model) -- LCP math + the
+//   1. Pure ResidentMap bookkeeping (no model) -- LCP math + the
 //      "always leave one token" cap + epoch invalidation.
 //   2. Engine-level behavior against the real (tiny) fixture model, with
 //      flash attention OFF (see main()): a repeated prompt reuses the cache
@@ -19,7 +20,7 @@
 // the load-bearing one: a caching bug here would silently corrupt every
 // future conversation. See docs/specs/2026-07-21-native-inference-engine-
 // design.md, Phase 6.
-#include "pleiades_engine/prefix_cache.h"
+#include "pleiades_engine/resident_map.h"
 
 #include <string>
 #include <vector>
@@ -35,44 +36,44 @@ using namespace pleiades_engine;
 static int test_pure_bookkeeping() {
     // Empty cache -> nothing reusable.
     {
-        PrefixCache pc;
+        ResidentMap pc;
         PLEIADES_CHECK(pc.reusable_prefix({1, 2, 3}) == 0);
         PLEIADES_CHECK(pc.empty());
     }
     // Full match still leaves the last token to decode fresh.
     {
-        PrefixCache pc;
+        ResidentMap pc;
         pc.set({10, 20, 30, 40}, /*epoch=*/1);
         PLEIADES_CHECK(pc.reusable_prefix({10, 20, 30, 40}) == 3);  // 4 - 1
     }
     // Divergence partway: reuse only the common run.
     {
-        PrefixCache pc;
+        ResidentMap pc;
         pc.set({10, 20, 30, 40}, 1);
         PLEIADES_CHECK(pc.reusable_prefix({10, 20, 99, 40}) == 2);
     }
     // New prompt shorter than resident: cap at prompt.size()-1.
     {
-        PrefixCache pc;
+        ResidentMap pc;
         pc.set({10, 20, 30, 40, 50}, 1);
         PLEIADES_CHECK(pc.reusable_prefix({10, 20}) == 1);
     }
     // New prompt longer, shares whole resident run: reuse all of resident
     // (which is < prompt.size(), so the "leave one" cap doesn't bind).
     {
-        PrefixCache pc;
+        ResidentMap pc;
         pc.set({10, 20}, 1);
         PLEIADES_CHECK(pc.reusable_prefix({10, 20, 30, 40}) == 2);
     }
     // 1-token prompt: nothing reusable (must decode the single token).
     {
-        PrefixCache pc;
+        ResidentMap pc;
         pc.set({10}, 1);
         PLEIADES_CHECK(pc.reusable_prefix({10}) == 0);
     }
     // append() extends the resident run.
     {
-        PrefixCache pc;
+        ResidentMap pc;
         pc.set({10, 20}, 1);
         pc.append(30);
         PLEIADES_CHECK(pc.size() == 3);
@@ -80,7 +81,7 @@ static int test_pure_bookkeeping() {
     }
     // invalidate() clears and rebinds epoch.
     {
-        PrefixCache pc;
+        ResidentMap pc;
         pc.set({10, 20}, 1);
         pc.invalidate(7);
         PLEIADES_CHECK(pc.empty());
@@ -126,7 +127,7 @@ int main(int argc, char** argv) {
     const std::string base = "Once upon a time there was a little";
 
     // -- (1) cold baseline: fresh context, no cache ---------------------- //
-    engine.reset_prefix_cache();
+    engine.reset_resident_map();
     auto cold = engine.complete(base, /*n_predict=*/24);
     PLEIADES_CHECK(cold.n_prompt_tokens > 0);
     PLEIADES_CHECK(cold.n_prompt_cached == 0);       // nothing was cached

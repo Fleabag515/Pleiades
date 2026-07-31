@@ -125,7 +125,7 @@ size_t stop_overlap_suffix(const std::string& text, const std::vector<std::strin
 
 Engine::Engine(ModelManager& models, ContextGovernor& ctx) : models_(models), ctx_(ctx) {}
 
-void Engine::reset_prefix_cache() {
+void Engine::reset_resident_map() {
     llama_context* ctx = ctx_.ctx();
     if (ctx) {
         // Hard-clear the KV so the tracked cache and the real KV agree (both
@@ -135,25 +135,47 @@ void Engine::reset_prefix_cache() {
         // in generate() for the full rationale).
         llama_memory_clear(llama_get_memory(ctx), /*data=*/true);
     }
-    prefix_.invalidate(ctx_.epoch());
+    resident_.invalidate(ctx_.epoch());
 }
 
-void Engine::seed_prefix_cache(std::vector<llama_token> tokens) {
+void Engine::seed_resident_map(std::vector<llama_token> tokens) {
     // Phase 9.4: called by the HTTP shim right after a successful
     // POST /slots/0?action=restore -- llama_state_seq_load_file() repopulated
     // the live KV directly (positions baked into the saved state, nothing for
-    // us to recompute), but PrefixCache's own bookkeeping has no way to know
+    // us to recompute), but ResidentMap's own bookkeeping has no way to know
     // that happened. Left uncalled, the next request's reusable_prefix()
     // would compute against an empty tracked sequence and cold-decode the
     // WHOLE prompt on top of KV that already holds it -- duplicating content
-    // exactly like the bug Phase 6's PrefixCache was built to fix in the
-    // first place, just reintroduced via a different code path. epoch() is
-    // current (a restore never resizes), so tag with it rather than bumping.
-    prefix_.set(std::move(tokens), ctx_.epoch());
+    // exactly like the bug Phase 6's PrefixCache (now ResidentMap) was built
+    // to fix in the first place, just reintroduced via a different code
+    // path. epoch() is current (a restore never resizes), so tag with it
+    // rather than bumping.
+    resident_.set(std::move(tokens), ctx_.epoch());
 }
 
 GenerationResult Engine::complete(const std::string& prompt, int n_predict, const SamplingParams& sampling) {
     return generate(prompt, n_predict, nullptr, sampling);
+}
+
+CompactionResult Engine::compact_resident_span(size_t evict_start, size_t evict_end) {
+    llama_context* ctx = ctx_.ctx();
+    if (!ctx) {
+        return {false, "no live llama_context"};
+    }
+    // Same stale-resident_ guard generate() applies at the top of its own
+    // request path (see below) -- without it, calling this in the window
+    // between a resize (which bumps the epoch and empties the KV) and the
+    // next generate() call would run compact() against a resident_ that
+    // still reports its PRE-resize length while the live KV is actually
+    // empty, tripping compact()'s desync assertion on essentially every
+    // call in that window instead of cleanly refusing on an out-of-range
+    // span the way a genuinely stale-but-invalidated map would.
+    if (resident_.epoch() != ctx_.epoch()) {
+        resident_.invalidate(ctx_.epoch());
+    }
+    const bool fa_maybe_on = ctx_.params().flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    return pleiades_engine::compact(models_.model(), llama_get_memory(ctx), /*seq_id=*/0,
+                                    resident_, evict_start, evict_end, fa_maybe_on);
 }
 
 GenerationResult Engine::generate(const std::string& prompt, int n_predict,
@@ -189,23 +211,23 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     // that prefix, and (4) decode only the new suffix.
     auto t0 = std::chrono::steady_clock::now();
 
-    if (prefix_.epoch() != ctx_.epoch()) {
+    if (resident_.epoch() != ctx_.epoch()) {
         // Context was (re)created since we last decoded -- KV is empty.
-        prefix_.invalidate(ctx_.epoch());
+        resident_.invalidate(ctx_.epoch());
     }
 
     // High-water mark of the sequence currently resident in the KV -- the
     // number of contiguous positions [0, resident) that hold live K/V (the
-    // previous request's prompt + everything it generated). prefix_ mirrors
-    // the KV exactly (see PrefixCache), so this is just its length. Captured
-    // before any trim below because the FA-safety check needs the *pre-trim*
-    // resident length.
-    const size_t resident = prefix_.size();
+    // previous request's prompt + everything it generated). resident_
+    // mirrors the KV exactly (see ResidentMap), so this is just its length.
+    // Captured before any trim below because the FA-safety check needs the
+    // *pre-trim* resident length.
+    const size_t resident = resident_.size();
 
     std::vector<llama_token> prompt_tokens = tokenize(vocab, prompt, /*add_special=*/true);
     result.n_prompt_tokens = static_cast<int>(prompt_tokens.size());
 
-    size_t n_reuse = prefix_.reusable_prefix(prompt_tokens);
+    size_t n_reuse = resident_.reusable_prefix(prompt_tokens);
 
     // Guard against a KV that no longer actually holds a clean [0, n_reuse)
     // prefix -- e.g. a sliding-window (SWA) cache can evict early positions,
@@ -255,7 +277,7 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     const bool fa_maybe_on = ctx_.params().flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
     if (fa_maybe_on && prompt_tokens.size() < resident) {
         llama_memory_clear(mem, /*data=*/true);
-        prefix_.invalidate(ctx_.epoch());
+        resident_.invalidate(ctx_.epoch());
         n_reuse = 0;
     }
 
@@ -285,19 +307,19 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         // now-abandoned decode can't leak into the next request's flash-
         // attention pass -- then drop the tracked prefix to match.
         llama_memory_clear(mem, /*data=*/true);
-        prefix_.invalidate(ctx_.epoch());
+        resident_.invalidate(ctx_.epoch());
         throw std::runtime_error("pleiades_engine: llama_decode failed on prompt");
     }
 
     // The resident sequence is now exactly this prompt's tokens.
-    prefix_.set(prompt_tokens, ctx_.epoch());
+    resident_.set(prompt_tokens, ctx_.epoch());
 
     auto t1 = std::chrono::steady_clock::now();
     double prompt_seconds = std::chrono::duration<double>(t1 - t0).count();
 
     return run_sampling_loop(n_predict, on_token, sampling, prompt_seconds,
                              static_cast<int>(prompt_tokens.size()), static_cast<int>(n_reuse),
-                             /*track_prefix_cache=*/true);
+                             /*track_resident_map=*/true);
 }
 
 GenerationResult Engine::complete_multimodal(const mtmd_input_chunks* chunks, int n_predict,
@@ -326,18 +348,18 @@ GenerationResult Engine::generate_multimodal(const mtmd_input_chunks* chunks, in
     auto t0 = std::chrono::steady_clock::now();
 
     // Always a cache-busting cold decode -- see this method's own header
-    // comment (engine.h) for why PrefixCache cannot honestly represent an
+    // comment (engine.h) for why ResidentMap cannot honestly represent an
     // image-spanned KV region. Both the incoming and outgoing cache state are
     // empty regardless of what the previous request left behind.
     llama_memory_clear(mem, /*data=*/true);
-    prefix_.invalidate(ctx_.epoch());
+    resident_.invalidate(ctx_.epoch());
 
     llama_pos new_n_past = 0;
     int32_t rc = mtmd_helper_eval_chunks(models_.mtmd(), ctx, chunks, /*n_past=*/0, /*seq_id=*/0,
                                          ctx_.params().n_batch, /*logits_last=*/true, &new_n_past);
     if (rc != 0) {
         llama_memory_clear(mem, /*data=*/true);
-        prefix_.invalidate(ctx_.epoch());
+        resident_.invalidate(ctx_.epoch());
         throw std::runtime_error("pleiades_engine: mtmd_helper_eval_chunks failed (rc=" + std::to_string(rc) + ")");
     }
 
@@ -346,12 +368,12 @@ GenerationResult Engine::generate_multimodal(const mtmd_input_chunks* chunks, in
     int n_prompt_tokens = static_cast<int>(mtmd_helper_get_n_tokens(chunks));
 
     return run_sampling_loop(n_predict, on_token, sampling, prompt_seconds, n_prompt_tokens,
-                             /*n_prompt_cached=*/0, /*track_prefix_cache=*/false);
+                             /*n_prompt_cached=*/0, /*track_resident_map=*/false);
 }
 
 GenerationResult Engine::run_sampling_loop(int n_predict, const std::function<bool(const std::string&)>& on_token,
                                            const SamplingParams& sampling, double prompt_seconds,
-                                           int n_prompt_tokens, int n_prompt_cached, bool track_prefix_cache) {
+                                           int n_prompt_tokens, int n_prompt_cached, bool track_resident_map) {
     llama_context* ctx = ctx_.ctx();
     const llama_vocab* vocab = llama_model_get_vocab(models_.model());
     llama_memory_t mem = llama_get_memory(ctx);
@@ -427,15 +449,15 @@ GenerationResult Engine::run_sampling_loop(int n_predict, const std::function<bo
         if (llama_decode(ctx, next_batch) != 0) {
             llama_sampler_free(chain);
             llama_memory_clear(mem, /*data=*/true);  // scrub partial KV (see prompt-decode failure above)
-            prefix_.invalidate(ctx_.epoch());
+            resident_.invalidate(ctx_.epoch());
             throw std::runtime_error("pleiades_engine: llama_decode failed during generation");
         }
         // This token is now resident in the KV. Text-path: keep the cache
         // mirroring the KV exactly so the next request can reuse it too.
         // Multimodal-path: never append -- see generate_multimodal's comment
-        // on why prefix_ stays empty for the entire duration of that call.
-        if (track_prefix_cache) {
-            prefix_.append(next);
+        // on why resident_ stays empty for the entire duration of that call.
+        if (track_resident_map) {
+            resident_.append(next);
         }
     }
 

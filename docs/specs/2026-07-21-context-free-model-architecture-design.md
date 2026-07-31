@@ -261,10 +261,173 @@ dedicated research project, not this one.
 
 ## Phase 4 (bonus lane) — Cascading-cache C++ port design, 2026-07-30
 
-**Status: designed, NOT started. Confirmed still a bonus lane, behind the
-native-engine sole-cutover work — Fleagle's direct call, 2026-07-30, when
-asked explicitly whether this reprioritization still held.** Recorded here so
-the design exists when it's picked up, not to imply work has begun.
+**Status: sequencing steps 1 AND 2 DONE (this pass, 2026-07-30); the actual
+cascade (policy: `CascadeLadder`/`ImportanceScorer`/`RetentionBudget`,
+gating: the behavioral probe + architecture allowlist) NOT started.**
+Confirmed a bonus lane, behind the native-engine sole-cutover work —
+Fleagle's direct call, 2026-07-30, when asked explicitly whether this
+reprioritization still held; picked back up the same day once that cutover
+(Phase 9.6 "Release N", docs/specs/2026-07-21-native-inference-engine-
+design.md) landed and was verified.
+
+**Step 1 shipped, exactly as this section's own "Sequencing note" specifies:
+`PrefixCache` folded into `ResidentMap`, cascade permanently absent (not
+even a disabled flag -- there is no cascade logic yet to gate), a pure
+rename with the class's behavior otherwise byte-for-byte identical.**
+`engine/include/pleiades_engine/prefix_cache.h` -> `resident_map.h`,
+`engine/src/prefix_cache.cpp` -> `resident_map.cpp`,
+`engine/tests/test_prefix_cache.cpp` -> `test_resident_map.cpp`, class
+`PrefixCache` -> `ResidentMap`, `Engine`'s member/accessor/methods
+(`prefix_`/`prefix_cache()`/`reset_prefix_cache()`/`seed_prefix_cache()`) ->
+(`resident_`/`resident_map()`/`reset_resident_map()`/`seed_resident_map()`),
+`http_server.cpp`'s two slot-save/restore call sites updated to match. The
+external, upstream-llama-server-compatible `prefix_cached=%d` log/JSON field
+name was deliberately LEFT UNCHANGED (it's the wire-facing concept name, not
+the internal class name) -- only the internal C++ type was renamed.
+`bench_prefix_cache.cpp` was deliberately NOT renamed: it never references
+the class by name, only `Engine::complete()`, so renaming it would be
+unrelated churn.
+
+**Verification, this session:** every call site found via a full-tree grep
+for `PrefixCache`/`prefix_cache.h`/`prefix_cache.cpp` (not just the ones this
+doc already knew about) — caught one more, a comment in
+`test_http_tool_calls.cpp` referencing `prefix_cache.cpp` by filename, fixed
+too. Full rebuild, 0 errors. `ctest` 7/7 (1 known skip) — the SAME count as
+before this rename, including `test_resident_map`'s byte-identical
+determinism assertions (warm-cache-hit text == cold-decode text, both before
+and after the flash-attention stale-KV fix's own regression case) and
+`test_http_tool_calls`'s real end-to-end HTTP prefix-reuse regression test
+(boots the actual server binary, drives it over real HTTP) — both passing
+unchanged is the actual proof this was correctness-neutral, not just "it
+compiled."
+
+**What this step does NOT do, so a future reader doesn't assume more than
+shipped:** no `CascadeLadder`, `ImportanceScorer`, or `RetentionBudget`
+exist yet (step 2 below adds the compaction mechanism itself, still with no
+policy deciding when to use it). No behavioral capability probe or
+architecture allowlist exists yet -- there's nothing to gate. `ResidentMap`
+still tracks a single contiguous resident run exactly like `PrefixCache`
+did; it cannot represent multiple resident segments or an evicted middle
+span. This is purely the load-bearing rename the design's own sequencing
+note calls out as step 1, done in isolation so the riskier steps below have
+a settled foundation to build on, not a moving-target file layout
+underneath them.
+
+### Step 2 — null-policy compaction plumbing, DONE (same pass, 2026-07-30)
+
+Per the "Sequencing note" below: `CompactionPlan` (shipped as a free
+function `compact()` + a `CompactionResult` struct, `engine/include/
+pleiades_engine/compaction_plan.h` + `engine/src/compaction_plan.cpp` --
+the doc's earlier "Design shape" paragraph implies a stateful class; what's
+actually useful and was actually built is simpler) evicts a resident span
+via `llama_memory_seq_rm` + `llama_memory_seq_add` (the same RoPE-shift
+primitive step 1's "headroom finding" already verified needs no reimplementation),
+keeping `ResidentMap` in sync via a new `evict_span()` method.
+`Engine::compact_resident_span()` exposes it as an explicit, caller-driven
+operation -- **still null-policy**: nothing in `generate()`/`complete()` or
+anywhere else decides WHEN to call it. Only `test_compaction_plan.cpp`
+(direct) and a future policy layer (not yet written) would ever call it.
+
+**Verification -- the actual "byte-identical-to-truncation oracle" the
+sequencing note calls for, against the dense `stories15M` fixture:** decode
+A+B+C, evict B via `compact()`, continue via the normal `complete(A+C, ...)`
+request path (which finds the compacted state almost entirely reusable via
+`reusable_prefix()`) -- output is byte-identical to a truly-cold decode of
+A+C that never touched B. Confirmed 4 consecutive runs (not a lucky single
+pass), plus `ctest` full suite green (9 tests, 8 run/1 known skip).
+
+**Two real safety gaps found and closed this same pass, both via genuine
+empirical/source-level investigation, not assumption -- documented here
+because both go beyond what step 2 was originally scoped to prove, and both
+matter for whoever eventually builds the real policy on top of this:**
+
+1. **Hybrid/recurrent models: `compact()` would have silently misbehaved
+   exactly as this doc's own "second finding" (below) predicts, with NO
+   error signal, if not explicitly guarded.** Traced the actual vendored
+   `llama-memory-hybrid.cpp`/`llama-memory-recurrent.cpp` (not just the
+   design doc's prior prose claim): `llama_memory_can_shift()` does NOT
+   gate hybrid models at all (`llama_memory_hybrid::get_can_shift()`
+   delegates only to the attention sub-cache; the recurrent sub-cache's own
+   `get_can_shift()` unconditionally returns true). Worse, `llama_memory_
+   recurrent::seq_rm()` **silently returns `true`** for a genuine mid-
+   sequence span without actually removing anything from the recurrent
+   state (only a suffix rollback or full clear does real work there) --
+   so `compact()`'s own position-sync assertion wouldn't have caught it
+   either (both sub-caches' position bookkeeping still moves consistently
+   even when the recurrent side did nothing real). Confirmed this isn't
+   hypothetical: this box has the actual target model on disk
+   (`HauhauCS__Qwen3.6-35B-A3B-Uncensored...`, GGUF metadata confirms
+   `architecture=qwen35moe`, `recurrent_layer_count=30` of 40 layers --
+   genuinely "Mark's model" shape). Fix: `compact()` now takes the
+   `llama_model*` and refuses outright (`llama_model_is_recurrent`/
+   `is_hybrid`) before touching anything.
+2. **Flash attention: a NEW finding, not previously documented anywhere --
+   `compact()` leaks stale K/V from the evicted span's cells under FA,
+   confirmed empirically, not theoretically.** `seq_rm`/`seq_add` never
+   scrub cell DATA (only metadata/position), and `build_graph_shift`
+   (verified by reading it directly) re-rotates each surviving cell's data
+   IN PLACE at its own physical slot rather than moving data between slots
+   -- so the evicted span's old physical cells become genuinely orphaned in
+   the MIDDLE of the live range, not just past the high-water mark the way
+   Phase 6's already-known/fixed prefix-trim leak does. `generate()`'s
+   existing FA guard has no visibility into `compact()`'s history and never
+   fires here. Reused the EXACT ChatML prompt shape `test_resident_map.cpp`'s
+   own section 5 already proved sensitive enough to flip a greedy argmax
+   under this pinned llama.cpp's known FA kernel bug (a bland prompt
+   wouldn't expose a leak even if one exists) -- generation genuinely
+   diverged from the truncation oracle on the first attempt. No cheap fix
+   exists the way `generate()` has one (a full `llama_memory_clear(data=
+   true)` would force a cold re-decode of the ENTIRE sequence, defeating
+   compaction's entire purpose) -- so `compact()` now refuses outright
+   whenever flash attention may be active, same shape as the hybrid
+   refusal above. `test_compaction_plan.cpp`'s FA section now verifies the
+   refusal fires cleanly (no partial mutation, engine still works
+   afterward) rather than asserting output correctness under a condition
+   now known unsafe.
+
+Also fixed, found by a 3-lens adversarial review run against this step
+before it was called done: `Engine::compact_resident_span()` was missing
+the same epoch-mismatch guard `generate()` already has (a call in the
+window between a resize and the next `generate()` would otherwise run
+against a stale `resident_` and spuriously trip the desync assertion); and
+that desync assertion itself now scrubs the KV and invalidates `resident_`
+*before* throwing, matching the scrub-then-throw pattern used everywhere
+else in `engine.cpp` for KV/map-desync risk, rather than throwing from a
+state left half-applied. Concurrency is documented but not enforced (null
+policy, single-threaded today) -- a future policy caller must serialize
+against `generate()`/`complete()` itself, e.g. via the same mutex
+`http_server.cpp`'s `ServerState` already uses.
+
+**What step 2 does NOT do:** no gating probe, no architecture allowlist --
+the two refusals above are hardcoded preconditions inside `compact()`
+itself, not a general capability-gating system (that's still steps 3+'s
+job). No policy exists that decides an eviction is worth making. Compaction
+is now proven correct on dense, non-recurrent, non-hybrid models with flash
+attention off -- nothing broader than that should be assumed.
+
+**Strategic implication worth flagging explicitly, checked before writing
+any further code:** as built, `compact()` provides ZERO benefit to exactly
+the model that originally motivated this whole bonus lane -- Mark's
+Qwen3.5/3.6-hybrid setup (`architecture=qwen35moe`, `recurrent_layer_count=30`
+of 40, confirmed against the real GGUF on this box). The hybrid refusal
+above is correct and necessary, but it means "the conversation never hits a
+wall" is currently NOT true for that model at all, only for dense ones.
+Checked whether a hybrid-compatible variant (evict from the attention
+sub-cache only, per this doc's own "second finding" below, leaving the
+recurrent state alone) is even reachable: it is not, via the public API.
+`llama_memory_hybrid` (`third_party/llama.cpp/src/llama-memory-hybrid.cpp`)
+always dispatches `seq_rm`/`seq_add` to BOTH its attention and recurrent
+sub-caches together -- there is no public accessor in `include/llama.h` for
+either sub-cache's handle independently (checked directly, not assumed:
+`grep -n "llama_memory_hybrid\|sub_cache" include/llama.h` returns nothing).
+Achieving attention-only eviction on a hybrid model would require either
+patching the vendored `third_party/llama.cpp` to expose that handle (a
+materially different, larger undertaking than anything in this phase --
+modifying a pinned upstream dependency, not just calling its existing
+public API) or some other engine-side approach not yet identified. Not
+attempted this pass -- flagged here as the actual reason to stop and get
+explicit direction before continuing into the cascade, rather than a vague
+"steps 3+ are risky" caution.
 
 **Source:** `streaming-lab.zip`, pulled from Minty's `~/Downloads/` this
 session — turned out to be exactly the Cascading-Cache system this doc
@@ -335,14 +498,20 @@ end-to-end; whether position spread genuinely degrades a real model's output
 enough to justify compaction's complexity is a measured question, not a
 given.
 
-**Sequencing note for whenever this is picked back up:** build order should
-start with folding `PrefixCache` into `ResidentMap` with the cascade
-permanently `Off` (net correctness-neutral, shippable on its own), then null-
-policy compaction plumbing tested against a dense model with a byte-identical-
-to-truncation oracle before any real eviction policy is layered on top. Do
-not start with the elastic/regret-driven part — it's the one component that
-changes the retention target over time, so everything else needs to be
-trustworthy first.
+**Sequencing note, updated 2026-07-30 (steps 1 AND 2 done):** build order
+was: ~~fold `PrefixCache` into `ResidentMap` with the cascade permanently
+`Off` (net correctness-neutral, shippable on its own)~~ — **done, see
+above** — then ~~null-policy compaction plumbing tested against a dense
+model with a byte-identical-to-truncation oracle~~ — **done, see "Step 2"
+above, including two real safety gaps (hybrid models, flash attention)
+found and closed along the way that weren't part of the original scope on
+paper** — before any real eviction policy is layered on top. **The
+elastic/regret-driven part (`CascadeLadder`/`ImportanceScorer`/
+`RetentionBudget`) plus the gating probe + architecture allowlist are next,
+still not started, deliberately** — it's the one component that changes the
+retention target over time, so everything below it needed to be
+trustworthy first, which is now true for a narrower precondition set
+(dense, non-hybrid, FA-off) than originally assumed.
 
 ---
 *Written 2026-07-21 following a qwen3.8-max + Opus council consult, per

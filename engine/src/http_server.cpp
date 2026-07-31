@@ -767,7 +767,7 @@ void print_caps() {
         // loaded successfully is only knowable after boot (see the startup
         // log, and mtmd_support_vision() once a model is live).
         {"vision", true},
-        {"slots", false},    // save/restore not wired in yet -- Phase 9.4.1
+        {"slots", true},     // POST /slots/(\d+)?action=save|restore -- live since Phase 9.4.1
         {"resize", true},    // POST /resize -- live since Phase 3
         {"engine_version", "0.1.0"},
     };
@@ -1110,12 +1110,12 @@ int main(int argc, char** argv) {
             }
             auto t0 = std::chrono::steady_clock::now();
             if (action == "save") {
-                // Whatever PrefixCache currently tracks as resident for
+                // Whatever ResidentMap currently tracks as resident for
                 // sequence 0 IS the true token sequence in the KV -- Engine's
                 // generate() keeps the two in lockstep on every call (Phase 6),
                 // so there's no separate "ask the KV what it holds" step
                 // needed the way upstream's per-slot `prompt.tokens` does.
-                const std::vector<llama_token>& tokens = state.engine.prefix_cache().tokens();
+                const std::vector<llama_token>& tokens = state.engine.resident_map().tokens();
                 size_t nwrite = llama_state_seq_save_file(ctx, filepath.c_str(), /*seq_id=*/0,
                                                           tokens.data(), tokens.size());
                 double ms = std::chrono::duration<double, std::milli>(
@@ -1137,7 +1137,7 @@ int main(int argc, char** argv) {
                     // the next request cold-decodes cleanly rather than
                     // inheriting a half-restored KV.
                     llama_memory_clear(llama_get_memory(ctx), /*data=*/true);
-                    state.engine.reset_prefix_cache();
+                    state.engine.reset_resident_map();
                     res.status = 400;
                     res.set_content(json{{"error", "unable to restore slot -- missing/invalid save file "
                                                     "or incompatible with this context"}}.dump(),
@@ -1147,10 +1147,10 @@ int main(int argc, char** argv) {
                 buf.resize(token_count);
                 // The KV now physically holds these tokens at their saved
                 // positions (llama_state_seq_load_file restores that
-                // verbatim) -- seed_prefix_cache brings PrefixCache's
+                // verbatim) -- seed_resident_map brings ResidentMap's
                 // bookkeeping back into agreement with it. See that method's
                 // own comment for what silently breaks if this is skipped.
-                state.engine.seed_prefix_cache(buf);
+                state.engine.seed_resident_map(buf);
                 double ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - t0).count();
                 res.set_content(json{{"filename", filename}, {"n_tokens", token_count},

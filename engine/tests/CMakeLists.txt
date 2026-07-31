@@ -49,7 +49,8 @@ add_test(NAME test_chat_template COMMAND test_chat_template)
 pleiades_add_test(test_model_manager)
 pleiades_add_test(test_context_governor)
 pleiades_add_test(test_engine)
-pleiades_add_test(test_prefix_cache)
+pleiades_add_test(test_resident_map)
+pleiades_add_test(test_compaction_plan)
 
 # Phase C: end-to-end HTTP tool-calling tests against REAL models.
 #

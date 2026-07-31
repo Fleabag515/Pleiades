@@ -1,10 +1,10 @@
-#include "pleiades_engine/prefix_cache.h"
+#include "pleiades_engine/resident_map.h"
 
 #include <algorithm>
 
 namespace pleiades_engine {
 
-size_t PrefixCache::reusable_prefix(const std::vector<llama_token>& prompt) const {
+size_t ResidentMap::reusable_prefix(const std::vector<llama_token>& prompt) const {
     const size_t n = std::min(tokens_.size(), prompt.size());
     size_t lcp = 0;
     while (lcp < n && tokens_[lcp] == prompt[lcp]) {
@@ -17,7 +17,7 @@ size_t PrefixCache::reusable_prefix(const std::vector<llama_token>& prompt) cons
     return std::min(lcp, cap);
 }
 
-void PrefixCache::set(std::vector<llama_token> tokens, uint64_t epoch) {
+void ResidentMap::set(std::vector<llama_token> tokens, uint64_t epoch) {
     tokens_ = std::move(tokens);
     epoch_ = epoch;
 }

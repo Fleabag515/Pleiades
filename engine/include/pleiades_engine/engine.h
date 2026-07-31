@@ -8,7 +8,8 @@
 #include "llama.h"
 #include "pleiades_engine/context_governor.h"
 #include "pleiades_engine/model_manager.h"
-#include "pleiades_engine/prefix_cache.h"
+#include "pleiades_engine/compaction_plan.h"
+#include "pleiades_engine/resident_map.h"
 
 // Opaque forward declaration -- see model_manager.h's identical note on
 // mtmd_context. Callers that build chunks (http_server.cpp, via
@@ -113,10 +114,10 @@ public:
     // this returns. Throws if models.mtmd() is null (no --mmproj loaded).
     //
     // ALWAYS cold-decodes and leaves the prefix cache empty afterward, both
-    // before and after: PrefixCache is a plain llama_token vector assumed to
+    // before and after: ResidentMap is a plain llama_token vector assumed to
     // align 1:1 with real KV positions, but positions spanned by an image
     // chunk hold vision-encoder embeddings, not token IDs -- there is no
-    // honest way to represent that in prefix_'s token vector. So an image
+    // honest way to represent that in resident_'s token vector. So an image
     // turn neither reuses a prior prefix nor leaves one for the next request
     // (multimodal or not) to reuse -- an opaque cache-busting boundary, by
     // design, not a missed optimization.
@@ -130,33 +131,51 @@ public:
     // sequence 0. Normally unnecessary (generate() self-manages the cache),
     // but exposed for callers that want an explicit fresh start and for
     // tests. Safe to call before the first generate().
-    void reset_prefix_cache();
+    void reset_resident_map();
 
-    // Replace the tracked prefix-cache sequence wholesale without touching the
+    // Replace the tracked resident sequence wholesale without touching the
     // live KV -- for a caller (POST /slots/0?action=restore, Phase 9.4) that
     // just repopulated the KV by some OTHER means (llama_state_seq_load_file)
-    // and needs PrefixCache's bookkeeping to agree with what's now resident.
+    // and needs ResidentMap's bookkeeping to agree with what's now resident.
     // Tags with the CURRENT epoch (a restore doesn't resize/recreate the
     // context) -- see .cpp for why an uncalled restore silently reintroduces
     // the exact bug class Phase 6 exists to prevent.
-    void seed_prefix_cache(std::vector<llama_token> tokens);
+    void seed_resident_map(std::vector<llama_token> tokens);
 
-    // Prefix-cache introspection (used by tests and benchmarks).
-    const PrefixCache& prefix_cache() const { return prefix_; }
+    // Resident-sequence introspection (used by tests and benchmarks).
+    const ResidentMap& resident_map() const { return resident_; }
+
+    // Phase 4 step 2 (bonus lane, docs/specs/2026-07-21-context-free-model-
+    // architecture-design.md): directly apply a KV compaction, evicting
+    // resident_[evict_start, evict_end) and closing the gap. NULL POLICY --
+    // no code path in this class (or anywhere else yet) decides WHEN to
+    // call this; it exists as an explicit, caller-driven operation for a
+    // future policy layer to eventually call, and for direct testing
+    // (test_compaction_plan.cpp) of the mechanism in isolation against a
+    // real model. Never called from generate()/complete() themselves.
+    //
+    // Guards against a stale resident_ the same way generate() does (right
+    // after a resize -- see .cpp) before delegating to compact(), whose own
+    // header comment documents the model-architecture and concurrency
+    // preconditions this inherits unchanged. Can throw std::runtime_error
+    // on an internal KV/map desync (see compact()'s own comment) -- not
+    // just return applied=false -- so a caller must be prepared to catch,
+    // not only check the returned CompactionResult.
+    CompactionResult compact_resident_span(size_t evict_start, size_t evict_end);
 
 private:
     ModelManager& models_;
     ContextGovernor& ctx_;
-    PrefixCache prefix_;
+    ResidentMap resident_;
 
     // Shared tail: token-by-token sampling, stop-string handling, and
     // streaming -- identical for the text and multimodal paths once the
     // prompt (however it got there) is decoded and the context holds fresh
-    // logits at the last position. `track_prefix_cache` is false for the
+    // logits at the last position. `track_resident_map` is false for the
     // multimodal path (see generate_multimodal's own comment on why).
     GenerationResult run_sampling_loop(int n_predict, const std::function<bool(const std::string&)>& on_token,
                                        const SamplingParams& sampling, double prompt_seconds,
-                                       int n_prompt_tokens, int n_prompt_cached, bool track_prefix_cache);
+                                       int n_prompt_tokens, int n_prompt_cached, bool track_resident_map);
 };
 
 }  // namespace pleiades_engine
