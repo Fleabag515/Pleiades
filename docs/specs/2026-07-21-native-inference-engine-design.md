@@ -1126,20 +1126,119 @@ shared `ServerProcess` helper uses `fork`/`execl`/`waitpid` — needs a
 `CreateProcess`-based Windows implementation before CI can catch a
 Windows-specific HTTP-layer regression at all.
 
-### 9.6 — NOT STARTED: retiring the other three backends
+### 9.6 — Release N DONE: retiring the other three backends (staged)
 
-Staged, three releases, nothing deleted at cutover: **Release N** — engine
-becomes the default whenever resolvable; legacy `PLEIADES_ENGINE` values keep
-working with a one-line deprecation pointing at `--external-url` (9.4); a new
-explicit `PLEIADES_ENGINE=llama_server` name is added for what's today an
-unnamed autodetect fallback, so exotic-hardware users have something to opt
-into. **Release N+1** — legacy values warn and are ignored (engine runs
-regardless); `llama-cpp-python[server]` moves to an optional extra in
-`pyproject.toml`. **Release N+2** — delete `inference/server.py`,
-`launch.py`'s two Python branches, `runtime.py::find_native()`; drop
-`llama-cpp-python` entirely; update this doc's own Phase 0/§3 architecture
-description in `CLAUDE.md`, which is auto-loaded every session and will be
-factually wrong about the stack by then.
+Staged, three releases, nothing deleted at cutover.
+
+**Release N — DONE, this pass.** `launch.py::build_command()` now tries
+`runtime.find_native_cpp_engine()` FIRST, unconditionally, whenever
+`PLEIADES_ENGINE` isn't explicitly set to one of the two new opt-out values
+below — this used to require `PLEIADES_ENGINE=pleiades_native` explicitly
+(Phase 5's "feature-flagged, off by default"), which is what actually kept
+the "make it the ONLY engine" goal from being true even after 9.4 closed
+feature parity: the code shipped, but nothing pointed users at it by
+default. Two explicit opt-outs, both print a one-line note (not a scary
+deprecation warning — both remain fully supported, and are the honest answer
+for hardware this engine's R1/R2 risks are still open on):
+`PLEIADES_ENGINE=llama_server` skips straight to the autodetected upstream
+`llama-server` branch (the new name for what was an unnamed default before
+this pass); `PLEIADES_ENGINE=llama_cpp` skips both native branches for the
+pip-installed pure-python fallback (unchanged escape-hatch semantics — it
+was, and still is, only reachable when no native llama-server binary is
+present either; see `launch.py`'s comment on that particular pre-existing
+quirk, left as-is, not in scope for this pass). `PLEIADES_ENGINE=pleiades_native`
+still works too, now redundant with the default rather than required by it.
+The unset-and-no-engine-binary-found case (the common one during rollout,
+since there's still no packaged release of this engine per 9.5) stays
+silent — no deprecation noise for people who simply haven't built `engine/`
+yet.
+
+**Verification, this session:** `tests/test_launch.py` — 3 new tests
+(default-with-no-env-var routes to the engine; `llama_server` opt-out
+routes to native llama-server even though the engine binary genuinely
+resolves; `llama_cpp` opt-out routes to the python fallback the same way),
+plus every pre-existing native-llama-server-branch test updated to pin
+`find_native_cpp_engine` to `None` (they'd otherwise silently break the
+moment this checkout has a real `engine/build/pleiades-engine-server` on
+disk, since that's now the default path). `engine/build` rebuilt fresh on
+this box (Vulkan backend, same as 9.3), `ctest` 7/7 (1 known skip) on the
+fresh build. Then the actual thing that matters, not just unit tests: a
+direct, unmocked `launch.build_command()` call with `PLEIADES_ENGINE`
+**genuinely unset** in the process environment — confirmed `plan.cmd[0]`
+is the real `engine/build/pleiades-engine-server` path, where before this
+pass the exact same unset-env-var state would have produced an upstream
+`llama-server` command instead. (A full `pleiades model start` boot through
+a real multi-GB model was deliberately skipped as redundant: `models.py`'s
+`start()` delegates entirely to this same `build_command()` call, and
+Phase 9.1 already established that full add/start/state/chat/stop round
+trip works for the engine — this pass only changed *which branch gets
+selected*, not the engine's own request handling.)
+
+**Caught by adversarial review, fixed same session, not left as a known
+gap:** a 3-lens review (correctness / test-coverage / doc-consistency) run
+against this change surfaced two real, live bugs before this doc was first
+marked done:
+1. `PLEIADES_ENGINE=llama_cpp` didn't actually skip the native-llama-server
+   branch — `if native:` (the branch check) had no `engine_pref` exclusion
+   at all, only the *first* branch (this engine) did. Concretely: with a
+   real native `llama-server` binary installed (the ordinary case after
+   `pleiades runtime install`) and `PLEIADES_ENGINE=llama_cpp` set, the
+   function silently returned a `runtime=llama-server` plan, ignoring the
+   override with no warning — exactly the "explicit override silently
+   ignored" failure mode this same pass's own comments claimed to have
+   avoided (they had, for the engine branch; not for this one). Fixed by
+   nulling `native` itself right after it's resolved whenever
+   `engine_pref == "llama_cpp"`, so every downstream decision (placement
+   sizing, ctx ceiling, the branch check) is consistent, not just the
+   final `if`. New regression test:
+   `test_pleiades_engine_llama_cpp_opt_out_also_skips_native_llama_server`
+   — the earlier version of this test only proved the engine-branch
+   opt-out worked, since it mocked `find_native()` to `None`, so it could
+   never have caught this; the new one gives `find_native()` a genuine
+   fake path too.
+2. `tests/test_models.py::test_concurrent_start_does_not_spawn_duplicate_processes`
+   started failing live, on this exact machine, partway through the review
+   — its `fake_popen` allowlist only recognized `pleiades.inference.server`
+   or a path ending in `llama-server`(`.exe`), and the engine's real build
+   finished mid-session, so `ModelManager.start()`'s now-default
+   `pleiades-engine-server` command tripped the allowlist and raised
+   inside a background thread. Fixed by pinning
+   `runtime.find_native_cpp_engine` to `None` in that test, matching the
+   same determinism fix already applied throughout `test_launch.py` — the
+   test's actual purpose (concurrency dedup) doesn't care which runtime
+   gets picked, so it shouldn't be sensitive to what's built on the
+   machine running the suite.
+
+Also fixed as part of the same pass, lower severity (stale docs/messages
+the review caught, not behavioral bugs): `pleiades/cli.py`'s `runtime
+status`/`runtime install` output only ever mentioned native llama-server,
+never this engine, even though it's now checked first — both now report
+the engine when present. `pleiades/models.py`'s `mmproj` field comment
+still claimed `PLEIADES_ENGINE=pleiades_native` had no vision support
+(stale since 9.4.2, not something this pass introduced, but directly
+adjacent to it). `docs/specs/2026-07-23-vision-routing-design.md` had the
+same staleness. `README.md`'s architecture diagram and inference section
+described only two backends and attributed MoE-offload/vision exclusively
+to native llama-server — rewritten to describe the real three-tier
+priority. Not fixed this pass, deliberately deferred as a separately-scoped
+follow-up (spawned as its own task rather than bundled in here): the
+desktop app's Settings > Hardware tab and the `/api/hardware` endpoint it
+reads from still only report on native llama-server, not this engine —
+a real UI gap, but touching `webui/server.py` + a React component is a
+different-shaped change than the Python selection-logic fix this section
+is about.
+
+**Release N+1 — NOT STARTED.** Legacy values warn and are ignored (engine
+runs regardless); `llama-cpp-python[server]` moves to an optional extra in
+`pyproject.toml`.
+
+**Release N+2 — NOT STARTED.** Delete `inference/server.py`, `launch.py`'s
+two Python branches, `runtime.py::find_native()`; drop `llama-cpp-python`
+entirely; update this doc's own Phase 0/§3 architecture description in
+`CLAUDE.md`, which is auto-loaded every session and will be factually wrong
+about the stack by then. (Deliberately not touched at Release N — the
+original plan assigns that specific update to N+2, once the other backends
+are actually gone, not while they're still live fallbacks.)
 
 ### Risk register (ranked by severity, full detail in the archived output)
 
@@ -1190,11 +1289,16 @@ are done as of this pass — feature parity with the other backends is
 essentially closed. 9.3 is backed by real evidence from a second backend
 (Vulkan on this box's Intel iGPU) and 9.4.2 by a real downloaded vision
 model actually answering questions about a real image, not just code review
-or a compile check, in both cases. Next up: 9.5 (CI matrix — the
+or a compile check, in both cases. 9.6's Release N (the actual default-engine
+cutover — the point of Phase 9 in the first place) is also done now: the
+engine runs with zero configuration on any box that has it built, which
+wasn't true even after 9.4 closed feature parity, since nothing before this
+pass actually changed what ran by default. Next up: 9.5 (CI matrix — the
 MSVC/AppleClang compile is still a complete unknown, and this is the phase
-that would catch it) and 9.6 (retirement staging) -- both still need real
-Windows/macOS/AMD hardware to actually finish, same as R1's MoE-offload
-correctness question in the "what needs real hardware" list below.
+that would catch it) and 9.6's Release N+1/N+2 -- both still need real
+Windows/macOS/AMD hardware (9.5) or just time/soak (N+1/N+2's staged
+deprecation) to actually finish, same as R1's MoE-offload correctness
+question in the "what needs real hardware" list below.
 
 ---
 *Written 2026-07-21 following a qwen3.8-max + Opus council consult, per

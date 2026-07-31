@@ -1,8 +1,11 @@
-"""launch.py's build_command(): --mmproj wiring (native llama-server only),
-plus the PLEIADES_ENGINE=pleiades_native branch's flag-mode CLI + autofit
-placement wiring (GPU/MoE offload). --mmproj is still excluded from the
-pleiades_native path (that engine has no vision support); GPU/MoE placement is
-NOT -- the native C++ engine now shares this function's autofit machinery."""
+"""launch.py's build_command(): engine-selection order (Phase 9.6 "Release N" --
+Pleiades' own C++ engine is now the DEFAULT whenever its binary resolves, no
+env var required; PLEIADES_ENGINE=llama_server/llama_cpp explicitly opt out
+of it), --mmproj wiring on both the engine and native-llama-server branches
+(the engine gained real vision support in Phase 9.4.2 -- it is NOT excluded
+there anymore), and the engine branch's flag-mode CLI + autofit placement
+wiring (GPU/MoE offload, which it now shares with the native-llama-server
+branch's machinery)."""
 
 import os
 
@@ -20,10 +23,20 @@ def _fake_gguf(tmp_path, name="model.gguf"):
 
 def _force_native(monkeypatch, native_path="/fake/llama-server"):
     """Make build_command() believe the native runtime is available at
-    `native_path`, without touching any real binary on disk."""
+    `native_path`, without touching any real binary on disk.
+
+    Also pins Pleiades' own engine to "not found": since Phase 9.6, that
+    engine is the DEFAULT whenever `find_native_cpp_engine()` resolves to
+    something, which would otherwise happen for real whenever these tests
+    run on a checkout that has `engine/build/pleiades-engine-server` built
+    (this repo's own dev boxes, some CI runners) and silently route these
+    native-llama-server-branch tests into the wrong branch. Pinning it keeps
+    this helper deterministic regardless of what's built on disk.
+    """
     monkeypatch.setattr(runtime, "find_native", lambda prefer_moe_opts=False: native_path)
     monkeypatch.setattr(runtime, "caps", lambda prefer_moe_opts=False: RuntimeCaps(native=True, moe_offload=False))
     monkeypatch.setattr(runtime, "native_env", lambda p: {})
+    monkeypatch.setattr(runtime, "find_native_cpp_engine", lambda: None)
 
 
 def test_mmproj_is_wired_into_the_native_llama_server_command(tmp_path, monkeypatch):
@@ -73,6 +86,10 @@ def test_mmproj_is_never_wired_into_the_llama_cpp_python_fallback(tmp_path, monk
 def test_mmproj_is_never_wired_into_the_elastic_python_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "find_native", lambda prefer_moe_opts=False: None)
     monkeypatch.setattr(runtime, "caps", lambda prefer_moe_opts=False: RuntimeCaps(native=False))
+    # Phase 9.6: pin the engine to "not found" too, or this test would
+    # silently route into it instead of the elastic fallback whenever run on
+    # a checkout with engine/build/pleiades-engine-server actually built.
+    monkeypatch.setattr(runtime, "find_native_cpp_engine", lambda: None)
     monkeypatch.delenv("PLEIADES_ENGINE", raising=False)
     model = _fake_gguf(tmp_path)
     mmproj = tmp_path / "mmproj-model-f16.gguf"
@@ -81,6 +98,79 @@ def test_mmproj_is_never_wired_into_the_elastic_python_engine(tmp_path, monkeypa
                                 mmproj=str(mmproj), settings=Settings())
     assert "--mmproj" not in plan.cmd
     assert "pleiades.inference.server" in " ".join(plan.cmd)
+
+
+# -- Phase 9.6 "Release N": pleiades_native is now the DEFAULT engine ------- #
+
+def test_pleiades_native_engine_is_the_default_with_no_env_var_set(tmp_path, monkeypatch):
+    # The whole point of Release N: no PLEIADES_ENGINE at all, just a
+    # resolvable engine binary, must be enough to route here now -- this
+    # used to require explicitly setting PLEIADES_ENGINE=pleiades_native.
+    from pleiades import runtime as _rt
+    monkeypatch.delenv("PLEIADES_ENGINE", raising=False)
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="defaulttest",
+                                settings=Settings())
+    assert plan.cmd[0] == "/fake/pleiades-engine-server"
+    assert "pleiades-native-engine" in plan.why
+
+
+def test_pleiades_engine_llama_server_opt_out_skips_the_engine(tmp_path, monkeypatch):
+    # PLEIADES_ENGINE=llama_server must skip our engine even though its
+    # binary genuinely resolves -- the explicit escape hatch for hardware
+    # the engine isn't trusted on yet (design doc Risk R1/R2), not just a
+    # name for what happens when the engine isn't installed.
+    from pleiades import runtime as _rt
+    monkeypatch.setenv("PLEIADES_ENGINE", "llama_server")
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    monkeypatch.setattr(_rt, "find_native", lambda prefer_moe_opts=False: "/fake/llama-server")
+    monkeypatch.setattr(_rt, "caps", lambda prefer_moe_opts=False: RuntimeCaps(native=True, moe_offload=False))
+    monkeypatch.setattr(_rt, "native_env", lambda p: {})
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="optout",
+                                settings=Settings())
+    assert plan.cmd[0] == "/fake/llama-server"
+    assert "runtime=llama-server" in plan.why
+
+
+def test_pleiades_engine_llama_cpp_opt_out_skips_the_engine_too(tmp_path, monkeypatch):
+    # Same idea for the pip-installed pure-python fallback: an explicit
+    # request for it must not silently run our engine instead just because
+    # its binary happens to be sitting on disk.
+    from pleiades import runtime as _rt
+    monkeypatch.setenv("PLEIADES_ENGINE", "llama_cpp")
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    monkeypatch.setattr(_rt, "find_native", lambda prefer_moe_opts=False: None)
+    monkeypatch.setattr(_rt, "caps", lambda prefer_moe_opts=False: RuntimeCaps(native=False))
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="optout2",
+                                settings=Settings())
+    assert "llama_cpp.server" in " ".join(plan.cmd)
+
+
+def test_pleiades_engine_llama_cpp_opt_out_also_skips_native_llama_server(tmp_path, monkeypatch):
+    # Regression guard (adversarial review caught this live): the above test
+    # alone doesn't prove much, since find_native() there already returns
+    # None -- the native-llama-server branch was never a candidate anyway.
+    # The real bug was that `if native:` had no engine_pref exclusion at
+    # all, so PLEIADES_ENGINE=llama_cpp silently lost to a genuinely
+    # available native llama-server binary (the ordinary case after
+    # `pleiades runtime install`). Both find_native_cpp_engine AND
+    # find_native must resolve to real paths here to actually exercise that
+    # branch and prove the opt-out wins.
+    from pleiades import runtime as _rt
+    monkeypatch.setenv("PLEIADES_ENGINE", "llama_cpp")
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    monkeypatch.setattr(_rt, "find_native", lambda prefer_moe_opts=False: "/fake/llama-server")
+    monkeypatch.setattr(_rt, "caps", lambda prefer_moe_opts=False: RuntimeCaps(native=True, moe_offload=False))
+    monkeypatch.setattr(_rt, "native_env", lambda p: {})
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="optout3",
+                                settings=Settings())
+    assert "llama_cpp.server" in " ".join(plan.cmd)
+    assert plan.cmd[0] != "/fake/llama-server"
+    assert plan.cmd[0] != "/fake/pleiades-engine-server"
 
 
 def test_mmproj_is_wired_into_the_pleiades_native_cpp_engine(tmp_path, monkeypatch):

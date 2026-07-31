@@ -1177,6 +1177,14 @@ def create_app() -> FastAPI:
         from ..autofit import place
         det = hardware.detect()
         cps = runtime.caps()
+        engine_bin = runtime.find_native_cpp_engine()
+        engine_info = None
+        if engine_bin:
+            caps_json = runtime.query_native_cpp_engine_caps(engine_bin) or {}
+            engine_info = {"path": engine_bin,
+                           "backend": caps_json.get("backend"),
+                           "moe_offload": caps_json.get("moe_offload"),
+                           "vision": caps_json.get("vision")}
         plans = []
         for m in mm.list():
             meta = hardware.read_gguf_meta(m["path"])
@@ -1204,6 +1212,7 @@ def create_app() -> FastAPI:
             "cpu_threads": det.cpu_threads, "unified_memory": det.unified_memory,
             "summary": det.describe(), "plans": plans,
             "runtime": runtime.status(),
+            "engine": engine_info,
         }
 
     @app.get("/api/browser/status")

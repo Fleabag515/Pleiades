@@ -622,7 +622,9 @@ def runtime_install() -> None:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
     console.print(f"[green]Native runtime installed:[/green] {path}")
-    console.print("Models now launch through llama-server with MoE-aware autofit. "
+    console.print("Models launch through it with MoE-aware autofit whenever "
+                  "Pleiades' own engine isn't also present (that takes "
+                  "priority by default -- see `pleiades runtime status`). "
                   "Restart any running models to pick it up.")
 
 
@@ -630,18 +632,30 @@ def runtime_install() -> None:
 def runtime_status() -> None:
     """Show which inference runtime models will use."""
     from . import runtime as rt
+    engine = rt.find_native_cpp_engine()
+    if engine:
+        console.print(f"Pleiades engine (default): [green]{engine}[/green]")
+        caps = rt.query_native_cpp_engine_caps(engine)
+        if caps:
+            console.print(f"  backend: {caps.get('backend', '?')}  "
+                          f"vision: {'yes' if caps.get('vision') else 'no'}  "
+                          "MoE expert offload: "
+                          + ("[green]supported[/green]" if caps.get("moe_offload")
+                             else "[yellow]not supported by this build[/yellow]"))
     st = rt.status()
     if st["native"]:
-        console.print(f"native llama-server: [green]{st['native']}[/green] "
-                      f"{st.get('version', '')}")
+        console.print(f"native llama-server{' (fallback)' if engine else ''}: "
+                      f"[green]{st['native']}[/green] {st.get('version', '')}")
         console.print("MoE expert offload: "
                       + ("[green]supported[/green]" if st["moe_offload"]
                          else "[yellow]not supported by this build[/yellow]"))
     else:
-        console.print("native llama-server: [yellow]not installed[/yellow] "
-                      "(models use the python server)")
-        console.print("Install it for faster inference + MoE offload: "
-                      "[bold]pleiades runtime install[/bold]")
+        console.print("native llama-server: [yellow]not installed[/yellow]")
+        if not engine:
+            console.print("No native runtime found -- models use the "
+                          "pip-installed python fallback (slower). Install "
+                          "the llama-server binary for faster inference + "
+                          "MoE offload: [bold]pleiades runtime install[/bold]")
 
 
 # --------------------------------------------------------------------------- #

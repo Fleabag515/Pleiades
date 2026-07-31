@@ -33,10 +33,10 @@ whichever fits the moment.
 
 ```
 you ─▶ Pleiades engine ─▶ Anamnesis character proxy ─▶ Pleiades inference server
-        (agent loop,         (memory injection &          (in-process llama.cpp —
-         tool calls)          retrieval, auto-stores        native runtime, or the
-                              every turn)                    bundled fallback server)
-        │
+        (agent loop,         (memory injection &          (in-process — Pleiades' own
+         tool calls)          retrieval, auto-stores        from-scratch engine by
+                              every turn)                    default, or a llama.cpp-
+        │                                                    based fallback)
         └─ tools: search · email · browser · vault   (all namespaced per character)
 
 desktop app  ─┐
@@ -44,12 +44,15 @@ desktop app  ─┐
  pleiades ui ─┘
 ```
 
-- **Inference is ours.** Pleiades loads a GGUF model and serves an OpenAI-compatible
-  endpoint in-process — no separate Ollama or server to install. `pleiades runtime
-  install` fetches a native `llama-server` build for this machine (MoE expert
-  offload, elastic context resize); without it, Pleiades automatically falls back to
-  the bundled `llama-cpp-python` server. Any GGUF that llama.cpp supports works,
-  including large quantized models with GPU offload.
+- **Inference is ours.** Pleiades ships its own from-scratch C++ inference engine
+  (built on `libllama`, `engine/`) and runs it in-process by default — no separate
+  Ollama or server to install, and no build step for end users (the engine ships
+  prebuilt). It supports MoE expert offload, vision, and CUDA/HIP/Vulkan/Metal/CPU.
+  Two fallbacks exist for hardware it hasn't been verified on yet: an autodetected
+  native `llama-server` build (`pleiades runtime install`, opt into explicitly with
+  `PLEIADES_ENGINE=llama_server`), and — as a last resort — the bundled
+  `llama-cpp-python` server (`PLEIADES_ENGINE=llama_cpp`). Any GGUF that llama.cpp
+  supports works, including large quantized models with GPU offload.
 - **Memory is Anamnesis's job**, and Anamnesis now lives *inside* this repo
   (`anamnesis/`) rather than being installed as a separate project — see
   [Memory (Anamnesis)](#memory-anamnesis). It sits between the engine and our
@@ -140,16 +143,20 @@ CMAKE_ARGS="-DGGML_HIP=on"    pip install -e ".[all]"  # AMD ROCm
 CMAKE_ARGS="-DGGML_METAL=on"  pip install -e ".[all]"  # Apple Silicon
 ```
 
-### Native inference runtime
+### Inference runtime
 
-`pleiades runtime install` fetches an official prebuilt `llama-server` binary
-(ggml-org/llama.cpp releases) into `~/.pleiades/runtime/` — faster than the bundled
-Python server, and the only path that supports MoE expert offload (splitting a
-mixture-of-experts model between GPU and CPU residency) and elastic context
-resizing without a restart. The one-line installer runs this automatically; check
-what's active any time with `pleiades runtime status`. Without it, models still
-run — just through the bundled `llama-cpp-python` server (dense GPU/CPU layer split
-only, no MoE offload).
+Pleiades' own engine (`engine/`, built on `libllama`) is the default whenever it's
+present — no install step, no `PLEIADES_ENGINE` setting required. It supports MoE
+expert offload (splitting a mixture-of-experts model between GPU and CPU
+residency), vision, and slot save/restore. Check what's active any time with
+`pleiades runtime status`.
+
+For hardware this engine hasn't been verified on yet, `pleiades runtime install`
+fetches an official prebuilt `llama-server` binary (ggml-org/llama.cpp releases)
+into `~/.pleiades/runtime/` as an opt-in fallback (`PLEIADES_ENGINE=llama_server`).
+If neither is available, models still run through the bundled `llama-cpp-python`
+server as a last resort (`PLEIADES_ENGINE=llama_cpp`; dense GPU/CPU layer split
+only, no MoE offload, no vision).
 
 ### Memory (Anamnesis)
 

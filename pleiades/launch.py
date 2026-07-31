@@ -11,19 +11,31 @@ implementation; both callers just ask it for a command.
 
 Autodetect/autoconfig, end to end:
   hardware.py  -> GPU/RAM/CPU + GGUF structure (dense facts)
-  runtime.py   -> is the native llama-server binary installed, and does it
-                  support MoE expert offload (--n-cpu-moe)?
+  runtime.py   -> is Pleiades' own engine binary installed (find_native_cpp_engine),
+                  or failing that the autodetected llama-server binary
+                  (find_native), and does it support MoE expert offload
+                  (--n-cpu-moe)?
   autofit.py   -> given those facts, the fastest feasible placement: full GPU,
                   MoE hot/cold split, partial dense layers, or CPU-only
   this module  -> turn that placement into an actual command line, on
                   whichever runtime is actually available
+
+Engine selection order (docs/specs/2026-07-21-native-inference-engine-design.md,
+Phase 9.6 "Release N"): Pleiades' own from-scratch engine
+(`engine/src/http_server.cpp`, `runtime.find_native_cpp_engine()`) is the
+default whenever its binary resolves — no env var needed. `PLEIADES_ENGINE`
+opts OUT of it: `llama_server` forces the autodetected upstream llama-server
+binary instead (the sanctioned escape hatch for hardware this engine hasn't
+been verified on yet — see the design doc's Risk R1/R2); `llama_cpp` forces
+the pip-installed `llama_cpp.server` fallback. `pleiades_native` still works
+explicitly too, for back-compat with anything already setting it. Unset +
+no engine binary found falls through to the same chain as before (native
+llama-server, then the bundled python "elastic" server).
 """
 
 from __future__ import annotations
 
-import json
 import os
-import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Optional
@@ -55,33 +67,34 @@ def _query_engine_caps(binary_path: str) -> RuntimeCaps:
     failure here (older binary predating --caps, unexpected output, a hung
     process) falls back to the previous behavior of this call site
     (moe_offload=True) rather than breaking model placement on an
-    introspection hiccup -- see call site's comment.
+    introspection hiccup -- see call site's comment. The raw subprocess/JSON
+    work now lives in runtime.query_native_cpp_engine_caps() (shared with
+    `pleiades runtime status` and the webui's /api/hardware, which want the
+    full answer, not just the moe_offload bit this call site narrows down to).
     """
-    try:
-        out = subprocess.run([binary_path, "--caps"], capture_output=True,
-                             text=True, timeout=5.0)
-        data = json.loads(out.stdout.strip().splitlines()[-1])
-        return RuntimeCaps(moe_offload=bool(data.get("moe_offload", True)), native=True)
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError, json.JSONDecodeError):
+    data = runtime.query_native_cpp_engine_caps(binary_path)
+    if data is None:
         return RuntimeCaps(moe_offload=True, native=True)
+    return RuntimeCaps(moe_offload=bool(data.get("moe_offload", True)), native=True)
 
 
 def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                   n_ctx: "int | str" = "auto", n_gpu_layers: "int | str" = "auto",
                   chat_format: str = "", settings: Optional[Settings] = None,
                   mmproj: str = "") -> LaunchPlan:
-    """Plan + assemble the server command: MoE-aware on the native llama-server
-    runtime (autodetected), layer-split on the bundled python fallback.
+    """Plan + assemble the server command: MoE-aware on Pleiades' own engine or
+    the native llama-server runtime (both autodetected), layer-split on the
+    bundled python fallback.
 
     `mmproj` (path to a multimodal-projector GGUF, see models.Model.mmproj) is
     wired into the native llama-server branch below via --mmproj, and (Phase
     9.4.2, docs/specs/2026-07-21-native-inference-engine-design.md) into the
-    PLEIADES_ENGINE=pleiades_native engine branch above the same way -- it
-    links libmtmd now (see engine/CMakeLists.txt's LLAMA_BUILD_MTMD). Still
-    NOT wired into the `llama_cpp.server` python fallback: that package's own
-    bundled server has no first-class multimodal flag in the version pinned
-    here, and that path is slated for retirement anyway (Phase 9.6) --
-    silently dropping `mmproj` there only is intentional, not an oversight.
+    default engine branch above the same way -- it links libmtmd now (see
+    engine/CMakeLists.txt's LLAMA_BUILD_MTMD). Still NOT wired into the
+    `llama_cpp.server` python fallback: that package's own bundled server has
+    no first-class multimodal flag in the version pinned here, and that path
+    is slated for retirement anyway (Phase 9.6) -- silently dropping `mmproj`
+    there only is intentional, not an oversight.
     """
     eff = settings or Settings.load()
 
@@ -90,20 +103,40 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     # is MoE.
     meta = read_gguf_meta(model_path)
 
-    # Feature-flagged, off by default (docs/specs/2026-07-21-native-
-    # inference-engine-design.md, Phase 5): the from-scratch libllama-based
-    # engine. It now shares this function's autofit placement (see the branch
-    # body), but is kept as its own branch rather than slotting into the
+    # Phase 9.6 "Release N" (docs/specs/2026-07-21-native-inference-engine-
+    # design.md): Pleiades' own from-scratch libllama-based engine is now the
+    # DEFAULT whenever its binary resolves -- no env var required. This used
+    # to be gated behind `PLEIADES_ENGINE=pleiades_native` ("feature-flagged,
+    # off by default", Phase 5) while feature parity was still being closed;
+    # 9.4 closed it (slot save/restore, vision, MoE offload, an external-
+    # model escape hatch for whatever this engine still can't do). Two
+    # explicit opt-OUTs: `PLEIADES_ENGINE=llama_server` skips straight to the
+    # autodetected upstream llama-server branch below (the sanctioned escape
+    # hatch for hardware this engine hasn't been verified on yet -- see the
+    # design doc's Risk R1/R2, still genuinely open for non-CUDA MoE offload
+    # and for MSVC/AppleClang builds); `llama_cpp` skips both native branches
+    # for the pip-installed pure-python fallback. `PLEIADES_ENGINE=pleiades_native`
+    # still works too, purely for back-compat with anything already setting it
+    # explicitly -- it's now redundant with the default, not required by it.
+    #
+    # This engine is kept as its own branch rather than slotting into the
     # native-llama-server branch below: that branch builds flags this engine
     # still doesn't implement (--jinja, speculative decoding via -md/--spec-type,
-    # --mmproj vision, --slot-save-path, --cache-reuse, --parallel), so pointing
-    # it at this binary would pass flags parse_args() rejects. What this engine
-    # DOES support -- ngl/n-cpu-moe/ub/fa/ctk/ctv/mlock/ctx/threads/slot-save-path/
-    # mmproj -- is enough to run the same placement, which is what the branch
-    # below now does. See
-    # find_native_cpp_engine()'s own docstring for the separation rationale
-    # (checked against a second independent opinion, not just assumed).
-    if os.environ.get("PLEIADES_ENGINE", "").lower() == "pleiades_native":
+    # --cache-reuse, --parallel), so pointing it at this binary would pass
+    # flags parse_args() rejects. What this engine DOES support --
+    # ngl/n-cpu-moe/ub/fa/ctk/ctv/mlock/ctx/threads/slot-save-path/mmproj --
+    # is enough to run the same placement, which is what the branch below now
+    # does. See find_native_cpp_engine()'s own docstring for the separation
+    # rationale (checked against a second independent opinion, not just
+    # assumed).
+    engine_pref = os.environ.get("PLEIADES_ENGINE", "").strip().lower()
+    # llama_server: explicit opt-out, wants the upstream native branch below.
+    # llama_cpp: explicit opt-out, wants the pure-python branch at the
+    # bottom -- forcing that while silently still running our own engine
+    # (because its binary happened to be sitting there) would be exactly the
+    # "explicit override silently ignored" footgun Phase 9.2's --caps work
+    # was written to avoid elsewhere in this same function.
+    if engine_pref not in ("llama_server", "llama_cpp"):
         native_cpp = runtime.find_native_cpp_engine()
         if native_cpp:
             # The from-scratch engine (engine/http_server.cpp) now speaks
@@ -226,13 +259,28 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                 why = (f"runtime=pleiades-native-engine (experimental) "
                        f"n_ctx={launch_ctx} ngl={forced} (explicit override)")
             return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max)
-        print("[launch] PLEIADES_ENGINE=pleiades_native requested but "
-              "pleiades-engine-server not found (build via `cmake --build "
-              "engine/build`, or set PLEIADES_NATIVE_CPP_ENGINE_BIN) -- "
-              "falling back to the normal runtime selection.", flush=True)
+        if engine_pref == "pleiades_native":
+            print("[launch] PLEIADES_ENGINE=pleiades_native requested but "
+                  "pleiades-engine-server not found (build via `cmake --build "
+                  "engine/build`, or set PLEIADES_NATIVE_CPP_ENGINE_BIN) -- "
+                  "falling back to the normal runtime selection.", flush=True)
+        # Any other case here (unset, or a value we don't recognize) means the
+        # engine binary just isn't built/installed yet -- the common case
+        # during rollout, not worth a warning on every single launch.
 
     cps = runtime.caps(prefer_moe_opts=meta.is_moe)
     native = runtime.find_native(prefer_moe_opts=meta.is_moe) if cps.native else None
+    if engine_pref == "llama_cpp":
+        # Explicit opt-out: treat native llama-server as unavailable for
+        # EVERY downstream decision (placement/ctx sizing included, not just
+        # the branch check below) -- not doing this left a real bug where
+        # `if native:` alone still matched and silently returned a
+        # runtime=llama-server plan, ignoring this env var entirely
+        # whenever a native binary was actually installed (adversarial
+        # review, Phase 9.6 follow-up). `cps` is deliberately left as-is:
+        # its moe_offload flag still feeds the "TIP: install the native
+        # runtime" message below, which is still good advice here.
+        native = None
     # caps before resolve_context: a MoE model's real ceiling depends on
     # whether THIS runtime actually offloads experts (hardware.py's
     # _moe_ceiling_fits) — without it, ctx planning falls back to the
@@ -268,6 +316,12 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             forced = None
 
     if native:
+        if engine_pref == "llama_server":
+            print("[launch] PLEIADES_ENGINE=llama_server: using the autodetected "
+                  "upstream llama-server binary instead of Pleiades' own engine. "
+                  "For hardware the built-in engine doesn't support well yet, "
+                  "`pleiades model add --external-url` is the longer-term escape "
+                  "hatch (Phase 9.4).", flush=True)
         # llama-server's context window is fixed at launch — ModelManager.resize()
         # 404s on it, there's no live grow-into-the-ceiling like the python
         # elastic engine. So "start modest, elastic ceiling later" (n_ctx_v)
@@ -383,9 +437,17 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
         # n_ctx == n_ctx_max here: what's recorded/shown is what's really running.
         return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max, env)
 
+    if engine_pref == "llama_server":
+        print("[launch] PLEIADES_ENGINE=llama_server requested but no "
+              "llama-server binary found (`pleiades runtime install`) -- "
+              "falling back further.", flush=True)
+
     layers = forced if forced is not None else pl.n_gpu_layers
-    if os.environ.get("PLEIADES_ENGINE", "elastic").lower() == "llama_cpp":
+    if engine_pref == "llama_cpp":
         # escape hatch: bundled llama-cpp-python server (fixed window)
+        print("[launch] PLEIADES_ENGINE=llama_cpp: using the pip-installed "
+              "llama_cpp.server fallback instead of Pleiades' own engine.",
+              flush=True)
         cmd = [
             sys.executable, "-m", "llama_cpp.server",
             "--model", model_path,

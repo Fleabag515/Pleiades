@@ -9,9 +9,12 @@ State (under ~/.pleiades):
   models-running.json  live servers: name -> {pid, host, port}
   logs/model-<name>.log per-model server log
 
-GPU: n_gpu_layers controls offload and works for both NVIDIA (CUDA) and AMD (ROCm)
-*provided llama-cpp-python was built with that backend* (the installer auto-detects).
--1 offloads all layers; 0 is CPU-only.
+GPU: n_gpu_layers controls offload and works for NVIDIA/AMD/Apple Silicon
+*provided the runtime that actually ends up running the model was built with
+that backend* -- Pleiades' own engine (the default whenever its binary is
+present, see launch.py's engine-selection order), the autodetected native
+llama-server binary, or llama-cpp-python as the last-resort fallback, each
+with their own backend build story. -1 offloads all layers; 0 is CPU-only.
 """
 
 from __future__ import annotations
@@ -76,9 +79,10 @@ class Model:
     # Vision support (docs/specs/2026-07-23-vision-routing-design.md). Path to
     # a sibling multimodal-projector GGUF, auto-detected at add()/fetch time
     # via hardware.find_mmproj_sibling() (blank = none found / not applicable).
-    # Only ever consumed by the native llama-server launch path (launch.py) --
-    # the llama_cpp.server python fallback and PLEIADES_ENGINE=pleiades_native
-    # don't implement multimodal serving, so this field is a no-op there.
+    # Consumed by both native launch paths (launch.py): the autodetected
+    # llama-server binary, and (Phase 9.4.2) Pleiades' own engine, which now
+    # links libmtmd too. Only the llama_cpp.server python fallback still
+    # doesn't implement multimodal serving, so this field is a no-op there.
     mmproj: str = ""
     # Manual capability override, comma-separated (e.g. "vision"). For a local
     # GGUF this is normally redundant with `mmproj` (presence of the sidecar

@@ -30,11 +30,15 @@ warning against assuming any of this "just works."
    set it explicitly.
 
 2. **`--mmproj` wiring.** `launch.py`'s `build_command()` takes an `mmproj`
-   param, appended as `--mmproj <path>` ONLY in the native llama-server
-   branch. Deliberately NOT wired into the `llama_cpp.server` python
-   fallback or `PLEIADES_ENGINE=pleiades_native` — both council reviews
-   agreed vision should stay scoped to native llama-server for now (neither
-   other runtime has any multimodal support to hand it to). Covered by
+   param, appended as `--mmproj <path>` in the native llama-server branch.
+   **Update, Phase 9.4.2 (docs/specs/2026-07-21-native-inference-engine-design.md):**
+   Pleiades' own from-scratch engine gained real vision support (links
+   `libmtmd`) and now gets `--mmproj` wired in too — the "neither other
+   runtime has any multimodal support to hand it to" reasoning that scoped
+   this to native llama-server only is no longer true for that engine (it's
+   still true for the `llama_cpp.server` python fallback, which remains
+   unwired). That engine is also the DEFAULT runtime as of Phase 9.6
+   "Release N" — this is no longer a niche path. Covered by
    `tests/test_launch.py`.
 
 3. **Content-parts message building**, gated on `Engine._model_vision_capable

@@ -13,6 +13,7 @@ Pleiades can run models through two OpenAI-compatible runtimes:
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -108,6 +109,25 @@ def find_native_cpp_engine() -> Optional[str]:
     if local_build.is_file():
         return str(local_build)
     return shutil.which(exe)
+
+
+def query_native_cpp_engine_caps(binary_path: str) -> Optional[dict]:
+    """`<binary> --caps` -> the parsed JSON dict (backend/moe_offload/vision/
+    slots/resize/engine_version -- see engine/src/http_server.cpp::print_caps()),
+    or None on any failure (older binary predating --caps, unexpected output,
+    a hung process, binary vanished). Cheap: no model load. Shared by
+    launch.py::_query_engine_caps() (adapts this into a RuntimeCaps for
+    placement) and anything that just wants to *display* the raw answer
+    (`pleiades runtime status`, the webui's /api/hardware) -- one place that
+    knows how to ask the engine binary about itself, not two copies of the
+    same subprocess/JSON-parsing logic drifting apart.
+    """
+    try:
+        out = subprocess.run([binary_path, "--caps"], capture_output=True,
+                             text=True, timeout=5.0)
+        return json.loads(out.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, json.JSONDecodeError):
+        return None
 
 
 def native_env(binary: str) -> dict:

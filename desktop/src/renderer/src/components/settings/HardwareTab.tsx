@@ -123,7 +123,24 @@ function HardwareTab({ base }: HardwareTabProps): React.JSX.Element {
 
       <section className="rounded-xl border border-border bg-bg-app p-4">
         <h3 className="mb-3 text-sm font-semibold text-ink">Inference runtime</h3>
-        {hw.runtime?.native ? (
+        {hw.engine ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-emerald-300">Pleiades engine (default)</span>
+            {hw.engine.backend && (
+              <span className="rounded-full bg-bg-surface-hover px-2 py-0.5 text-ink-dim">{hw.engine.backend}</span>
+            )}
+            <span
+              className={`rounded-full px-2 py-0.5 ${
+                hw.engine.moe_offload ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+              }`}
+            >
+              {hw.engine.moe_offload ? 'MoE expert offload: on' : 'MoE offload unsupported by this build'}
+            </span>
+            {hw.engine.vision && (
+              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-emerald-300">vision</span>
+            )}
+          </div>
+        ) : hw.runtime?.native ? (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-emerald-300">native llama-server</span>
             {hw.runtime.version && (
@@ -138,7 +155,7 @@ function HardwareTab({ base }: HardwareTabProps): React.JSX.Element {
             </span>
           </div>
         ) : (
-          <p className="text-xs text-ink-dim">Python fallback server (native runtime not installed).</p>
+          <p className="text-xs text-ink-dim">Python fallback server (no native runtime found).</p>
         )}
       </section>
 

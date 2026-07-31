@@ -350,6 +350,16 @@ def test_concurrent_start_does_not_spawn_duplicate_processes(tmp_path, monkeypat
     import time
 
     import pleiades.models as models_mod
+    from pleiades import runtime as runtime_mod
+
+    # Phase 9.6: build_command() now defaults to Pleiades' own C++ engine
+    # whenever its binary resolves -- pin it to "not found" so this test's
+    # fake_popen allowlist (below, native-llama-server/python-fallback only)
+    # stays deterministic regardless of whether engine/build/pleiades-engine-server
+    # happens to be built on whatever machine runs this suite (adversarial
+    # review caught this live: it silently broke the moment this repo's own
+    # dev build finished mid-session).
+    monkeypatch.setattr(runtime_mod, "find_native_cpp_engine", lambda: None)
 
     g = tmp_path / "race.gguf"
     g.write_bytes(b"x")

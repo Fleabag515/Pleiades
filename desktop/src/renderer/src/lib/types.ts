@@ -243,6 +243,16 @@ export interface RuntimeStatus {
   version?: string
 }
 
+// Phase 9.6 "Release N": Pleiades' own from-scratch engine, now the default
+// backend whenever its binary resolves -- takes priority over RuntimeStatus
+// (the autodetected native llama-server) below when present.
+export interface EngineInfo {
+  path: string
+  backend: string | null
+  moe_offload: boolean | null
+  vision: boolean | null
+}
+
 export interface HardwareInfo {
   gpus: GpuInfo[]
   ram_total: number
@@ -252,6 +262,7 @@ export interface HardwareInfo {
   summary: string
   plans: ModelPlan[]
   runtime: RuntimeStatus
+  engine: EngineInfo | null
 }
 
 // ---- Model Foundry (Phase G): HF search, quant planning, downloads, cloud ----
