@@ -1,8 +1,10 @@
 """launch.py's build_command(): --mmproj wiring (native llama-server only),
 plus the PLEIADES_ENGINE=pleiades_native branch's flag-mode CLI + autofit
-placement wiring (GPU/MoE offload). --mmproj is still excluded from the
-pleiades_native path (that engine has no vision support); GPU/MoE placement is
-NOT -- the native C++ engine now shares this function's autofit machinery."""
+placement wiring (GPU/MoE offload). Vision (mmproj) models are NOT eligible
+for the pleiades_native path (that engine has no image handling yet) and fall
+back to llama-server wholesale; text models get the engine. GPU/MoE placement
+is NOT excluded -- the native C++ engine shares this function's autofit
+machinery."""
 
 import os
 
@@ -83,8 +85,13 @@ def test_mmproj_is_never_wired_into_the_elastic_python_engine(tmp_path, monkeypa
     assert "pleiades.inference.server" in " ".join(plan.cmd)
 
 
-def test_mmproj_is_never_wired_into_the_pleiades_native_cpp_engine(tmp_path, monkeypatch):
+def test_vision_models_are_routed_to_llama_server_even_when_engine_requested(tmp_path, monkeypatch):
+    # 2026-08-30 policy: the engine has no image handling, so a vision model
+    # must fall through to llama-server (real --mmproj support) WHOLESALE --
+    # not to the engine with mmproj silently dropped (that produced a server
+    # that could never see images while every other surface assumed it could).
     from pleiades import runtime as _rt
+    _force_native(monkeypatch)  # hermetic llama-server branch
     monkeypatch.setenv("PLEIADES_ENGINE", "pleiades_native")
     monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
     model = _fake_gguf(tmp_path)
@@ -92,8 +99,37 @@ def test_mmproj_is_never_wired_into_the_pleiades_native_cpp_engine(tmp_path, mon
     mmproj.write_bytes(b"fake-mmproj")
     plan = launch.build_command(str(model), "127.0.0.1", 8090, name="vlm",
                                 mmproj=str(mmproj), settings=Settings())
-    assert "--mmproj" not in " ".join(plan.cmd)
+    assert "--mmproj" in " ".join(plan.cmd)
+    assert "pleiades-native-engine" not in plan.why
+
+
+def test_engine_requested_is_honored_for_text_models(tmp_path, monkeypatch):
+    from pleiades import runtime as _rt
+    _force_native(monkeypatch)
+    monkeypatch.setenv("PLEIADES_ENGINE", "pleiades_native")
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="text-model",
+                                settings=Settings())
     assert "pleiades-native-engine" in plan.why
+
+
+def test_engine_branch_wires_slot_persistence_and_cache_reuse(tmp_path, monkeypatch):
+    from pleiades import runtime as _rt
+    _force_native(monkeypatch)
+    monkeypatch.setenv("PLEIADES_ENGINE", "pleiades_native")
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    model = _fake_gguf(tmp_path)
+    settings = Settings()
+    settings.cache_reuse = 256
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="text-model",
+                                settings=settings)
+    joined = " ".join(plan.cmd)
+    assert "--slot-save-path" in joined
+    assert "--cache-reuse" in joined
+    assert plan.cmd[plan.cmd.index("--cache-reuse") + 1] == "256"
+    idx = plan.cmd.index("--slot-save-path")
+    assert plan.cmd[idx + 1].rstrip("/\\").endswith(os.path.join("slots", "text-model"))
 
 
 def test_native_command_sets_separate_decode_and_batch_thread_counts(tmp_path, monkeypatch):

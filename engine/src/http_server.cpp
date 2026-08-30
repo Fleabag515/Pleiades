@@ -91,6 +91,7 @@
 #include "pleiades_engine/context_governor.h"
 #include "pleiades_engine/engine.h"
 #include "pleiades_engine/model_manager.h"
+#include "pleiades_engine/slot_state.h"
 
 using json = nlohmann::json;
 using namespace pleiades_engine;
@@ -103,6 +104,62 @@ struct ServerState {
     Engine& engine;
     std::string alias;
     std::mutex mu;  // serializes decode and resize -- see file header note.
+    // -- single-slot queue (Phase 1 parity: request queue + busy reporting) --
+    // One generation at a time (one character = one conversation through its
+    // Anamnesis proxy), but concurrent requests now WAIT in a bounded queue
+    // instead of piling up on the mutex and getting connection drops, and a
+    // caller that can't be served gets an honest 429 + Retry-After instead of
+    // an opaque timeout. `queued` counts waiters so the bound holds.
+    int busy = 0;
+    int queued = 0;
+    int queue_depth = 8;
+    int queue_timeout_sec = 30;
+    std::condition_variable slot_cv;
+    // -- slot persistence / chunk reuse reporting --
+    std::string slot_save_path;  // empty = /slots endpoints return 501
+    int cache_reuse = 0;
+    bool has_state = false;      // anything resident since boot (for /props)
+};
+
+// RAII single-slot lease. acquire() waits up to queue_timeout_sec for the
+// engine to go idle, refusing early once `queue_depth` waiters are already
+// queued; the destructor releases and wakes the next waiter. Release happens
+// even when a streaming provider exits early (client disconnect), because the
+// lease is captured by the provider lambda and destroyed with it.
+struct SlotLease {
+    explicit SlotLease(ServerState& s) : s_(s) {}
+
+    bool acquire() {
+        std::unique_lock<std::mutex> lock(s_.mu);
+        ++s_.queued;
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(s_.queue_timeout_sec);
+        while (s_.busy) {
+            if (s_.queued > s_.queue_depth ||
+                s_.slot_cv.wait_until(lock, deadline) == std::cv_status::timeout) {
+                --s_.queued;
+                return false;
+            }
+        }
+        --s_.queued;
+        s_.busy = 1;
+        held_ = true;
+        return true;
+    }
+
+    ~SlotLease() {
+        if (held_) {
+            {
+                std::lock_guard<std::mutex> lock(s_.mu);
+                s_.busy = 0;
+            }
+            s_.slot_cv.notify_all();
+        }
+    }
+
+private:
+    ServerState& s_;
+    bool held_ = false;
 };
 
 json props_json(ServerState& s) {
@@ -120,6 +177,11 @@ json props_json(ServerState& s) {
         {"model_path", s.models.path()},
         {"gears", gears},
         {"default_generation_settings", {{"n_ctx", s.ctx.n_ctx()}}},
+        {"busy", s.busy != 0},
+        {"queued", s.queued},
+        {"queue_depth", s.queue_depth},
+        {"cache_reuse", s.cache_reuse},
+        {"slot_save_path", s.slot_save_path},
     };
 }
 
@@ -147,6 +209,18 @@ json tool_calls_json(const std::vector<ChatToolCall>& calls, bool streaming) {
         arr.push_back(std::move(entry));
     }
     return arr;
+}
+
+void refuse_busy(ServerState& s, httplib::Response& res) {
+    res.status = 429;
+    res.set_header("Retry-After", "1");
+    res.set_content(
+        json{{"error",
+              {{"message", "model is busy generating; retry after the in-flight turn completes"},
+               {"type", "server_error"},
+               {"code", "model_busy"}}}}
+            .dump(),
+        "application/json");
 }
 
 void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response& res) {
@@ -267,6 +341,11 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     std::string id = now_id();
 
     if (!stream) {
+        SlotLease lease(s);
+        if (!lease.acquire()) {
+            refuse_busy(s, res);
+            return;
+        }
         std::lock_guard<std::mutex> lock(s.mu);
         GenerationResult r = s.engine.complete(prompt, n_predict, sampling);
         // Prove-it-fires observability (Phase 6): report how much of the
@@ -275,8 +354,11 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
         // `cached` here; on a hybrid-recurrent model (qwen35moe) it stays 0
         // by design (partial reuse is architecturally impossible there) and
         // the engine safely cold-decodes -- see the design doc's Phase 6.
-        std::fprintf(stderr, "[pleiades-engine-server] chat: prompt_tokens=%d prefix_cached=%d decoded=%d\n",
-                     r.n_prompt_tokens, r.n_prompt_cached, r.n_prompt_tokens - r.n_prompt_cached);
+        s.has_state = true;
+        std::fprintf(stderr,
+                     "[pleiades-engine-server] chat: prompt_tokens=%d prefix_cached=%d chunks_reused=%d decoded=%d\n",
+                     r.n_prompt_tokens, r.n_prompt_cached, r.n_chunks_reused,
+                     r.n_prompt_tokens - r.n_prompt_cached);
 
         json message = {{"role", "assistant"}};
         std::string finish_reason = "stop";
@@ -375,14 +457,21 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     // one-chunk tool_call fine via tc.index). A plain request falls through to
     // the unchanged raw token-streaming path below.
     if (tool_mode) {
+        SlotLease lease(s);
+        if (!lease.acquire()) {
+            refuse_busy(s, res);
+            return;
+        }
         GenerationResult r;
         {
             std::lock_guard<std::mutex> lock(s.mu);
             r = s.engine.complete(prompt, n_predict, sampling);
         }
+        s.has_state = true;
         std::fprintf(stderr,
-                     "[pleiades-engine-server] chat(stream,tools): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
-                     r.n_prompt_tokens, r.n_prompt_cached, r.n_prompt_tokens - r.n_prompt_cached);
+                     "[pleiades-engine-server] chat(stream,tools): prompt_tokens=%d prefix_cached=%d chunks_reused=%d decoded=%d\n",
+                     r.n_prompt_tokens, r.n_prompt_cached, r.n_chunks_reused,
+                     r.n_prompt_tokens - r.n_prompt_cached);
 
         std::vector<std::string> chunks;
         chunks.push_back(sse_chunk({{"role", "assistant"}}, nullptr));
@@ -453,8 +542,13 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
     // produces structured output), and the PROMPT was still built through the
     // model's real template above, so any assistant tool_calls history still
     // round-trips for a streamed turn.
+    auto lease = std::make_shared<SlotLease>(s);
+    if (!lease->acquire()) {
+        refuse_busy(s, res);
+        return;
+    }
     res.set_chunked_content_provider(
-        "text/event-stream", [&s, prompt, n_predict, id, created, sampling](size_t /*offset*/, httplib::DataSink& sink) {
+        "text/event-stream", [&s, lease, prompt, n_predict, id, created, sampling](size_t /*offset*/, httplib::DataSink& sink) {
             std::lock_guard<std::mutex> lock(s.mu);
             auto write_chunk = [&](const json& delta, const char* finish_reason) {
                 json chunk = {
@@ -470,9 +564,11 @@ void handle_chat(ServerState& s, const httplib::Request& req, httplib::Response&
                 GenerationResult sr = s.engine.generate(
                     prompt, n_predict,
                     [&](const std::string& piece) { return write_chunk({{"content", piece}}, nullptr); }, sampling);
+                s.has_state = true;
                 std::fprintf(stderr,
-                             "[pleiades-engine-server] chat(stream): prompt_tokens=%d prefix_cached=%d decoded=%d\n",
-                             sr.n_prompt_tokens, sr.n_prompt_cached, sr.n_prompt_tokens - sr.n_prompt_cached);
+                             "[pleiades-engine-server] chat(stream): prompt_tokens=%d prefix_cached=%d chunks_reused=%d decoded=%d\n",
+                             sr.n_prompt_tokens, sr.n_prompt_cached, sr.n_chunks_reused,
+                             sr.n_prompt_tokens - sr.n_prompt_cached);
             } catch (const std::exception& e) {
                 // A mid-stream failure (e.g. llama_decode OOM) must NOT escape
                 // this content-provider lambda: httplib runs it during response
@@ -510,6 +606,17 @@ struct Args {
     std::string cache_type_v = "f16";
     std::string alias = "pleiades-engine";
     bool use_mlock = false;
+    // --no-mmap / --no-repack (ModelManager::load's use_mmap/use_extra_bufts)
+    bool no_mmap = false;
+    bool no_repack = false;
+    // llama-server's --cache-reuse: minimum token-run length eligible for
+    // middle-of-prompt KV chunk salvage (0 = off, the upstream default).
+    int cache_reuse = 0;
+    // --slot-save-path directory: enables POST /slots/0?action=save|restore
+    // (models.py drives these best-effort around stop/start).
+    std::string slot_save_path;
+    int queue_depth = 8;
+    int queue_timeout_sec = 30;
 };
 
 void print_usage(const char* prog) {
@@ -517,6 +624,8 @@ void print_usage(const char* prog) {
         "usage: %s --model PATH [--host HOST] [--port PORT] [--ctx N] [--ngl N]\n"
         "       [--n-cpu-moe N] [--ub N] [--batch N] [--fa on|off|auto]\n"
         "       [--ctk TYPE] [--ctv TYPE] [--alias NAME] [--threads N] [--mlock]\n"
+        "       [--no-mmap] [--no-repack] [--cache-reuse N] [--slot-save-path DIR]\n"
+        "       [--queue-depth N] [--queue-timeout-sec N]\n"
         "\n"
         "legacy positional mode (still accepted): %s <model.gguf> <host> <port>"
         " [n_ctx] [n_gpu_layers] [alias]\n",
@@ -652,6 +761,18 @@ Args parse_args(int argc, char** argv) {
             a.n_threads = std::stoi(next(i));
         } else if (arg == "--mlock") {
             a.use_mlock = true;
+        } else if (arg == "--no-mmap") {
+            a.no_mmap = true;
+        } else if (arg == "--no-repack") {
+            a.no_repack = true;
+        } else if (arg == "--cache-reuse") {
+            a.cache_reuse = std::stoi(next(i));
+        } else if (arg == "--slot-save-path") {
+            a.slot_save_path = next(i);
+        } else if (arg == "--queue-depth") {
+            a.queue_depth = std::stoi(next(i));
+        } else if (arg == "--queue-timeout-sec") {
+            a.queue_timeout_sec = std::stoi(next(i));
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -696,7 +817,9 @@ int main(int argc, char** argv) {
         cparams.type_v = parse_cache_type(args.cache_type_v);
 
         ModelManager models;
-        models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock);
+        models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock,
+                    /*statewise_map=*/"", /*use_mmap=*/!args.no_mmap,
+                    /*use_extra_bufts=*/!args.no_repack);
         // Chat templating is built once here (ModelManager::load(), from the
         // model's own GGUF jinja template) -- logged loudly, including which
         // template llama.cpp resolved and whether it advertises tool-calling
@@ -708,8 +831,21 @@ int main(int argc, char** argv) {
                      models.chat_templates().supports_tools() ? "supported" : "not advertised");
         ContextGovernor ctx;
         ctx.create(models.model(), args.n_ctx, /*n_ctx_max=*/llama_model_n_ctx_train(models.model()), cparams);
-        Engine engine(models, ctx);
+        Engine engine(models, ctx, args.cache_reuse);
         ServerState state{models, ctx, engine, args.alias, {}};
+        state.slot_save_path = args.slot_save_path;
+        state.cache_reuse = args.cache_reuse;
+        state.queue_depth = args.queue_depth > 0 ? args.queue_depth : 1;
+        state.queue_timeout_sec = args.queue_timeout_sec;
+        if (!args.slot_save_path.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(args.slot_save_path, ec);
+            if (ec) {
+                std::fprintf(stderr, "[pleiades-engine-server] WARNING: cannot create --slot-save-path '%s': %s\n",
+                             args.slot_save_path.c_str(), ec.message().c_str());
+                state.slot_save_path.clear();
+            }
+        }
 
         httplib::Server svr;
 
@@ -749,6 +885,74 @@ int main(int argc, char** argv) {
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             res.set_content(json{{"n_ctx", actual}, {"took_ms", static_cast<int>(ms)}}.dump(), "application/json");
         });
+        // Slot-0 state persistence -- the same HTTP contract llama-server
+        // serves with --slot-save-path and models.py already drives
+        // best-effort around stop()/start(): POST /slots/0?action=save|restore
+        // with {"filename": "<basename>"}. 200 on success; any failure is a
+        // 4xx that models.py treats as "nothing saved / cold start", which is
+        // exactly the pre-existing semantics.
+        svr.Post(R"(/slots/\d+)", [&](const httplib::Request& req, httplib::Response& res) {
+            if (state.slot_save_path.empty()) {
+                res.status = 501;
+                res.set_content(json{{"error", "server was not started with --slot-save-path"}}.dump(),
+                                 "application/json");
+                return;
+            }
+            auto action_it = req.params.find("action");
+            std::string action = action_it != req.params.end() ? action_it->second : "";
+            if (action != "save" && action != "restore") {
+                res.status = 400;
+                res.set_content(json{{"error", "action must be save or restore"}}.dump(), "application/json");
+                return;
+            }
+            std::string filename;
+            try {
+                json body = json::parse(req.body);
+                if (body.contains("filename") && body["filename"].is_string()) {
+                    filename = body["filename"].get<std::string>();
+                }
+            } catch (const std::exception&) {
+                // body optional for this endpoint; filename may also arrive via
+                // query param in some callers.
+                auto filename_it = req.params.find("filename");
+                if (filename_it != req.params.end()) {
+                    filename = filename_it->second;
+                }
+            }
+            if (filename.empty() || filename.find('/') != std::string::npos ||
+                filename.find('\\') != std::string::npos || filename.find("..") != std::string::npos) {
+                res.status = 400;
+                res.set_content(json{{"error", "filename must be a plain basename"}}.dump(), "application/json");
+                return;
+            }
+            const std::string path = state.slot_save_path + "/" + filename;
+
+            std::lock_guard<std::mutex> lock(state.mu);
+            if (action == "save") {
+                // PrefixCache's view of sequence 0 rides along in the file so a
+                // restore can rebind the cache and keep reusing the KV.
+                std::vector<llama_token> tokens = state.engine.prefix_cache().tokens();
+                if (save_slot_state(state.ctx.ctx(), tokens, path)) {
+                    std::fprintf(stderr, "[pleiades-engine-server] slot saved: %s (%zu tokens)\n", path.c_str(),
+                                 tokens.size());
+                    res.set_content(json{{"saved", true}, {"file", filename}}.dump(), "application/json");
+                } else {
+                    res.status = 409;
+                    res.set_content(json{{"error", "nothing to save (no resident state) or write failed"}}.dump(),
+                                     "application/json");
+                }
+            } else {
+                if (restore_slot_state(state.ctx.ctx(), state.engine, path)) {
+                    std::fprintf(stderr, "[pleiades-engine-server] slot restored: %s\n", path.c_str());
+                    res.set_content(json{{"restored", true}, {"file", filename}}.dump(), "application/json");
+                } else {
+                    res.status = 404;
+                    res.set_content(json{{"error", "no usable save file (missing, corrupt, or state mismatch)"}}.dump(),
+                                     "application/json");
+                }
+            }
+        });
+
         svr.Post("/v1/chat/completions", [&](const httplib::Request& req, httplib::Response& res) {
             try {
                 handle_chat(state, req, res);
@@ -761,10 +965,13 @@ int main(int argc, char** argv) {
 
         std::printf(
             "[pleiades-engine-server] listening on %s:%d (n_ctx=%d, ceiling=%d, alias=%s, ngl=%d, "
-            "n_cpu_moe=%d, ub=%d, batch=%d, fa=%s, ctk=%s, ctv=%s, mlock=%s)\n",
+            "n_cpu_moe=%d, ub=%d, batch=%d, fa=%s, ctk=%s, ctv=%s, mlock=%s, mmap=%s, repack=%s, "
+            "cache_reuse=%d, slot_save_path=%s)\n",
             args.host.c_str(), args.port, state.ctx.n_ctx(), state.ctx.n_ctx_max(), args.alias.c_str(),
             args.n_gpu_layers, args.n_cpu_moe, args.n_ubatch, args.n_batch, args.flash_attn.c_str(),
-            args.cache_type_k.c_str(), args.cache_type_v.c_str(), args.use_mlock ? "on" : "off");
+            args.cache_type_k.c_str(), args.cache_type_v.c_str(), args.use_mlock ? "on" : "off",
+            args.no_mmap ? "off" : "on", args.no_repack ? "off" : "on", args.cache_reuse,
+            state.slot_save_path.empty() ? "none" : state.slot_save_path.c_str());
         svr.listen(args.host.c_str(), args.port);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());

@@ -30,11 +30,17 @@ std::string ffn_exps_block_regex(int layer_idx) {
 ModelManager::~ModelManager() { unload(); }
 
 void ModelManager::load(const std::string& path, int n_gpu_layers, int n_cpu_moe, bool use_mlock,
-                        const std::string& statewise_map) {
+                        const std::string& statewise_map, bool use_mmap, bool use_extra_bufts) {
     unload();
     llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = n_gpu_layers;
     params.use_mlock = use_mlock;
+    params.use_mmap = use_mmap;
+    // false = llama-server's --no-repack: keep quantized weights in their
+    // on-disk layout under mmap instead of materializing a repacked copy
+    // (which would copy them into anonymous RAM and defeat lazy paging --
+    // see use_extra_bufts in model_manager.h, upstream issue #19578).
+    params.use_extra_bufts = use_extra_bufts;
 
     if (n_cpu_moe > 0) {
         // Build the per-layer override list BEFORE taking any c_str()

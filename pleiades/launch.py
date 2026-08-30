@@ -72,14 +72,29 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     # engine. It now shares this function's autofit placement (see the branch
     # body), but is kept as its own branch rather than slotting into the
     # native-llama-server branch below: that branch builds flags this engine
-    # still doesn't implement (--jinja, speculative decoding via -md/--spec-type,
-    # --mmproj vision, --slot-save-path, --cache-reuse, --parallel), so pointing
-    # it at this binary would pass flags parse_args() rejects. What this engine
-    # DOES support -- ngl/n-cpu-moe/ub/fa/ctk/ctv/mlock/ctx/threads -- is enough
-    # to run the same placement, which is what the branch below now does. See
-    # find_native_cpp_engine()'s own docstring for the separation rationale
-    # (checked against a second independent opinion, not just assumed).
-    if os.environ.get("PLEIADES_ENGINE", "").lower() == "pleiades_native":
+    # still doesn't implement (--jinja is unnecessary -- the engine builds the
+    # model's own jinja templates internally, but speculative decoding via
+    # -md/--spec-type, --mmproj vision and --parallel multi-slot are real gaps,
+    # and vision models are gated out of this branch entirely below). What the
+    # engine DOES support -- ngl/n-cpu-moe/ub/fa/ctk/ctv/mlock/ctx/threads/
+    # slot-save-path/cache-reuse/no-mmap/no-repack -- is enough to run the
+    # same placement AND the same persistence/reuse contract as the branch
+    # below. See find_native_cpp_engine()'s own docstring for the separation
+    # rationale (checked against a second independent opinion, not just
+    # assumed).
+    engine_requested = os.environ.get("PLEIADES_ENGINE", "").lower() == "pleiades_native"
+    # Vision models are NOT eligible for the engine (engine/http_server.cpp has
+    # no image handling yet, see docs/specs/2026-07-23-vision-routing-design.md)
+    # -- and silently dropping mmproj on them is worse than routing the whole
+    # model to llama-server, which has real --mmproj support. So a vision model
+    # falls through to the native llama-server branch even when the engine was
+    # requested; the flag still wins for every dense/MoE text model.
+    engine_eligible = engine_requested and not (mmproj and os.path.isfile(mmproj))
+    if engine_requested and not engine_eligible:
+        print("[launch] PLEIADES_ENGINE=pleiades_native requested, but this model "
+              "carries an mmproj (vision) -- the Pleiades engine has no image "
+              "handling yet, so llama-server is serving this model.", flush=True)
+    if engine_eligible:
         native_cpp = runtime.find_native_cpp_engine()
         if native_cpp:
             # The from-scratch engine (engine/http_server.cpp) now speaks
@@ -141,6 +156,17 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                 cmd += ["--ctk", eff.kv_cache_type, "--ctv", eff.kv_cache_type]
             if getattr(eff, "mlock", False):
                 cmd += ["--mlock"]
+            # Same slot-persistence contract the native llama-server branch
+            # wires: models.py's best-effort save/restore around stop/start
+            # works identically against the engine's POST /slots/0 endpoints.
+            slot_dir = config.PLEIADES_HOME / "slots" / name
+            slot_dir.mkdir(parents=True, exist_ok=True)
+            cmd += ["--slot-save-path", str(slot_dir) + os.sep]
+            # Middle-of-prompt KV chunk reuse (llama-server's --cache-reuse):
+            # the engine implements the same chunk-salvage pass, which is what
+            # makes Anamnesis's per-turn rewritten memory block cheap.
+            if getattr(eff, "cache_reuse", 0):
+                cmd += ["--cache-reuse", str(eff.cache_reuse)]
             why = (f"runtime=pleiades-native-engine (experimental) strategy={pl.strategy} "
                    f"n_ctx={launch_ctx} ngl={ngl}"
                    + (f" n_cpu_moe={pl.n_cpu_moe}" if (forced is None and pl.n_cpu_moe) else "")

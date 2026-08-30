@@ -121,7 +121,8 @@ size_t stop_overlap_suffix(const std::string& text, const std::vector<std::strin
 
 }  // namespace
 
-Engine::Engine(ModelManager& models, ContextGovernor& ctx) : models_(models), ctx_(ctx) {}
+Engine::Engine(ModelManager& models, ContextGovernor& ctx, int cache_reuse)
+    : models_(models), ctx_(ctx), cache_reuse_(cache_reuse) {}
 
 void Engine::reset_prefix_cache() {
     llama_context* ctx = ctx_.ctx();
@@ -181,86 +182,152 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     result.n_prompt_tokens = static_cast<int>(prompt_tokens.size());
 
     size_t n_reuse = prefix_.reusable_prefix(prompt_tokens);
+    result.n_chunks_reused = 0;
 
-    // Guard against a KV that no longer actually holds a clean [0, n_reuse)
-    // prefix -- e.g. a sliding-window (SWA) cache can evict early positions,
-    // in which case seq_pos_min > 0 and the "reused" prefix would be a lie.
-    // Only trust the cache when position 0 is still present. (For the dense
-    // caches this engine serves today this is always true; the check is
-    // cheap insurance, not dead code -- it's what makes reuse correct rather
-    // than merely usually-correct.)
-    if (n_reuse > 0) {
-        llama_pos pos_min = llama_memory_seq_pos_min(mem, /*seq_id=*/0);
-        llama_pos pos_max = llama_memory_seq_pos_max(mem, /*seq_id=*/0);
-        if (pos_min > 0 || pos_max < static_cast<llama_pos>(n_reuse) - 1) {
-            n_reuse = 0;
+    // Fill level: how much of the prompt is already resident (the LCP prefix,
+    // possibly extended below by chunk reuse and interleaved decoding).
+    size_t n_past = n_reuse;
+    // Position-indexed mirror of the KV contents (kv[i] = token at position
+    // i). Starts as the pre-request resident sequence and is mutated in
+    // lockstep with the real cache by every move/decode/trim below, so match
+    // searches always see exactly what the cache holds.
+    std::vector<llama_token> kv(prefix_.tokens());
+
+    const bool fa_maybe_on = ctx_.params().flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    // Flash-attention stale-KV correctness guard (rationale preserved below):
+    // with FA on, a prompt SHORTER than the resident sequence would leave
+    // stale K/V in freed cells beyond the new prompt's end, and this pinned
+    // llama.cpp's FA kernel leaks those masked cells into attention
+    // (empirically proven on CPU *and* CUDA). The reuse pass is skipped and
+    // the KV data scrubbed in exactly that case; without FA the explicit mask
+    // makes stale cells exact, so reuse is always safe. (When the prompt is
+    // >= the resident sequence, every freed cell is overwritten by the suffix
+    // decode, so reuse under FA is safe too.)
+    const bool fa_shrink_guard = fa_maybe_on && prompt_tokens.size() < resident;
+    if (cache_reuse_ > 0 && !fa_shrink_guard && llama_memory_can_shift(mem) &&
+        kv.size() > n_reuse) {
+        // -- Middle-of-prompt chunk reuse (llama-server's --cache-reuse,
+        //    ported) ---------------------------------------------------------
+        //
+        // Anamnesis rewrites the <memory> block every turn, so the new prompt
+        // diverges from the resident sequence right after the system prefix
+        // -- but long stretches of it often exist VERBATIM further into the
+        // resident KV, just at different positions (most commonly when the
+        // rewritten block SHRANK or kept its length). Ported from
+        // tools/server/server-context.cpp's n_cache_reuse loop: when a run of
+        // >= cache_reuse_ prompt tokens appears in the resident sequence, the
+        // KV cells holding it are MOVED into place (llama_memory_seq_rm frees
+        // the gap first, llama_memory_seq_add re-labels the chunk -- exact at
+        // this pin via the graph's k_shift input), and the walk continues.
+        // Chunks are claimed strictly left-to-right in BOTH spaces (head_p in
+        // the prompt, head_c in the KV), so sources never overlap and every
+        // move targets the current fill boundary -- which keeps the alive
+        // sequence a contiguous [0, n_past) prefix, the only shape
+        // llama_decode accepts (its batch must start at seq pos_max + 1).
+        //
+        // Known limit (upstream shares it): a chunk sitting after an
+        // INSERTION (the memory block GREW past its old length) cannot be
+        // salvaged, because decoding the insertion would force non-contiguous
+        // alive positions. Widening that needs fixed-size memory slots on
+        // Anamnesis's side, not engine heroics -- see
+        // docs/specs/2026-08-30-engine-default-elastic-context.md.
+        const size_t prompt_cap = prompt_tokens.size() - 1;  // last token always decodes fresh
+        size_t head_c = n_reuse;  // walk head over the resident sequence
+        size_t head_p = n_reuse;  // fill head over the prompt
+        bool cold = false;
+        while (head_c < kv.size() && head_p < prompt_cap) {
+            size_t n_match = 0;
+            while (head_c + n_match < kv.size() && head_p + n_match < prompt_tokens.size() &&
+                   kv[head_c + n_match] == prompt_tokens[head_p + n_match]) {
+                ++n_match;
+            }
+            if (static_cast<int>(n_match) >= cache_reuse_) {
+                // Move resident cells [head_c, head_c+n_match) to
+                // [head_p, head_p+n_match). Order matters: free the gap
+                // BEFORE the re-label (the chunk's target positions must be
+                // vacant), leave later chunks' cells alive, and drop the
+                // obsolete tail only after this move (its range would
+                // otherwise swallow not-yet-moved chunks).
+                if (!llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(head_p),
+                                         static_cast<llama_pos>(head_c))) {
+                    cold = true;
+                    break;
+                }
+                const int64_t kv_shift = static_cast<int64_t>(head_p) - static_cast<int64_t>(head_c);
+                if (kv_shift != 0) {
+                    llama_memory_seq_add(mem, /*seq_id=*/0, static_cast<llama_pos>(head_c),
+                                         static_cast<llama_pos>(head_c + n_match),
+                                         static_cast<llama_pos>(kv_shift));
+                }
+                if (!llama_memory_seq_rm(mem, /*seq_id=*/0,
+                                         static_cast<llama_pos>(head_p + n_match), /*p1=*/-1)) {
+                    cold = true;
+                    break;
+                }
+                n_past = head_p + n_match;
+                head_p += n_match;
+                head_c += n_match;
+                ++result.n_chunks_reused;
+            } else {
+                // Upstream's exact scan semantics: advance the KV head one
+                // token per miss (head_p only moves when a chunk lands).
+                head_c += 1;
+            }
+        }
+        if (cold) {
+            // Half-moved layout: abandon reuse entirely and cold-decode.
+            llama_memory_seq_rm(mem, /*seq_id=*/0, /*p0=*/-1, /*p1=*/-1);
+            n_past = 0;
+            result.n_chunks_reused = 0;
+        } else {
+            // Drop the obsolete tail so the alive sequence is the contiguous
+            // [0, n_past) prefix llama_decode requires.
+            if (!llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(n_past), /*p1=*/-1)) {
+                llama_memory_seq_rm(mem, /*seq_id=*/0, /*p0=*/-1, /*p1=*/-1);
+                n_past = 0;
+                result.n_chunks_reused = 0;
+            }
+        }
+    } else if (fa_shrink_guard) {
+        llama_memory_clear(mem, /*data=*/true);
+        prefix_.invalidate(ctx_.epoch());
+        n_past = 0;
+    } else {
+        // Plain path: the common prefix only. Trim [n_past, inf) -- the
+        // previous sequence's tail beyond n_past no longer matches anything.
+        // When n_past == 0 this is the KV clear the old code was missing (the
+        // active-duplication bug: without it, a repeated persona prefix
+        // re-decoded at ever-growing positions).
+        if (!llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(n_past), /*p1=*/-1)) {
+            // Partial removal is refused by some cache types (e.g. SWA can't
+            // truncate mid-sequence). Full clear + cold decode -- correct,
+            // just forfeits reuse for this call.
+            llama_memory_seq_rm(mem, /*seq_id=*/0, /*p0=*/-1, /*p1=*/-1);
+            n_past = 0;
         }
     }
 
-    // -- Flash-attention stale-KV correctness guard ------------------------
-    //
-    // Trimming the KV with llama_memory_seq_rm() only clears cell *metadata*;
-    // the K/V *data* of the freed cells stays in the backend buffer until a
-    // later decode overwrites it. The suffix decode below overwrites cells
-    // [n_reuse, prompt_len), so any freed cell at position >= prompt_len keeps
-    // its stale K/V -- which happens exactly when this prompt is SHORTER than
-    // the resident high-water (a shorter/diverged turn, the norm once Anamnesis
-    // rewrites the memory block each turn; see launch.py's --cache-reuse note).
-    //
-    // With the explicit-mask attention path those stale cells are correctly
-    // masked (mask_drop == -inf), so reuse is exact -- verified byte-for-byte
-    // on CPU and CUDA. But this pinned llama.cpp's FLASH-ATTENTION kernel
-    // (b10103 / c588c4f47) leaks non-zero K/V from those masked cells into the
-    // result: a small numerical perturbation that flips the occasional greedy
-    // argmax and silently corrupts generation (empirically: a Qwen2.5 tool call
-    // comes back as `{{"name"..}}}}` instead of `{"name"..}` on the 2nd of two
-    // identical requests -- reproduced on CPU *and* CUDA, so it is a flash-
-    // attention bug, not a GPU one; it is not the position/KV bookkeeping,
-    // which is provably correct here, nor CUDA graphs). llama_batch_get_one's
-    // auto-assigned positions were ruled out too (explicit positions don't fix
-    // it). The tiny fixture in test_prefix_cache doesn't trip it only because
-    // its perturbation stays under the argmax-flip threshold.
-    //
-    // Fix: when flash attention may be active and stale cells would remain,
-    // scrub the whole KV data buffer (llama_memory_clear(data=true) is the only
-    // public API that zeroes data, not just metadata) and cold-decode. Reuse is
-    // preserved for the common growing-conversation case (prompt_len >=
-    // resident: every freed cell is overwritten by the suffix decode, so no
-    // stale data survives) and whenever flash attention is explicitly off.
-    const bool fa_maybe_on = ctx_.params().flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
-    if (fa_maybe_on && prompt_tokens.size() < resident) {
-        llama_memory_clear(mem, /*data=*/true);
-        prefix_.invalidate(ctx_.epoch());
-        n_reuse = 0;
+    result.n_prompt_cached = static_cast<int>(n_past);
+
+    // Decode only the suffix beyond the fill level. Both the prefix path
+    // (reusable_prefix caps at prompt.size()-1) and the chunk path (loop cap
+    // prompt_cap + post-loop guarantee below) keep at least one token to
+    // decode -- the sampler needs fresh logits for the final prompt token.
+    // Positions auto-assign to [n_past, ...] since we trimmed the KV to
+    // seq_pos_max == n_past-1.
+    if (n_past > prompt_tokens.size() - 1) {
+        n_past = prompt_tokens.size() - 1;  // unreachable via the caps above; belt and braces
+        llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(n_past), /*p1=*/-1);
     }
-
-    // Trim the KV back to the reusable prefix: remove [n_reuse, inf) from
-    // sequence 0. When n_reuse == 0 this is exactly the KV clear the old
-    // code was missing (the active-duplication bug) -- it resets seq 0 to
-    // empty so the prompt decodes at positions [0, ...).
-    if (!llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(n_reuse), /*p1=*/-1)) {
-        // Partial removal is refused by some cache types (e.g. SWA can't
-        // truncate mid-sequence). Fall back to a full clear + cold decode
-        // -- correct, just forfeits reuse for this call.
-        llama_memory_seq_rm(mem, /*seq_id=*/0, /*p0=*/-1, /*p1=*/-1);
-        n_reuse = 0;
-    }
-
-    result.n_prompt_cached = static_cast<int>(n_reuse);
-
-    // Decode only the suffix beyond the reused prefix. reusable_prefix()
-    // guarantees n_reuse <= prompt.size()-1, so there is always >= 1 token
-    // to decode -- the sampler needs fresh logits for the final prompt
-    // token. Positions auto-assign to [n_reuse, ...] since we trimmed the
-    // KV to seq_pos_max == n_reuse-1.
-    int n_suffix = static_cast<int>(prompt_tokens.size() - n_reuse);
-    llama_batch prompt_batch = llama_batch_get_one(prompt_tokens.data() + n_reuse, n_suffix);
-    if (llama_decode(ctx, prompt_batch) != 0) {
+    int n_suffix = static_cast<int>(prompt_tokens.size() - n_past);
+    llama_batch prompt_batch = llama_batch_get_one(prompt_tokens.data() + n_past, n_suffix);
+    if (n_suffix > 0 && llama_decode(ctx, prompt_batch) != 0) {
         // Scrub the KV data (not just metadata) so a partially-written,
         // now-abandoned decode can't leak into the next request's flash-
         // attention pass -- then drop the tracked prefix to match.
         llama_memory_clear(mem, /*data=*/true);
         prefix_.invalidate(ctx_.epoch());
+        result.n_chunks_reused = 0;
         throw std::runtime_error("pleiades_engine: llama_decode failed on prompt");
     }
 

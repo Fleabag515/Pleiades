@@ -35,6 +35,20 @@ public:
     // --mlock): force the OS to keep the model resident in RAM rather than
     // swapping/compressing it.
     //
+    // use_mmap mirrors llama_model_params::use_mmap (llama-server's
+    // --no-mmap): when true (the library default) the GGUF is memory-mapped,
+    // so untouched pages -- e.g. cold MoE experts -- stay on disk until first
+    // touched. When false the loader reads everything into anonymous RAM.
+    //
+    // use_extra_bufts mirrors llama_model_params::use_extra_bufts
+    // (llama-server's --no-repack): the library default (true) lets ggml's
+    // "extra buffer types" repack quantized weights into a faster layout at
+    // load. Repacking MATERIALIZES the repacked copy, which defeats mmap's
+    // laziness (weights get copied out of the mapped file into anonymous RAM
+    // -- see upstream issue #19578) -- so expert-streaming / memory-lean
+    // launches want false, at some kernel-speed cost. Default true = llama.cpp
+    // behavior byte-for-byte.
+    //
     // Also builds this model's real chat templates (see chat_templates()) from
     // its own GGUF-embedded jinja template -- once, here, not per request.
     //
@@ -45,7 +59,7 @@ public:
     // CPU-offloaded (n_cpu_moe covering them) so the cold chain stays on CPU -- otherwise
     // the CUDA placement tripwire will abort. Empty = disabled. See docs Phase 7.
     void load(const std::string& path, int n_gpu_layers = 0, int n_cpu_moe = 0, bool use_mlock = false,
-              const std::string& statewise_map = "");
+              const std::string& statewise_map = "", bool use_mmap = true, bool use_extra_bufts = true);
 
     void unload();
 

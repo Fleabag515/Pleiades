@@ -84,9 +84,11 @@ def find_native_cpp_engine() -> Optional[str]:
     returns a path assumed to accept llama-server's actual CLI flag shape
     (-m/-c/-ngl/--jinja/-fa/-ctk/-ctv/--n-cpu-moe/--spec-type/...), and
     `build_command()` builds those flags assuming whatever binary it gets
-    back understands all of them. `pleiades-engine-server` only supports
-    load/resize/chat-completion today -- no flash-attention toggle, no KV
-    quantization, no MoE expert offload, no speculative decoding. Reusing
+    back understands all of them. `pleiades-engine-server` understands the
+    serving-critical subset (--ngl/--n-cpu-moe/--fa/--ctk/--ctv/--ub/
+    --slot-save-path/--cache-reuse/--no-mmap/--no-repack) but not the rest:
+    no speculative decoding (-md/--spec-type), no --mmproj vision, no
+    --parallel multi-slot, and its slot files are its own format. Reusing
     the same ranked list would either silently drop flags it doesn't
     understand or require brittle per-flag filtering inside that branch.
     A second consultant (Kimi, asked independently) agreed: keep this a

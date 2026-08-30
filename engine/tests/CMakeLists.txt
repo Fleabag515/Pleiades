@@ -50,6 +50,8 @@ pleiades_add_test(test_model_manager)
 pleiades_add_test(test_context_governor)
 pleiades_add_test(test_engine)
 pleiades_add_test(test_prefix_cache)
+pleiades_add_test(test_slot_state)
+pleiades_add_test(test_cache_reuse)
 
 # Phase C: end-to-end HTTP tool-calling tests against REAL models.
 #

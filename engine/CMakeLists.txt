@@ -141,6 +141,7 @@ add_library(pleiades_engine STATIC
   src/prefix_cache.cpp
   src/engine.cpp
   src/chat_template.cpp
+  src/slot_state.cpp
 )
 target_include_directories(pleiades_engine PUBLIC include)
 # nlohmann/json.hpp is vendored inside the llama.cpp submodule (see the

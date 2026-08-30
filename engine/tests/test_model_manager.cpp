@@ -1,4 +1,6 @@
 // Requires the tiny fixture GGUF (see tests/CMakeLists.txt) as argv[1].
+#include "pleiades_engine/context_governor.h"
+#include "pleiades_engine/engine.h"
 #include "pleiades_engine/model_manager.h"
 
 #include <stdexcept>
@@ -37,6 +39,21 @@ int main(int argc, char** argv) {
         PLEIADES_CHECK(m.is_loaded());
         m.load(model_path, 0);  // reload while already loaded -- must not leak/crash
         PLEIADES_CHECK(m.is_loaded());
+    }
+
+    // --no-mmap + --no-repack equivalents: load with mmap disabled and the
+    // extra buffer types (weight repacking) disabled -- the memory-lean
+    // expert-streaming posture. Must load and serve a completion.
+    {
+        pleiades_engine::ModelManager m;
+        m.load(model_path, 0, /*n_cpu_moe=*/0, /*use_mlock=*/false, /*statewise_map=*/"",
+               /*use_mmap=*/false, /*use_extra_bufts=*/false);
+        PLEIADES_CHECK(m.is_loaded());
+        pleiades_engine::ContextGovernor ctx;
+        ctx.create(m.model(), /*n_ctx=*/256);
+        pleiades_engine::Engine engine(m, ctx);
+        auto r = engine.complete("Once upon a time", /*n_predict=*/8);
+        PLEIADES_CHECK(!r.text.empty());
     }
 
     // A bad path must throw, not crash or silently report loaded.

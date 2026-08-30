@@ -63,6 +63,12 @@ struct GenerationResult {
     // produced (as opposed to hitting EOG or n_predict). The HTTP shim maps
     // this to finish_reason "stop" either way, but it's exposed for tests.
     bool stopped_on_stop_string = false;
+    // How many middle-of-prompt chunks were salvaged from the resident KV by
+    // the --cache-reuse mechanism this call (0 when disabled or when nothing
+    // matched). Unlike n_prompt_cached (which only counts the leading common
+    // prefix), these were moved into place with llama_memory_seq_add, not
+    // re-decoded -- the win Anamnesis's rewritten-memory prompts need.
+    int n_chunks_reused = 0;
     double prompt_seconds = 0.0;
     double generate_seconds = 0.0;
 };
@@ -75,7 +81,10 @@ struct GenerationResult {
 // jinja templating the HTTP shim renders every request through.
 class Engine {
 public:
-    Engine(ModelManager& models, ContextGovernor& ctx);
+    // `cache_reuse` is the minimum token-run length (llama-server's
+    // --cache-reuse) eligible for middle-of-prompt KV chunk salvage; 0 (the
+    // default, every pre-existing caller) disables the pass entirely.
+    Engine(ModelManager& models, ContextGovernor& ctx, int cache_reuse = 0);
 
     // Non-streaming: runs to completion (n_predict tokens, EOG, or a stop
     // string) and returns the full text + stats in one shot.
@@ -109,10 +118,19 @@ public:
     // Prefix-cache introspection (used by tests and benchmarks).
     const PrefixCache& prefix_cache() const { return prefix_; }
 
+    // Rebind the PrefixCache to `tokens` under the CURRENT governor epoch,
+    // after slot-state restore planted a restored KV into the live context
+    // (slot_state.cpp). The caller guarantees `tokens` describes sequence 0's
+    // exact resident content.
+    void adopt_restored_state(std::vector<llama_token> tokens) {
+        prefix_.set(std::move(tokens), ctx_.epoch());
+    }
+
 private:
     ModelManager& models_;
     ContextGovernor& ctx_;
     PrefixCache prefix_;
+    int cache_reuse_ = 0;
 };
 
 }  // namespace pleiades_engine
