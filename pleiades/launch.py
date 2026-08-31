@@ -30,7 +30,7 @@ from typing import Optional
 from . import config, runtime
 from .autofit import RuntimeCaps, place
 from .config import Settings
-from .hardware import read_gguf_meta, resolve_context
+from .hardware import kv_bytes_per_token, read_gguf_meta, resolve_context
 
 
 @dataclass
@@ -117,11 +117,25 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             # n_cpu_moe is keyed off THIS model's real MoE structure via `meta`.
             cpp_caps = RuntimeCaps(moe_offload=True, native=True)
             n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path, caps=cpp_caps)
-            # Context is fixed at launch (like llama-server): the engine's
-            # /resize exists, but we commit to the ceiling n_ctx_max here, same
-            # reasoning as the native branch below.
-            launch_ctx = n_ctx_max
-            pl = place(meta, launch_ctx, caps=cpp_caps)
+            # Phase 2 -- ELASTIC context. Unlike llama-server (whose window is
+            # fixed at launch, so the native branch below must commit straight
+            # to the n_ctx_max ceiling), this engine grows KV-preservingly at
+            # runtime: launch at the smallest planned gear n_ctx_v ("use as
+            # little VRAM per turn as possible") and let auto-upshift handle
+            # growth. n_ctx_max remains meaningful: it is the GPU K/V budget
+            # expressed as a context ceiling -- passed to the engine as
+            # --kv-budget-mib so growth past it SPILLS the cache to host RAM
+            # instead of dying, and only a RAM-budget breach errors. An
+            # explicit user pin still hard-caps (--ctx-max): "the user said a
+            # number, so the engine launches there and never resizes past it".
+            explicit_pin = isinstance(n_ctx, int) or (
+                isinstance(n_ctx, str) and n_ctx.strip() != "" and n_ctx.strip().lower() != "auto"
+                and n_ctx.strip().lstrip("-").isdigit())
+            launch_ctx = n_ctx_v
+            # Placement is still sized against the planned CEILING (the KV cost
+            # at n_ctx_max must fit eventually); the elastic start below it
+            # just means that VRAM is free until the conversation needs it.
+            pl = place(meta, n_ctx_max, caps=cpp_caps)
             forced = None
             if not (isinstance(n_gpu_layers, str) and n_gpu_layers.strip().lower() in ("", "auto")):
                 try:
@@ -136,6 +150,15 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             ngl = forced if forced is not None else pl.n_gpu_layers
             cmd = [native_cpp, "--model", model_path, "--host", host, "--port", str(port),
                    "--ctx", str(launch_ctx), "--ngl", str(ngl), "--alias", name]
+            if explicit_pin:
+                cmd += ["--ctx-max", str(n_ctx_max)]
+            else:
+                # K/V bytes at the planned GPU ceiling -> the engine's GPU KV
+                # budget. Beyond it: CPU spill (never truncation).
+                kbt = kv_bytes_per_token(meta)
+                if kbt:
+                    kv_mib = max(1, int(round(kbt * n_ctx_max / (1024 * 1024))))
+                    cmd += ["--kv-budget-mib", str(kv_mib)]
             if forced is None and pl.n_cpu_moe:
                 cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
             ub = getattr(eff, "n_ubatch", 0) or pl.n_ubatch
@@ -147,13 +170,17 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                 ub = 2048
             if ub:
                 cmd += ["--ub", str(ub)]
+            # Phase 2 default: q8_0 K/V cache (about half the f16 KV footprint;
+            # Anamnesis's long injected contexts are exactly where that VRAM is
+            # best spent). Requires flash attention, so "auto" resolves on.
+            kv_type = getattr(eff, "kv_cache_type", "") or "q8_0"
             fa = eff.flash_attn
-            if eff.kv_cache_type and fa == "auto":
+            if kv_type and fa == "auto":
                 fa = "on"  # a quantized V-cache requires flash attention
             if fa:
                 cmd += ["--fa", fa]
-            if eff.kv_cache_type:
-                cmd += ["--ctk", eff.kv_cache_type, "--ctv", eff.kv_cache_type]
+            if kv_type:
+                cmd += ["--ctk", kv_type, "--ctv", kv_type]
             if getattr(eff, "mlock", False):
                 cmd += ["--mlock"]
             # Same slot-persistence contract the native llama-server branch

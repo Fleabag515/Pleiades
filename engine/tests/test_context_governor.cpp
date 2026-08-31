@@ -1,6 +1,7 @@
 // Requires the tiny fixture GGUF (see tests/CMakeLists.txt) as argv[1].
 #include "pleiades_engine/context_governor.h"
 
+#include <stdexcept>
 #include <string>
 
 #include "llama.h"
@@ -64,19 +65,29 @@ int main(int argc, char** argv) {
     PLEIADES_CHECK(actual2 == 4096);
     PLEIADES_CHECK(ctx.ctx() == after_first_resize);
 
-    // A ceiling of 0 (constructor default) falls back to the model's own
-    // trained context, not an unbounded/undefined clamp. Note: clamp_gear()
-    // still applies its hard 1024 floor on top of that ceiling (ported
-    // verbatim from server.py's `max(1024, min(requested, ceiling))`), so
-    // for a model with a tiny trained context (like this fixture) the
-    // floor can dominate -- that's inherited, expected behavior, not a
-    // bug, so the expectation below mirrors the same formula rather than
-    // assuming the ceiling always wins.
+    // Phase 2: a ceiling of 0 (constructor default) is UNBOUNDED -- growth is
+    // governed by the KV budgets, not by a context number. clamp_gear() keeps
+    // its hard 1024 floor and nothing else. (Pre-Phase-2 this fell back to the
+    // model's trained context; the elastic context directive removed that
+    // ceiling — growth past n_ctx_train engages YaRN instead.)
     pleiades_engine::ContextGovernor ctx2;
     ctx2.create(models.model(), 1024);  // n_ctx_max defaults to 0
-    int train_ctx = llama_model_n_ctx_train(models.model());
-    int expected = train_ctx > 1024 ? train_ctx : 1024;
-    PLEIADES_CHECK(ctx2.clamp_gear(100000000) == expected);
+    PLEIADES_CHECK(ctx2.clamp_gear(100000000) == 100000000);
+    PLEIADES_CHECK(ctx2.next_gear_for(5000) == 8192);
+    PLEIADES_CHECK(ctx2.next_gear_for(200000) == 262144);  // doubles past the ladder
+
+    // A hard pin (--ctx-max) still clamps, and a need beyond the pin throws.
+    pleiades_engine::ContextGovernor ctx3;
+    ctx3.create(models.model(), 1024, /*n_ctx_max=*/8192);
+    PLEIADES_CHECK(ctx3.clamp_gear(100000) == 8192);
+    PLEIADES_CHECK(ctx3.next_gear_for(8192) == 8192);
+    bool threw = false;
+    try {
+        (void)ctx3.next_gear_for(9000);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    PLEIADES_CHECK(threw);
 
     // -- ContextParams parity (flash-attn/KV-quant/n_ubatch/n_batch/threads) //
     // Context-param parity knobs must be retained verbatim across resize()

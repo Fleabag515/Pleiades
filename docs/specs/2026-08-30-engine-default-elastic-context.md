@@ -63,20 +63,47 @@ Landed in `engine/` + `pleiades/launch.py` + `pleiades/runtime.py`:
 - HTTP smoke: queue served a second request after the in-flight turn; slot
   save/restore roundtrip across process restart reused 696/697 tokens.
 
-## Phase 2 — elastic, unbounded, VRAM-frugal context (next)
+## Phase 2 — elastic, unbounded, VRAM-frugal context — LANDED 2026-08-30
 
-- KV-preserving grow on upshift: `llama_state_seq_get_data` → recreate ctx at
-  the next gear → `set_data` (no re-prefill; the same primitive the slot file
-  uses). Auto-upshift when a request's prompt + headroom exceeds n_ctx.
-- No fixed ceiling: drop the `n_ctx_train` cap; engage YaRN automatically past
-  trained length (computed scale/factor, logged, opt-out). Ceiling becomes the
-  VRAM+RAM budget.
-- Launch at the smallest gear that fits; grow per turn. KV q8_0 default with FA.
-- Spill, never truncate: past the VRAM budget recreate the ctx with KV on CPU
-  (`no-kv-offload` semantics); only a RAM-budget breach errors, honestly.
-- Failure-path note: llama.cpp currently GGML_ABORTs on allocation failure —
-  install an abort callback that throws so resize/grow failures become
-  catchable 5xx/downshifts instead of process death.
+- `ContextGovernor::grow_preserving()`: snapshot (`llama_state_seq_get_data`)
+  → recreate at the target gear → restore. No re-prefill; the Engine re-binds
+  its PrefixCache when the state survived (`Engine::grow_context_to` /
+  `ensure_capacity`, called automatically at the top of every request).
+- No fixed ceiling: `n_ctx_max == 0` (the default) is UNBOUNDED — gears double
+  past the ladder forever (`next_gear_for`), growth is governed by KV budgets,
+  not context numbers. `--ctx-max N` remains a hard pin for users who ask for
+  one (a need past the pin throws an honest error).
+- Auto-YaRN past `n_ctx_train`: power-of-two factor buckets (factor = smallest
+  pow2 with factor*train >= n_ctx, `rope_freq_scale = 1/factor` — the same
+  recipe llama-server's --rope-scaling yarn applies). Within a bucket growth
+  is KV-preserving (scaling identical); crossing a bucket invalidates the
+  cached K/V (RoPE changes) and is reported honestly — one re-prefill, then
+  elasticity continues. `--no-auto-yarn` opts out (restores the pre-Phase-2
+  train ceiling). KNOWN SUBSTRATE QUIRK: tiny-train toy models (stories15M,
+  train=128) are yarn'd at every gear and degenerate — mechanics tests opt
+  out; text-equality preservation cases run on a real large-train model.
+- Launch at the smallest planned gear (launch.py now starts the engine at
+  `n_ctx_v`, not the ceiling) with KV q8_0 by default (half the f16 KV
+  footprint; requires FA, so "auto" resolves on for the KV types).
+- Spill, never truncate: growth past the GPU KV budget (`--kv-budget-mib`,
+  default = free device VRAM measured right after model load) recreates the
+  context with `offload_kqv=false` — K/V in host RAM, compute on GPU, decode
+  slower but the context KEEPS GROWING, and the state roundtrip preserves the
+  conversation across the device move. Growth past the RAM budget
+  (`--kv-cpu-budget-mib`, default 8192) throws an honest error instead of
+  truncating. The budget check prices the target gear STRUCTURALLY
+  (`ContextGovernor::kv_bytes_per_token()` — n_layer x n_kv_head x head_dims
+  x per-element size from GGUF metadata; currently falls back to full-width
+  K/V when the arch's GQA keys are not matched, over-estimating ~6x — spills
+  early, never late; refine the key lookup later).
+- Verified 2026-08-30: ctest 11/11 (new test_elastic_context: preservation
+  within train on Llama-3.2-1B, auto-upshift byte-exact vs cold ref, YaRN
+  bucket mechanics + honest invalidation on the toy fixture, spill + budget
+  exhaustion); pytest 570 passed; live GPU smoke: boot at 1024 → long turn →
+  grew to 4096 with the KV preserved across a CPU spill → completion served;
+  /props reports {unbounded, yarn_factor, kv_on_cpu, ctx_pinned}.
+- NOTED for later: llama.cpp still GGML_ABORTs on raw allocation failure —
+  the budget system above is the guardrail that keeps growth off that path.
 
 ## Phase 3 — ship as default on NVIDIA + AMD
 

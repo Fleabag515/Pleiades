@@ -29,6 +29,7 @@ struct Rig {
         // FA stale-cell guard correctly clears when FA may be on. The
         // explicit-mask path is the exactness gold standard (see engine.cpp).
         pleiades_engine::ContextParams params;
+        params.auto_yarn = false;  // toy fixture: see test_elastic_context
         params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
         models.load(model_path, /*n_gpu_layers=*/0);
         ctx.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, params);

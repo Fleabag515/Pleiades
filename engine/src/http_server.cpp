@@ -84,6 +84,7 @@
 #include <utility>
 #include <vector>
 
+#include "ggml-backend.h"
 #include "httplib.h"
 #include "llama.h"
 #include "nlohmann/json.hpp"
@@ -182,6 +183,10 @@ json props_json(ServerState& s) {
         {"queue_depth", s.queue_depth},
         {"cache_reuse", s.cache_reuse},
         {"slot_save_path", s.slot_save_path},
+        {"ctx_pinned", s.ctx.n_ctx_max()},
+        {"unbounded", s.ctx.n_ctx_max() == 0},
+        {"yarn_factor", s.ctx.yarn_factor()},
+        {"kv_on_cpu", s.ctx.kv_on_cpu()},
     };
 }
 
@@ -617,6 +622,11 @@ struct Args {
     std::string slot_save_path;
     int queue_depth = 8;
     int queue_timeout_sec = 30;
+    // Phase 2 — elastic context:
+    int ctx_max = 0;              // hard pin (0 = unbounded; budgets govern growth)
+    int kv_budget_mib = 0;        // GPU K/V budget; 0 = auto (free device VRAM at boot)
+    int kv_cpu_budget_mib = 8192; // host-RAM K/V budget after a spill; 0 = unlimited
+    bool no_auto_yarn = false;    // forbid growth past n_ctx_train
 };
 
 void print_usage(const char* prog) {
@@ -626,6 +636,7 @@ void print_usage(const char* prog) {
         "       [--ctk TYPE] [--ctv TYPE] [--alias NAME] [--threads N] [--mlock]\n"
         "       [--no-mmap] [--no-repack] [--cache-reuse N] [--slot-save-path DIR]\n"
         "       [--queue-depth N] [--queue-timeout-sec N]\n"
+        "       [--ctx-max N] [--kv-budget-mib N] [--kv-cpu-budget-mib N] [--no-auto-yarn]\n"
         "\n"
         "legacy positional mode (still accepted): %s <model.gguf> <host> <port>"
         " [n_ctx] [n_gpu_layers] [alias]\n",
@@ -773,6 +784,14 @@ Args parse_args(int argc, char** argv) {
             a.queue_depth = std::stoi(next(i));
         } else if (arg == "--queue-timeout-sec") {
             a.queue_timeout_sec = std::stoi(next(i));
+        } else if (arg == "--ctx-max") {
+            a.ctx_max = std::stoi(next(i));
+        } else if (arg == "--kv-budget-mib") {
+            a.kv_budget_mib = std::stoi(next(i));
+        } else if (arg == "--kv-cpu-budget-mib") {
+            a.kv_cpu_budget_mib = std::stoi(next(i));
+        } else if (arg == "--no-auto-yarn") {
+            a.no_auto_yarn = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -815,6 +834,7 @@ int main(int argc, char** argv) {
         cparams.flash_attn_type = parse_flash_attn(args.flash_attn);
         cparams.type_k = parse_cache_type(args.cache_type_k);
         cparams.type_v = parse_cache_type(args.cache_type_v);
+        cparams.auto_yarn = !args.no_auto_yarn;
 
         ModelManager models;
         models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock,
@@ -829,8 +849,31 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[pleiades-engine] chat template: %s (tool-calling: %s)\n",
                      models.chat_templates().source().c_str(),
                      models.chat_templates().supports_tools() ? "supported" : "not advertised");
+        // Phase 2 — auto GPU KV budget: free device VRAM as of right after the
+        // model load (the model's own footprint is already subtracted). An
+        // explicit --kv-budget-mib wins.
+        size_t gpu_free = 0;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                size_t f = 0, t = 0;
+                ggml_backend_dev_memory(dev, &f, &t);
+                gpu_free += f;
+            }
+        }
+        const size_t kv_budget = args.kv_budget_mib > 0
+                                     ? static_cast<size_t>(args.kv_budget_mib) * 1024 * 1024
+                                     : gpu_free;
+        const size_t cpu_budget = args.kv_cpu_budget_mib > 0
+                                      ? static_cast<size_t>(args.kv_cpu_budget_mib) * 1024 * 1024
+                                      : 0;
         ContextGovernor ctx;
-        ctx.create(models.model(), args.n_ctx, /*n_ctx_max=*/llama_model_n_ctx_train(models.model()), cparams);
+        // n_ctx_max > 0 is a HARD pin (--ctx-max); 0 = unbounded, growth is
+        // governed by the KV budgets. This replaces the old implicit
+        // n_ctx_train ceiling: growth past the trained context engages YaRN
+        // (opt out with --no-auto-yarn).
+        ctx.create(models.model(), args.n_ctx, args.ctx_max, cparams);
+        ctx.set_budgets(kv_budget, cpu_budget);
         Engine engine(models, ctx, args.cache_reuse);
         ServerState state{models, ctx, engine, args.alias, {}};
         state.slot_save_path = args.slot_save_path;
@@ -966,12 +1009,17 @@ int main(int argc, char** argv) {
         std::printf(
             "[pleiades-engine-server] listening on %s:%d (n_ctx=%d, ceiling=%d, alias=%s, ngl=%d, "
             "n_cpu_moe=%d, ub=%d, batch=%d, fa=%s, ctk=%s, ctv=%s, mlock=%s, mmap=%s, repack=%s, "
-            "cache_reuse=%d, slot_save_path=%s)\n",
+            "cache_reuse=%d, slot_save_path=%s)\n"
+            "[pleiades-engine-server] elastic: ctx_max=%s, auto_yarn=%s, kv_budget=%.1f MiB (GPU), "
+            "kv_cpu_budget=%s\n",
             args.host.c_str(), args.port, state.ctx.n_ctx(), state.ctx.n_ctx_max(), args.alias.c_str(),
             args.n_gpu_layers, args.n_cpu_moe, args.n_ubatch, args.n_batch, args.flash_attn.c_str(),
             args.cache_type_k.c_str(), args.cache_type_v.c_str(), args.use_mlock ? "on" : "off",
             args.no_mmap ? "off" : "on", args.no_repack ? "off" : "on", args.cache_reuse,
-            state.slot_save_path.empty() ? "none" : state.slot_save_path.c_str());
+            state.slot_save_path.empty() ? "none" : state.slot_save_path.c_str(),
+            args.ctx_max > 0 ? std::to_string(args.ctx_max).c_str() : "unbounded",
+            args.no_auto_yarn ? "off" : "on", kv_budget / (1024.0 * 1024.0),
+            cpu_budget ? std::to_string(args.kv_cpu_budget_mib).c_str() : "unlimited");
         svr.listen(args.host.c_str(), args.port);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());

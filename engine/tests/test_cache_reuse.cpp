@@ -30,6 +30,7 @@ struct Rig {
         llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_DISABLED)
         : engine(models, ctx, cache_reuse) {
         pleiades_engine::ContextParams params;
+        params.auto_yarn = false;  // toy fixture: see test_elastic_context
         params.flash_attn_type = fa;
         models.load(model_path, /*n_gpu_layers=*/0);
         ctx.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, params);

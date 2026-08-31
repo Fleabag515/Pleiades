@@ -124,6 +124,36 @@ size_t stop_overlap_suffix(const std::string& text, const std::vector<std::strin
 Engine::Engine(ModelManager& models, ContextGovernor& ctx, int cache_reuse)
     : models_(models), ctx_(ctx), cache_reuse_(cache_reuse) {}
 
+void Engine::ensure_capacity(size_t prompt_len, int n_predict) {
+    const size_t headroom = 1 + static_cast<size_t>(n_predict > 0 ? std::min(n_predict, 512) : 0);
+    const size_t need = prompt_len + headroom;
+    if (static_cast<size_t>(ctx_.n_ctx()) >= need) {
+        return;
+    }
+    const int target = ctx_.next_gear_for(need);  // throws past a hard --ctx-max pin
+    (void)grow_context_to(target);
+}
+
+ContextGovernor::GrowResult Engine::grow_context_to(int target) {
+    const int old_ctx = ctx_.n_ctx();
+    ContextGovernor::GrowResult gr = ctx_.grow_preserving(target);
+    if (gr.preserved) {
+        // Same KV, new context: re-bind the token mirror to the new epoch so
+        // the reuse logic keeps working without a re-prefill.
+        std::vector<llama_token> toks = prefix_.tokens();
+        prefix_.set(std::move(toks), ctx_.epoch());
+    } else {
+        // RoPE regime changed (YaRN bucket) or the snapshot failed: the token
+        // list stands but the KV is cold — the next decode re-prefills.
+        prefix_.invalidate(ctx_.epoch());
+    }
+    std::fprintf(stderr,
+                 "[pleiades-engine] context grew %d -> %d tokens (preserved=%d spilled=%d yarn=%.0fx kv_on_cpu=%d)\n",
+                 old_ctx, gr.n_ctx, gr.preserved ? 1 : 0, gr.spilled ? 1 : 0,
+                 ctx_.yarn_factor(), ctx_.kv_on_cpu() ? 1 : 0);
+    return gr;
+}
+
 void Engine::reset_prefix_cache() {
     llama_context* ctx = ctx_.ctx();
     if (ctx) {
@@ -181,6 +211,13 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     std::vector<llama_token> prompt_tokens = tokenize(vocab, prompt, /*add_special=*/true);
     result.n_prompt_tokens = static_cast<int>(prompt_tokens.size());
 
+    // Phase 2 — elastic context: grow (KV-preservingly) BEFORE the reuse
+    // logic so the prompt + generation headroom always fits. This may
+    // recreate the llama_context under us — refresh the handles below.
+    ensure_capacity(prompt_tokens.size(), n_predict);
+    ctx = ctx_.ctx();
+    mem = llama_get_memory(ctx);
+
     size_t n_reuse = prefix_.reusable_prefix(prompt_tokens);
     result.n_chunks_reused = 0;
 
@@ -205,7 +242,7 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     // decode, so reuse under FA is safe too.)
     const bool fa_shrink_guard = fa_maybe_on && prompt_tokens.size() < resident;
     if (cache_reuse_ > 0 && !fa_shrink_guard && llama_memory_can_shift(mem) &&
-        kv.size() > n_reuse) {
+        ctx_.yarn_factor() == 1.0f && kv.size() > n_reuse) {
         // -- Middle-of-prompt chunk reuse (llama-server's --cache-reuse,
         //    ported) ---------------------------------------------------------
         //
@@ -225,12 +262,14 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         // sequence a contiguous [0, n_past) prefix, the only shape
         // llama_decode accepts (its batch must start at seq pos_max + 1).
         //
-        // Known limit (upstream shares it): a chunk sitting after an
+        // Known limits: (1, upstream shares it) a chunk sitting after an
         // INSERTION (the memory block GREW past its old length) cannot be
         // salvaged, because decoding the insertion would force non-contiguous
-        // alive positions. Widening that needs fixed-size memory slots on
-        // Anamnesis's side, not engine heroics -- see
-        // docs/specs/2026-08-30-engine-default-elastic-context.md.
+        // alive positions -- the real fix is fixed-size memory slots on
+        // Anamnesis's side; (2) the pass is gated to yarn_factor == 1 (plain
+        // RoPE): the k_shift rotation correction under YaRN scaling is not
+        // verified exact at this pin, and inside n_ctx_train (the common
+        // case) yarn is inactive anyway -- see the design doc.
         const size_t prompt_cap = prompt_tokens.size() - 1;  // last token always decodes fresh
         size_t head_c = n_reuse;  // walk head over the resident sequence
         size_t head_p = n_reuse;  // fill head over the prompt
@@ -307,6 +346,13 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
         }
     }
 
+    if (n_past > prompt_tokens.size() - 1) {
+        // The final prompt token always decodes fresh (sampler logits): give
+        // it back its cell before reporting/decoding.
+        n_past = prompt_tokens.size() - 1;
+        llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(n_past), /*p1=*/-1);
+    }
+
     result.n_prompt_cached = static_cast<int>(n_past);
 
     // Decode only the suffix beyond the fill level. Both the prefix path
@@ -315,10 +361,6 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
     // decode -- the sampler needs fresh logits for the final prompt token.
     // Positions auto-assign to [n_past, ...] since we trimmed the KV to
     // seq_pos_max == n_past-1.
-    if (n_past > prompt_tokens.size() - 1) {
-        n_past = prompt_tokens.size() - 1;  // unreachable via the caps above; belt and braces
-        llama_memory_seq_rm(mem, /*seq_id=*/0, static_cast<llama_pos>(n_past), /*p1=*/-1);
-    }
     int n_suffix = static_cast<int>(prompt_tokens.size() - n_past);
     llama_batch prompt_batch = llama_batch_get_one(prompt_tokens.data() + n_past, n_suffix);
     if (n_suffix > 0 && llama_decode(ctx, prompt_batch) != 0) {

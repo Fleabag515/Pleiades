@@ -86,6 +86,19 @@ public:
     // default, every pre-existing caller) disables the pass entirely.
     Engine(ModelManager& models, ContextGovernor& ctx, int cache_reuse = 0);
 
+    // Phase 2 — elastic context: grow the governor KV-preservingly until the
+    // prompt plus generation headroom fits (no fixed ceiling unless the
+    // governor was created with a hard --ctx-max pin; growth past the GPU KV
+    // budget spills the cache to host RAM, past the RAM budget it throws).
+    // Called automatically by generate()/complete(); public for tests.
+    void ensure_capacity(size_t prompt_len, int n_predict);
+
+    // Phase 2 — explicit KV-preserving growth to `target` (a caller- or
+    // test-driven upshift, e.g. a future /grow endpoint). Same contract as
+    // ensure_capacity's internal growth: the prefix cache is re-bound when
+    // the sequence state survived, invalidated when it did not.
+    ContextGovernor::GrowResult grow_context_to(int target);
+
     // Non-streaming: runs to completion (n_predict tokens, EOG, or a stop
     // string) and returns the full text + stats in one shot.
     GenerationResult complete(const std::string& prompt, int n_predict = 128,
