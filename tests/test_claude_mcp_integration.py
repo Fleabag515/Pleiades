@@ -24,7 +24,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from pleiades import config
-from pleiades.harness import mcp_client
 from pleiades.harness.llm import LLM
 from pleiades.harness.mcp_client import (
     SSEMCPServer,
