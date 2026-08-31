@@ -22,6 +22,7 @@ import json
 import os
 import re
 import socket
+import threading
 import urllib.parse
 import urllib.request
 
@@ -191,21 +192,245 @@ def web_search(query: str, count: int = 6) -> str:
 
     query: the search query.
     count: how many results to return (default 6).
+
+    Resilience ladder (appended 2026-08-26 after live failure): agentic
+    research fires searches in bursts, and upstream engines answer bursts
+    with CAPTCHAs / 429s ("Suspended" in SearXNG's unresponsive_engines) —
+    after which EVERY query returns zero and a bare "(no results)" reads to
+    a model as "no evidence exists", which is a lie. The tool therefore:
+      1. self-throttles (min gap between SearXNG hits) to avoid earning new
+         suspensions;
+      2. on an empty result set, retries progressively simplified variants
+         of the query (de-quoted → keyword-core) with short backoffs —
+         quoted phrases alone often zero out niche queries;
+      3. reports infrastructure state HONESTLY on final failure: which
+         engines are suspended and that this is transient throttling, NOT
+         evidence about the topic. Works identically for any model.
     """
-    params = urllib.parse.urlencode({"q": query, "format": "json"})
-    try:
-        data = json.loads(_get(f"{_searxng_base()}/search?{params}"))
-    except Exception as e:
-        return (f"Error reaching SearXNG at {_searxng_base()} ({e}). "
-                "Set SEARXNG_URL or start a SearXNG instance.")
-    results = data.get("results", [])[:count]
+    results, infra, served = _searxng_search(query)
     if not results:
-        return "(no results)"
+        # Empty even after the retry ladder. Distinguish "the web has
+        # nothing" from "our search engines are temporarily blinded".
+        if infra:
+            return (
+                f'(no results for {query!r} — SEARCH INFRASTRUCTURE IMPAIRED, '
+                f'not proof of absence: {infra}. Wait ~60s and retry, or '
+                f'rephrase shorter without quotes; do not conclude the topic '
+                f'is undocumented.)'
+            )
+        return f"(no results for: {query!r})"
+    trimmed = results[:count]
     out = []
-    for i, r in enumerate(results, 1):
-        out.append(f"{i}. {r.get('title','')}\n   {r.get('url','')}\n"
+    for i, r in enumerate(trimmed, 1):
+        eng = (r.get("engine") or "").strip()
+        tag = f" [{eng}]" if eng else ""
+        out.append(f"{i}.{tag} {r.get('title','')}\n   {r.get('url','')}\n"
                    f"   {(r.get('content','') or '')[:200]}")
+    # Degraded-coverage detector. Two live failure shapes, one message:
+    #   a) only auxiliary engines answered (all majors suspended), or
+    #   b) a major engine answered, but with source-collapsed noise —
+    #      e.g. bing serving four wikipedia/YouTube hits for a WTC query
+    #      while its real index was throttled.
+    # Signal for (b): the whole result set collapses onto <=2 domains.
+    # Either way the model must know coverage is broken, or it treats the
+    # noise as "the web's answer" (seen live: 'Larry Page / Larry the cat'
+    # for a Silverstein/WTC query).
+    engines_used = {(r.get("engine") or "").lower() for r in trimmed}
+    domains = set()
+    for r in trimmed:
+        try:
+            d = urllib.parse.urlparse(r.get("url", "")).netloc.lower()
+            if d.startswith("www."):
+                d = d[4:]
+            if d:
+                domains.add(d)
+        except Exception:
+            continue
+    coverage_broken = bool(infra) and (
+        not (engines_used & _MAJOR_ENGINES) or len(domains) <= 2
+    )
+    if coverage_broken:
+        out.append(
+            f'[DEGRADED COVERAGE: results collapsed onto {len(domains)} '
+            f'source(s) ({", ".join(sorted(domains)) or "?"}) because major '
+            f'web engines are temporarily blocked: {infra}. These hits may '
+            f'not address your actual question even when they look '
+            f'confident. Retry the same search in ~2 minutes for full-web '
+            f'results before drawing conclusions.]'
+        )
+    elif served.strip() != query.strip():
+        # A simplified variant won. Tell the model exactly what was searched:
+        # if these hits look off-topic, the fix is a fuller rephrase (add the
+        # disambiguating words), not concluding the original question is
+        # unanswerable.
+        out.append(f'[searched as: "{served}" — if these results are '
+                   f'off-topic, rephrase with more specific terms]')
+    if infra:
+        # Results came through despite partial suspension — say so once,
+        # briefly, so the model knows coverage may be narrower than usual.
+        out.append(f"[note: some search engines temporarily unavailable ({infra}); "
+                   f"coverage may be partial]")
     return "\n".join(out)
+
+
+# ── SearXNG resilience core ──────────────────────────────────────────────────
+# Shared by web_search and deep_research. Process-wide throttle: agents fire
+# search bursts; every major engine rate-limits bursts; one process-level
+# minimum gap is the cheapest prevention (works for any model/tool caller).
+_SEARXNG_MIN_GAP = 1.0          # seconds between instance hits, process-wide
+_last_searxng_hit = [0.0]
+_throttle_lock = threading.Lock()
+
+_RETRY_BACKOFF = (1.5, 3.0)     # sleep before 2nd/3rd attempt
+
+
+def _throttle() -> None:
+    import time as _t
+    with _throttle_lock:
+        now = _t.monotonic()
+        wait = _last_searxng_hit[0] + _SEARXNG_MIN_GAP - now
+        if wait > 0:
+            _t.sleep(wait)
+        _last_searxng_hit[0] = _t.monotonic()
+
+
+_QUOTES_RE = re.compile(r'["\u201c\u201d]')
+_WS_RE = re.compile(r"\s+")
+# Only true filler grammar gets dropped from the keyword-core variant.
+# Numbers and short tokens are NEVER dropped: "building 7" losing its "7"
+# turned a 9/11 query into a Canadian post-hardcore band's discography
+# (seen live). Entity-bearing nouns stay; only these connectives go.
+_STOPWORDS = frozenset((
+    "the a an of in on for to and or is are was were what why how does did "
+    "do its it's his her their about at as by from with that this these "
+    "those it he she they them you i we us our your my me be been being"
+).split())
+
+
+def _keyword_core(query: str, max_words: int = 8) -> str:
+    words = [w for w in _QUOTES_RE.sub(" ", query).split()
+             if w.lower() not in _STOPWORDS]
+    return _WS_RE.sub(" ", " ".join(words[:max_words])).strip()
+
+
+def _query_variants(query: str) -> list[str]:
+    """Progressively simpler variants of the same information need.
+
+    Attempt order: verbatim → de-quoted (quoted phrases are the single most
+    common cause of legitimate-looking zero-result sets) → keyword core
+    (filler grammar dropped; numbers and entities preserved). Deduped,
+    original first, max 3."""
+    seen: list[str] = [query.strip()]
+    deq = _WS_RE.sub(" ", _QUOTES_RE.sub(" ", query)).strip()
+    if deq and deq.lower() != seen[0].lower():
+        seen.append(deq)
+    core = _keyword_core(deq or query)
+    if core and all(core.lower() != s.lower() for s in seen):
+        seen.append(core)
+    return seen[:3]
+
+
+def _unresponsive_note(data: dict) -> str:
+    """Human/model-readable summary of engines SearXNG could not use this
+    round ('Suspended: CAPTCHA', 'timeout', ...). Empty string when all
+    engines answered."""
+    bad = data.get("unresponsive_engines") or []
+    if not isinstance(bad, list):
+        return ""
+    parts = []
+    for entry in bad:
+        try:
+            name, reason = str(entry[0]), str(entry[1])[:40]
+        except Exception:
+            continue
+        parts.append(f"{name}: {reason}")
+    return "; ".join(parts)
+
+
+def _searxng_search(query: str, timeout: int = 20) -> tuple[list, str, str]:
+    """Run the resilience ladder. Returns (results, infra_note, served_query)
+    where infra_note summarizes suspended engines from the LAST attempt
+    (empty when everything answered) and served_query is the variant that
+    produced the returned results (== query unless a simplified variant won,
+    which callers surface so the model knows its search was rewritten).
+    Never raises for query-level failures."""
+    import time as _t
+
+    # Repeat-query cache: agents re-search near-identical strings within a
+    # turn ("Silverstein pull it", "Silverstein pull it building 7", ...).
+    # Every redundant hit feeds the upstream rate-limiters that blind the
+    # whole pool (the 2026-08-26 incident). 5-minute TTL, small cap — this
+    # is dedup, not a search history.
+    cache_key = _WS_RE.sub(" ", query.strip().lower())
+    now = _t.monotonic()
+    hit = _QUERY_CACHE.get(cache_key)
+    if hit and now - hit[0] < _QUERY_CACHE_TTL:
+        return hit[1], hit[2], hit[3]
+
+    last_results: list = []
+    last_note = ""
+    variants = _query_variants(query)
+
+    def _run(q: str):
+        _throttle()
+        params = urllib.parse.urlencode({"q": q, "format": "json"})
+        try:
+            return json.loads(_get(f"{_searxng_base()}/search?{params}",
+                                   timeout=timeout))
+        except Exception:
+            return None
+
+    data = None
+    served = variants[-1]
+    for i, q in enumerate(variants):
+        if i:
+            _t.sleep(_RETRY_BACKOFF[min(i, len(_RETRY_BACKOFF)) - 1])
+        data = _run(q)
+        if data is None:
+            last_note = "instance unreachable or errored this attempt"
+            continue
+        last_results = data.get("results", []) or []
+        last_note = _unresponsive_note(data)
+        if last_results:
+            served = q
+            break
+
+    # Patient final attempt: engine suspensions observed live are short
+    # (~180s windows) but our ladder so far spans only seconds. When the
+    # pool is blinded AND every variant came back empty, one last try after
+    # a real pause often catches a suspend expiry — bounded cost paid only
+    # in the already-degraded case.
+    if not last_results and last_note:
+        _t.sleep(_PATIENT_RETRY_WAIT)
+        data = _run(variants[0])
+        if data is not None:
+            last_results = data.get("results", []) or []
+            last_note = _unresponsive_note(data) or last_note
+            if last_results:
+                served = variants[0]
+
+    if not last_results and not last_note:
+        _QUERY_CACHE[cache_key] = (now, [], "", served)   # genuine-empty too
+        return [], "", served
+    if last_results:
+        _QUERY_CACHE[cache_key] = (_t.monotonic(), last_results,
+                                   last_note, served)
+    elif len(_QUERY_CACHE) > 64:
+        _QUERY_CACHE.clear()
+    return last_results, last_note, served
+
+
+_QUERY_CACHE: dict[str, tuple] = {}
+_QUERY_CACHE_TTL = 300.0       # seconds
+_PATIENT_RETRY_WAIT = 20.0     # seconds; only on empty+impaired
+
+# General-web crawlers: if NONE of these contributed to a result set, the
+# results are auxiliary-source noise (see web_search's degraded-coverage
+# detector), not evidence about the query.
+_MAJOR_ENGINES = frozenset((
+    "google", "bing", "brave", "duckduckgo", "startpage", "qwant",
+    "mojeek", "marginalia", "presearch", "yep",
+))
 
 
 @tool(safe=True, tags=("web", "read"))
@@ -236,16 +461,16 @@ def deep_research(query: str, num_sources: int = 4, chars_per_page: int = 3000) 
     num_sources: number of pages to fetch and include (default 4).
     chars_per_page: max characters to extract from each page (default 3000).
     """
-    # 1. Search
-    params = urllib.parse.urlencode({"q": query, "format": "json"})
-    try:
-        data = json.loads(_get(f"{_searxng_base()}/search?{params}"))
-    except Exception as e:
-        return (f"Error reaching SearXNG at {_searxng_base()} ({e}). "
-                "Set SEARXNG_URL or start a SearXNG instance.")
-
-    results = data.get("results", [])
+    # 1. Search — same resilience ladder as web_search (retries, honest
+    # infra reporting); deep research is exactly where bursts hurt most.
+    results, infra, _served = _searxng_search(query)
     if not results:
+        if infra:
+            return (
+                f'(no sources found for {query!r} — SEARCH INFRASTRUCTURE '
+                f'IMPAIRED ({infra}). This is temporary throttling upstream, '
+                f'not proof the topic is undocumented. Wait ~60s and retry.)'
+            )
         return f"(no search results for: {query!r})"
 
     # 2. Fetch top N sources

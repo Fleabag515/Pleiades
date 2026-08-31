@@ -1,6 +1,7 @@
 """Chat sessions + unified chat/agent wiring."""
 
 from pleiades import chats
+from pleiades.chats import _REPLAY_MAX_CALLS
 from pleiades.engine import Engine
 from pleiades.profiles import Profile
 from pleiades.tools import ToolBelt, ToolContext
@@ -145,7 +146,11 @@ def test_recent_messages_flattens_and_caps():
     assert hist[1] == {"role": "assistant", "content": "sunny"}
     assert hist[2] == {"role": "user", "content": "message person X"}
     assert hist[3]["role"] == "assistant"
-    assert "[used tool send_email]" in hist[3]["content"]
+    # ONE tally line per turn, not one marker per tool item.
+    assert hist[3]["content"].count("[memory of an earlier session") == 1
+    assert "[memory of an earlier session — this turn used tools: send_email." in hist[3]["content"]
+    assert "compact record" in hist[3]["content"].lower() or \
+        "Compact record" in hist[3]["content"]
     assert "done, sent it" in hist[3]["content"]
     assert hist[-2] == {"role": "user", "content": "that didn't work, send it again"}
     assert hist[-1] == {"role": "assistant", "content": "resending now"}
@@ -175,12 +180,14 @@ def test_recent_messages_reconstructs_interleaved_user_injected():
 
     hist = chats.recent_messages(loaded)
     assert hist[0] == {"role": "user", "content": "draft the report"}
-    assert hist[1]["role"] == "assistant"
-    assert "Starting on the report now." in hist[1]["content"]
-    assert "[used tool read_file]" in hist[1]["content"]
+    assert hist[1] == {"role": "assistant", "content": "Starting on the report now."}
     assert hist[2] == {"role": "user",
                        "content": "[message from the user, mid-task] actually make it shorter"}
-    assert hist[3] == {"role": "assistant", "content": "Got it, trimming it down."}
+    assert hist[3]["role"] == "assistant"
+    # The single tally covers the whole persisted turn and lands on its
+    # final segment, alongside whatever the assistant said last.
+    assert "[memory of an earlier session — this turn used tools: read_file." in hist[3]["content"]
+    assert "Got it, trimming it down." in hist[3]["content"]
     chats.delete(c["id"])
 
 
@@ -202,6 +209,46 @@ def test_recent_messages_user_injected_at_start_or_end_of_turn():
     chats.delete(c["id"])
 
 
+def test_recent_messages_collapses_tool_walls_into_one_tally():
+    """A turn with dozens of tool calls (26- and 41-item turns seen live)
+    must produce ONE tally line, never one marker per tool item — the
+    per-item form flooded resent history with dozens of identical bracket
+    lines and taught the model to imitate them."""
+    c = chats.create("mark")
+    items: list[dict] = [{"t": "text", "text": "digging in"}]
+    for i in range(41):
+        items.append({"t": "tool", "name": "call_tool", "args": "{}",
+                      "output": "ok", "ok": True})
+    items.append({"t": "tool", "name": "web_search", "args": "{}",
+                  "output": "hit", "ok": False})
+    items.append({"t": "text", "text": "found it"})
+    chats.append_turn(c["id"], "go dig", items,
+                      {"tokens": 2, "seconds": 1.0, "tps": 20.0})
+    loaded = chats.load(c["id"])
+
+    hist = chats.recent_messages(loaded)
+    assert len(hist) == 2 and hist[1]["role"] == "assistant"
+    content = hist[1]["content"]
+    assert content.count("[memory of an earlier session") == 1
+    assert "call_tool ×41" in content
+    assert "web_search; some failed" in content
+    # Real text survives around the single tally.
+    assert "digging in" in content and "found it" in content
+
+    # A turn that was ONLY tool calls still yields exactly one line.
+    c2 = chats.create("mark")
+    chats.append_turn(c2["id"], "check", [
+        {"t": "tool", "name": "list_catalog", "args": "{}", "output": "...", "ok": True},
+        {"t": "tool", "name": "list_catalog", "args": "{}", "output": "...", "ok": True},
+    ], {"tokens": 1, "seconds": 0.5, "tps": 10.0})
+    hist2 = chats.recent_messages(chats.load(c2["id"]))
+    assert len(hist2) == 2
+    assert hist2[1]["content"].count("[memory of an earlier session") == 1
+    assert "list_catalog ×2" in hist2[1]["content"]
+    chats.delete(c["id"])
+    chats.delete(c2["id"])
+
+
 def test_base_messages_inserts_history_before_new_message():
     history = [
         {"role": "user", "content": "message person X"},
@@ -217,3 +264,105 @@ def test_base_messages_inserts_history_before_new_message():
     msgs_no_hist = Engine._base_messages("hi", None, None, None)
     assert len(msgs_no_hist) == 2
     assert msgs_no_hist[-1] == {"role": "user", "content": "hi"}
+
+
+def test_recent_messages_tool_replay_native_format():
+    """Cloud brains get past tool calls replayed in NATIVE wire format:
+    assistant message with real tool_calls array + one paired role:"tool"
+    message per call, RESULTS LEFT OUT (stubbed). Native history is what
+    models are trained on — nothing counterfeit to imitate."""
+    c = chats.create("mark")
+    chats.append_turn(c["id"], "dig in", [
+        {"t": "text", "text": "On it."},
+        {"t": "tool", "name": "web_search", "args": '{"q":"tor"}', "output": "10 hits", "ok": True},
+        {"t": "text", "text": "Found a lead, going deeper."},
+        {"t": "tool", "name": "call_tool", "args": "{}", "output": "ok1", "ok": True},
+        {"t": "tool", "name": "call_tool", "args": "{}", "output": "ok2", "ok": True},
+        {"t": "tool", "name": "call_tool", "args": "{}", "output": "ok3", "ok": True},
+    ], {"tokens": 2, "seconds": 1.0, "tps": 20.0})
+    loaded = chats.load(c["id"])
+
+    hist = chats.recent_messages(loaded, tool_replay=True)
+    # user, assistant(text+tool_calls), tool(stub), assistant(text), tool(stub), [user]
+    roles = [(m["role"], "tool_calls" in m) for m in hist]
+    assert roles[0] == ("user", False)
+
+    a1 = hist[1]
+    assert a1["role"] == "assistant" and a1["content"] == "On it."
+    assert len(a1["tool_calls"]) == 1
+    tc = a1["tool_calls"][0]
+    assert tc["type"] == "function" and tc["function"]["name"] == "web_search"
+
+    t1 = hist[2]
+    assert t1["role"] == "tool"
+    assert t1["tool_call_id"] == tc["id"]
+    assert t1["content"].startswith("(result not stored in memory)")
+    assert "10 hits" not in t1["content"]
+
+    # consecutive identical calls collapse to ONE pair with a repeat note
+    a2 = hist[3]
+    assert a2["content"] == "Found a lead, going deeper."
+    assert len(a2["tool_calls"]) == 1
+    assert a2["tool_calls"][0]["function"]["name"] == "call_tool"
+    t2 = hist[4]
+    assert "identical repeats omitted" in t2["content"]
+    assert t2["tool_call_id"] == a2["tool_calls"][0]["id"]
+
+    # every tool_call id has exactly one paired tool message (template safety)
+    ids_out = [tc["id"] for m in hist if m.get("tool_calls") for tc in m["tool_calls"]]
+    ids_in = [m["tool_call_id"] for m in hist if m["role"] == "tool"]
+    assert ids_out == ids_in and len(set(ids_out)) == len(ids_out)
+    chats.delete(c["id"])
+
+
+def test_recent_messages_tool_replay_wall_falls_back_to_tally():
+    """Thrash runs collapse: call_tool ×29 identical replays as ONE
+    representative pair. But more DISTINCT calls than _REPLAY_MAX_CALLS
+    falls back to the single tally line — bounded worst case."""
+    c = chats.create("mark")
+    items = [{"t": "tool", "name": "call_tool", "args": "{}", "output": "x", "ok": True}
+             for _ in range(29)]
+    chats.append_turn(c["id"], "go", items,
+                      {"tokens": 1, "seconds": 1.0, "tps": 10.0})
+    hist = chats.recent_messages(chats.load(c["id"]), tool_replay=True)
+    assert len(hist) == 3  # user + assistant(tool_calls, no content key) + tool stub
+    assert "content" not in hist[1]
+    assert len(hist[1]["tool_calls"]) == 1
+    tool_msg = hist[2]
+    assert tool_msg["role"] == "tool"
+    assert "28 identical repeats omitted" in tool_msg["content"]
+    chats.delete(c["id"])
+
+    c2 = chats.create("mark")
+    distinct = [{"t": "tool", "name": f"tool_{i}", "args": f'{{"n":{i}}}', "output": "x",
+                 "ok": True} for i in range(_REPLAY_MAX_CALLS + 3)]
+    chats.append_turn(c2["id"], "go wide", distinct,
+                      {"tokens": 1, "seconds": 1.0, "tps": 10.0})
+    hist2 = chats.recent_messages(chats.load(c2["id"]), tool_replay=True)
+    assert len(hist2) == 2  # user + tally fallback
+    assert "[memory of an earlier session — this turn used tools:" in hist2[1]["content"]
+    assert not any(m.get("tool_calls") for m in hist2)
+    chats.delete(c2["id"])
+
+
+def test_recent_messages_tool_replay_interleaved_segments():
+    """user_injected splits replayed turns exactly like the live model saw;
+    tool pairs never cross an interjection boundary."""
+    c = chats.create("mark")
+    chats.append_turn(c["id"], "draft it", [
+        {"t": "text", "text": "Starting."},
+        {"t": "tool", "name": "read_file", "args": '{"p":"a.txt"}', "output": "...", "ok": True},
+        {"t": "user_injected", "text": "make it shorter"},
+        {"t": "text", "text": "Trimming."},
+    ], {"tokens": 2, "seconds": 0.1, "tps": 20.0})
+    hist = chats.recent_messages(chats.load(c["id"]), tool_replay=True)
+    # [user, assistant+tool_calls, tool stub, user-injected, assistant]
+    assert hist[0] == {"role": "user", "content": "draft it"}
+    assert hist[1]["role"] == "assistant"
+    assert hist[1]["content"] == "Starting."
+    assert hist[1]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert hist[2]["role"] == "tool" and hist[2]["tool_call_id"] == hist[1]["tool_calls"][0]["id"]
+    assert hist[3] == {"role": "user",
+                       "content": "[message from the user, mid-task] make it shorter"}
+    assert hist[4] == {"role": "assistant", "content": "Trimming."}
+    chats.delete(c["id"])

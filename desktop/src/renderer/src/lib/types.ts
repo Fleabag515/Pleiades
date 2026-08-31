@@ -343,6 +343,40 @@ export interface CloudSearchResult {
   is_free?: boolean
 }
 
+// Curated free cloud brains from GET /api/models/cloud-featured — the
+// one-click picker's pinned suggestions (Ox Alpha first). `capabilities` is
+// a comma-separated manual override (e.g. "vision"), same field the
+// cloud-model assignment endpoint persists on the profile.
+export interface FeaturedCloudModel {
+  id: string
+  provider: 'openrouter' | 'ollama'
+  name: string
+  note: string
+  capabilities: string
+}
+
+export interface CloudFeaturedResponse {
+  featured: FeaturedCloudModel[]
+}
+
+// Masked key views + a few plain settings fields, from GET /api/settings.
+// Keys are ALWAYS masked server-side (pleiades/config.py mask_key); this
+// type only carries what the API-keys UI renders.
+export interface SettingsView {
+  openrouter_api_keys: string[]
+  ollama_cloud_api_keys: string[]
+  ollama_cloud_url: string
+}
+
+export interface SettingsResponse {
+  settings: SettingsView
+}
+
+export interface KeyValidationResponse {
+  valid: boolean
+  detail: string
+}
+
 // ---- Right panel (Phase 14): work/progress jobs, browser-use embed -------
 
 export interface WorkJobSummary {

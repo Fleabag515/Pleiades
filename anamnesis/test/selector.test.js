@@ -355,3 +355,178 @@ test('_estOne: text-only content-parts array (no image) costs by real character 
   const cost = selector._estOne(content, 4);
   assert.equal(cost, Math.ceil(400 / 4));
 });
+
+// ── Tool-memory records: the anti-imitation backstop ────────────────────────
+
+// Pleiades summarizes past turns' tool calls as compact bracketed records
+// before they reach Anamnesis (pleiades/chats.py recent_messages). When any
+// such record is present in the assembled context, select() must inject an
+// explicit <tool_memory> block so the model never imitates the marker form
+// (writing "[used tool X]" in prose and inventing results).
+const TOOL_RECORD_MARKER =
+  "[memory of an earlier session — this turn used tools: call_tool ×41. Compact record, not a live call]";
+const LEGACY_TOOL_RECORD = '[used tool send_email]';
+
+test('select() injects <tool_memory> when resent history contains compact tool records', async () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'message person X' },
+    { role: 'assistant', content: `On it.\n${TOOL_RECORD_MARKER}\nDone — sent.` },
+    { role: 'user', content: 'did it go through?' },
+  ];
+  const result = await selector.select('session-toolrec-1', incoming);
+  const systemMsgs = result.filter((m) => m.role === 'system');
+  assert.ok(
+    systemMsgs.some((m) => String(m.content).includes('<tool_memory>')),
+    'expected a <tool_memory> block in the system message; got: ' +
+      JSON.stringify(systemMsgs.map((m) => m.content))
+  );
+  // The note must actually explain what the markers are, not just exist.
+  const withNote = systemMsgs.find((m) => String(m.content).includes('<tool_memory>'));
+  assert.match(String(withNote.content), /COMPACT MEMORY RECORDS/);
+  assert.match(String(withNote.content), /Never write such markers yourself/);
+});
+
+test('select() injects <tool_memory> for legacy bare "[used tool X]" markers too', async () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'check my mail' },
+    { role: 'assistant', content: `Checked.\n${LEGACY_TOOL_RECORD}` },
+    { role: 'user', content: 'anything new?' },
+  ];
+  const result = await selector.select('session-toolrec-2', incoming);
+  assert.ok(
+    result.some((m) => m.role === 'system' && String(m.content).includes('<tool_memory>')),
+    'legacy [used tool X] transcripts must get the same protection'
+  );
+});
+
+test('select() injects nothing about tool records when none are present (no noise)', async () => {
+  const selector = new Selector(makeConfig(), makeMockHistory(), makeMockEmbedder(), null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'hello there' },
+  ];
+  const result = await selector.select('session-toolrec-3', incoming);
+  assert.ok(
+    !result.some((m) => m.role === 'system' && String(m.content).includes('<tool_memory>')),
+    '<tool_memory> must not appear when the context has no tool records'
+  );
+});
+
+// ── Injection-side sanitization: stored poison must not reach the model ─────
+
+// Mark's live store contained whole turns whose content was ONLY a marker
+// ("[used tool tor_browser]"). Injected verbatim as rotating slots, those are
+// fake assistant messages made of pure tool-marker — the strongest possible
+// imitation bait. _fillBudget must strip marker lines and drop turns that
+// become empty.
+function makeSceneHistory(turns) {
+  // Real vector in the mock embedder's space ([0.1, 0.2]): scenes/turns
+  // without usable embeddings never qualify for scene-guided injection
+  // (sim floors), so the fixtures must carry embeddings to exercise the
+  // actual path poisoned rows would travel through.
+  const vec = new Float32Array([0.1, 0.2]);
+  return {
+    getScenes: () => [
+      {
+        id: 1,
+        engram_ids: JSON.stringify([10]),
+        embedding: vec,
+        avg_importance: 0.5,
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    ],
+    getActiveForesights: () => [],
+    getTurnIdsForMemcells: () => turns.map((t) => t.id),
+    getTurnsByIds: (ids) => turns.filter((t) => ids.includes(t.id)),
+    getSessionTurns: () => turns,
+    stats: () => ({ turns: turns.length, cells: 0, scenes: 1, foresights: 0 }),
+    bumpTurnRecall: () => {},
+    bumpSceneRecall: () => {},
+  };
+}
+
+function makeStoredTurn(id, content) {
+  const padded = content.length >= 40 ? content : content + ' '.repeat(41 - content.length);
+  return {
+    id,
+    role: 'assistant',
+    content: padded,
+    embedding: new Float32Array([0.1, 0.2]),
+    embedding_model: 'test-model',
+    importance: 0.9,
+    category: 'fleagle',
+    created_at: id,
+  };
+}
+
+test('_fillBudget drops a stored turn that is ONLY a tool-record marker', async () => {
+  const poison = makeStoredTurn(100, '[used tool tor_browser]');
+  const history = makeSceneHistory([poison]);
+  const selector = new Selector(makeConfig(), history, makeMockEmbedder(), null);
+  const incoming = [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'hello' },
+  ];
+  const result = await selector.select('session-scrub-1', incoming);
+  assert.ok(
+    !result.some(
+      (m) => m.role === 'assistant' && /^\s*\[used tool/.test(String(m.content))
+    ),
+    'a marker-only stored turn must never be injected; got: ' +
+      JSON.stringify(result)
+  );
+});
+
+test('_fillBudget keeps real text but strips embedded marker lines', async () => {
+  const mixed = makeStoredTurn(
+    101,
+    'Found the forum alive and indexed.\n[used tool tor_browser]\nReading the board index next.'
+  );
+  const history = makeSceneHistory([mixed]);
+  const selector = new Selector(makeConfig(), history, makeMockEmbedder(), null);
+  const result = await selector.select('session-scrub-2', [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'hello' },
+  ]);
+  const injected = result.find((m) => m.role === 'assistant');
+  assert.ok(injected, 'the mixed turn should still be injected');
+  assert.match(String(injected.content), /Found the forum alive/);
+  assert.ok(
+    !String(injected.content).includes('[used tool'),
+    'embedded marker line must be stripped; got: ' + String(injected.content)
+  );
+});
+
+test('scene summaries have inline tool records stripped from the <memory> block', async () => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sceneHistory = {
+    ...makeSceneHistory([]),
+    getScenes: () => [
+      {
+        id: 7,
+        title: 'Tor dig',
+        summary:
+          'Mark revived Tor access via raw SOCKS5 [used tool tor_browser] and searched ahmia.',
+        embedding: new Float32Array([0.1, 0.2]),
+        avg_importance: 0.8,
+        updated_at: nowSec,
+      },
+    ],
+  };
+  const selector = new Selector(makeConfig(), sceneHistory, makeMockEmbedder(), null);
+  const result = await selector.select('session-scrub-3', [
+    { role: 'system', content: 'You are Mark.' },
+    { role: 'user', content: 'hello again' },
+  ]);
+  const sys = result.find((m) => m.role === 'system');
+  assert.ok(String(sys.content).includes('<memory>'), 'expected a memory block');
+  assert.match(String(sys.content), /Mark revived Tor access via raw SOCKS5 and searched/);
+  // Scope to the <memory> block itself: the <tool_memory> note legitimately
+  // QUOTES legacy marker forms as examples of what not to imitate.
+  const memBlock = String(sys.content).match(/<memory>([\s\S]*?)<\/memory>/)?.[1] ?? '';
+  assert.ok(!memBlock.includes('[used tool'), 'no marker may survive in <memory>');
+});

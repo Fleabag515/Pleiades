@@ -316,9 +316,97 @@ _KEY_PROVIDERS: dict[str, dict[str, str]] = {
     "ollama-cloud": {"env": "OLLAMA_CLOUD_API_KEYS", "field": "ollama_cloud_api_keys"},
 }
 
+# Curated one-click cloud brains, surfaced at the top of the desktop app's
+# cloud tabs and the character model picker. First entry is the default
+# suggestion for "I just want a smart brain right now, zero setup". These
+# are all FREE-tier listings; availability/pricing is controlled by the
+# provider, not us -- the UI labels them as previews for that reason.
+FEATURED_CLOUD_MODELS: list[dict] = [
+    {
+        # Ox Alpha -- stealth preview model, $0/$0 on OpenRouter during the
+        # preview window (1M ctx, tool calling). Temp/preview by nature:
+        # when the preview ends this id may disappear or start billing,
+        # which is exactly what the "temp model" slot is for.
+        "id": "stealth/ox-alpha",
+        "provider": "openrouter",
+        "name": "Ox Alpha",
+        "note": "free preview · 1M context · tool calling",
+        "capabilities": "",
+    },
+]
+
+
+def _validate_cloud_key(provider: str, key: str) -> dict:
+    """Live-check a cloud API key WITHOUT storing it.
+
+    openrouter  -> GET /api/v1/auth/key (returns key metadata; 401 = bad key)
+    ollama-cloud-> GET {url}/models with the bearer (401/403 = bad key)
+    Never raises for an invalid key -- an invalid key is a *result*, not an
+    error; only truly unexpected failures surface as {"valid": False} with
+    detail text.
+    """
+    import httpx
+
+    if provider == "openrouter":
+        try:
+            r = httpx.get("https://openrouter.ai/api/v1/auth/key",
+                          headers={"Authorization": f"Bearer {key}"}, timeout=10)
+            if r.status_code == 200:
+                meta = r.json().get("data", {}) or {}
+                label = meta.get("label") or ""
+                return {"valid": True, "detail": label or "key accepted"}
+            return {"valid": False,
+                    "detail": "rejected by OpenRouter (check the key)"}
+        except Exception as e:
+            return {"valid": False, "detail": f"OpenRouter unreachable: {e}"}
+    if provider == "ollama-cloud":
+        s = config.Settings.load()
+        base = (s.ollama_cloud_url or "https://ollama.com/v1").rstrip("/")
+        try:
+            r = httpx.get(base + "/models",
+                          headers={"Authorization": f"Bearer {key}"}, timeout=10)
+            if r.status_code == 200:
+                return {"valid": True, "detail": "key accepted"}
+            return {"valid": False,
+                    "detail": f"rejected by Ollama Cloud (HTTP {r.status_code})"}
+        except Exception as e:
+            return {"valid": False, "detail": f"Ollama Cloud unreachable: {e}"}
+    raise HTTPException(400, f"Unknown provider '{provider}'")
+
+
+def _cloud_brained(pm, character: str) -> bool:
+    """True if this character's assigned brain is a cloud model
+    (openrouter:/ollama-cloud: prefix) — the gate for native tool-history
+    replay in chats.recent_messages. Cloud models get their real past
+    tool_calls replayed in wire format; local GGUFs keep the flat tally
+    (many local chat templates can't render tool roles). Never raises:
+    an unknown/deleted character just means "not cloud"."""
+    try:
+        model = getattr(pm.get(character), "model", "") or ""
+    except Exception:
+        return False
+    return model.startswith(("openrouter:", "ollama-cloud:"))
+
 
 def _env_path() -> Path:
-    return Path(os.environ.get("PLEIADES_ROOT") or Path.cwd()) / ".env"
+    """Which .env file settings/key writes go to.
+
+    Priority: PLEIADES_ROOT (dev override), then an EXISTING CWD .env (repo
+    checkouts -- same file config._load_dotenv has always read, unchanged
+    behavior). When neither exists -- notably the bundled desktop backend,
+    whose CWD is inside the install dir and gets wiped wholesale by app
+    updates -- fall back to the stable per-user ~/.pleiades/.env, which
+    Settings.load() now also reads (see config.py's load-order comment).
+    Without this fallback, keys added through Settings -> Cloud APIs would
+    vanish on the next app update.
+    """
+    root = os.environ.get("PLEIADES_ROOT")
+    if root:
+        return Path(root) / ".env"
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.is_file():
+        return cwd_env
+    return config.PLEIADES_HOME / ".env"
 
 
 def _write_env(updates: dict[str, str]) -> None:
@@ -1487,6 +1575,20 @@ def create_app() -> FastAPI:
                 "recommended": rec.quant if rec else None,
                 "options": opts}
 
+    @app.get("/api/models/cloud-featured")
+    def cloud_featured() -> dict:
+        """Curated free cloud brains for the one-click picker (Ox Alpha first).
+
+        Deliberately static: these are hand-picked free-tier listings, not
+        whatever the provider's catalog happens to return today, so the
+        desktop app can render them instantly without a network round-trip.
+        """
+        return {"featured": FEATURED_CLOUD_MODELS}
+
+    @app.post("/api/settings/keys/validate")
+    def validate_settings_key(body: ApiKeyBody) -> dict:
+        return _validate_cloud_key(body.provider, (body.key or "").strip())
+
     @app.get("/api/models/cloud-search")
     def cloud_search(source: str, q: str = "", limit: int = 25) -> dict:
         import httpx
@@ -1881,8 +1983,14 @@ def create_app() -> FastAPI:
                         # window mechanism has real prior context to work with
                         # (see chats.recent_messages docstring — fixes losing
                         # the subject on short pronoun follow-ups like
-                        # "message him again").
-                        hist = chats.recent_messages(chat)
+                        # "message him again"). Cloud brains get past tool
+                        # calls replayed in NATIVE wire format (results
+                        # stubbed) — flat prose markers taught models to fake
+                        # tool output; native history is what they're trained
+                        # on. Local GGUFs keep the tally form (template
+                        # compatibility — see recent_messages docstring).
+                        hist = chats.recent_messages(
+                            chat, tool_replay=_cloud_brained(pm, chat.get("character", "")))
                         stream_kwargs = dict(
                             system=body.system,
                             history=hist,

@@ -5,6 +5,7 @@ import type {
   BrowserViewStatus,
   ChatDetail,
   ChatSummary,
+  CloudFeaturedResponse,
   CloudSearchResponse,
   DiscordInfo,
   EmailPresets,
@@ -12,6 +13,7 @@ import type {
   HardwareInfo,
   PerfSample,
   HfSearchResult,
+  KeyValidationResponse,
   ModelEntry,
   PendingApproval,
   Profile,
@@ -19,6 +21,7 @@ import type {
   ProfileTools,
   QuantOptionsResponse,
   ScheduledTask,
+  SettingsResponse,
   WorkTask,
   StreamEvent,
   VaultEntryMeta,
@@ -157,7 +160,11 @@ export async function uploadAttachment(
  * no turn in flight for this chat -- e.g. a race where the turn just
  * finished between the composer deciding to interject and this call landing.
  */
-export async function interjectMessage(base: string, chatId: string, message: string): Promise<void> {
+export async function interjectMessage(
+  base: string,
+  chatId: string,
+  message: string
+): Promise<void> {
   const res = await fetch(`${base}/api/chats/${chatId}/interject`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -547,6 +554,58 @@ export async function assignCloudModel(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source, model })
+    })
+  )
+}
+
+// ---- Cloud APIs: featured models + key management ---------------------------
+
+export async function cloudFeatured(base: string): Promise<CloudFeaturedResponse> {
+  return asJson(await fetch(`${base}/api/models/cloud-featured`))
+}
+
+export async function getSettings(base: string): Promise<SettingsResponse> {
+  return asJson(await fetch(`${base}/api/settings`))
+}
+
+export async function addApiKey(
+  base: string,
+  provider: 'openrouter' | 'ollama-cloud',
+  key: string
+): Promise<SettingsResponse> {
+  return asJson(
+    await fetch(`${base}/api/settings/keys`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, key })
+    })
+  )
+}
+
+export async function removeApiKey(
+  base: string,
+  provider: 'openrouter' | 'ollama-cloud',
+  index: number
+): Promise<SettingsResponse> {
+  return asJson(
+    await fetch(
+      `${base}/api/settings/keys?provider=${encodeURIComponent(provider)}&index=${index}`,
+      { method: 'DELETE' }
+    )
+  )
+}
+
+/** Live-check a cloud key against its provider WITHOUT storing it. */
+export async function validateApiKey(
+  base: string,
+  provider: 'openrouter' | 'ollama-cloud',
+  key: string
+): Promise<KeyValidationResponse> {
+  return asJson(
+    await fetch(`${base}/api/settings/keys/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, key })
     })
   )
 }
