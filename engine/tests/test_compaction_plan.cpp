@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
     // the compaction mechanism under test from the unrelated FA stale-KV
     // hazard that mechanism's own fix handles separately.
     ContextParams fa_off;
+    fa_off.auto_yarn = false;  // toy fixture (n_ctx_train=128): plain rope; YaRN covered in test_elastic_context
     fa_off.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
     const std::string a = "Once upon a time in a distant kingdom, ";
@@ -166,6 +167,7 @@ int main(int argc, char** argv) {
     //         This section now verifies that refusal actually fires. ------ //
     {
         ContextParams fa_on;
+        fa_on.auto_yarn = false;  // toy fixture: see test_elastic_context
         fa_on.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
 
         const std::string fa_a = "<|im_start|>system\nYou are a helpful assistant. Use tools when "

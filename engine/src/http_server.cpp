@@ -88,6 +88,7 @@
 #include <vector>
 
 #include "base64.hpp"     // public domain, header-only -- see CMakeLists.txt's include-dir comment
+#include "ggml-backend.h"
 #include "httplib.h"
 #include "llama.h"
 #include "mtmd.h"
@@ -150,6 +151,10 @@ json props_json(ServerState& s) {
         {"n_ctx_train", llama_model_n_ctx_train(s.models.model())},
         {"n_ctx_max", s.ctx.n_ctx_max()},
         {"resizable", true},
+        {"ctx_pinned", s.ctx.n_ctx_max()},
+        {"unbounded", s.ctx.n_ctx_max() == 0},
+        {"yarn_factor", s.ctx.yarn_factor()},
+        {"kv_on_cpu", s.ctx.kv_on_cpu()},
         {"model_path", s.models.path()},
         {"gears", gears},
         {"kv_bytes_per_token", kv_bytes_per_token(s.models.model())},
@@ -694,6 +699,11 @@ struct Args {
     bool use_mlock = false;
     std::string slot_save_path;  // empty = /slots disabled, matching llama-server's own gate
     std::string mmproj;          // empty = vision disabled, matching llama-server's own --mmproj gate
+    // Phase E — elastic context:
+    int ctx_max = 0;              // hard pin (0 = unbounded; budgets govern growth)
+    int kv_budget_mib = 0;        // GPU K/V budget; 0 = auto (free device VRAM at boot)
+    int kv_cpu_budget_mib = 8192; // host-RAM K/V budget after a spill; 0 = unlimited
+    bool no_auto_yarn = false;    // forbid growth past n_ctx_train
 };
 
 // Phase 9.4 (docs/specs/2026-07-21-native-inference-engine-design.md): a
@@ -731,6 +741,7 @@ void print_usage(const char* prog) {
         "usage: %s --model PATH [--host HOST] [--port PORT] [--ctx N] [--ngl N]\n"
         "       [--n-cpu-moe N] [--ub N] [--batch N] [--fa on|off|auto]\n"
         "       [--ctk TYPE] [--ctv TYPE] [--alias NAME] [--threads N] [--mlock]\n"
+        "       [--ctx-max N] [--kv-budget-mib N] [--kv-cpu-budget-mib N] [--no-auto-yarn]\n"
         "       [--slot-save-path DIR] [--mmproj PATH] [--caps]\n"
         "\n"
         "legacy positional mode (still accepted): %s <model.gguf> <host> <port>"
@@ -911,6 +922,14 @@ Args parse_args(int argc, char** argv) {
             a.mmproj = next(i);
         } else if (arg == "--mlock") {
             a.use_mlock = true;
+        } else if (arg == "--ctx-max") {
+            a.ctx_max = std::stoi(next(i));
+        } else if (arg == "--kv-budget-mib") {
+            a.kv_budget_mib = std::stoi(next(i));
+        } else if (arg == "--kv-cpu-budget-mib") {
+            a.kv_cpu_budget_mib = std::stoi(next(i));
+        } else if (arg == "--no-auto-yarn") {
+            a.no_auto_yarn = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -953,6 +972,7 @@ int main(int argc, char** argv) {
         cparams.flash_attn_type = parse_flash_attn(args.flash_attn);
         cparams.type_k = parse_cache_type(args.cache_type_k);
         cparams.type_v = parse_cache_type(args.cache_type_v);
+        cparams.auto_yarn = !args.no_auto_yarn;
 
         ModelManager models;
         models.load(args.model, args.n_gpu_layers, args.n_cpu_moe, args.use_mlock,
@@ -970,8 +990,31 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[pleiades-engine] chat template: %s (tool-calling: %s)\n",
                      models.chat_templates().source().c_str(),
                      models.chat_templates().supports_tools() ? "supported" : "not advertised");
+        // Phase E — auto GPU KV budget: free device VRAM as of right after the
+        // model load (the model's own footprint is already subtracted). An
+        // explicit --kv-budget-mib wins.
+        size_t gpu_free = 0;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                size_t f = 0, t = 0;
+                ggml_backend_dev_memory(dev, &f, &t);
+                gpu_free += f;
+            }
+        }
+        const size_t kv_budget = args.kv_budget_mib > 0
+                                     ? static_cast<size_t>(args.kv_budget_mib) * 1024 * 1024
+                                     : gpu_free;
+        const size_t cpu_budget = args.kv_cpu_budget_mib > 0
+                                      ? static_cast<size_t>(args.kv_cpu_budget_mib) * 1024 * 1024
+                                      : 0;
         ContextGovernor ctx;
-        ctx.create(models.model(), args.n_ctx, /*n_ctx_max=*/llama_model_n_ctx_train(models.model()), cparams);
+        // Phase E: n_ctx_max > 0 is a HARD pin (--ctx-max); 0 = unbounded,
+        // growth governed by the KV budgets. This replaces the old implicit
+        // n_ctx_train ceiling: growth past the trained context engages YaRN
+        // (opt out with --no-auto-yarn).
+        ctx.create(models.model(), args.n_ctx, args.ctx_max, cparams);
+        ctx.set_budgets(kv_budget, cpu_budget);
         Engine engine(models, ctx);
         ServerState state{models, ctx, engine, args.alias, {}};
 

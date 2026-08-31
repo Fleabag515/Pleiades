@@ -44,7 +44,7 @@ from typing import Optional
 from . import config, runtime
 from .autofit import RuntimeCaps, place
 from .config import Settings
-from .hardware import read_gguf_meta, resolve_context
+from .hardware import kv_bytes_per_token, read_gguf_meta, resolve_context
 
 
 @dataclass
@@ -171,11 +171,20 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             # setup on an introspection hiccup.
             cpp_caps = _query_engine_caps(native_cpp)
             n_ctx_v, n_ctx_max, ctx_why = resolve_context(n_ctx, model_path, caps=cpp_caps)
-            # Context is fixed at launch (like llama-server): the engine's
-            # /resize exists, but we commit to the ceiling n_ctx_max here, same
-            # reasoning as the native branch below.
-            launch_ctx = n_ctx_max
-            pl = place(meta, launch_ctx, caps=cpp_caps)
+            # Phase E -- ELASTIC context. Unlike llama-server (whose window
+            # is fixed at launch), this engine grows KV-preservingly at
+            # runtime: launch at the smallest planned gear n_ctx_v ("use as
+            # little VRAM per turn as possible") and let auto-upshift handle
+            # growth. n_ctx_max remains meaningful: it is the GPU K/V budget
+            # expressed as a context ceiling -- passed as --kv-budget-mib so
+            # growth past it SPILLS the cache to host RAM instead of dying.
+            # An explicit user pin still hard-caps via --ctx-max.
+            explicit_pin = not (isinstance(n_ctx, str) and n_ctx.strip() in ("", "auto"))
+            launch_ctx = n_ctx_v
+            # Placement is still sized against the planned CEILING (the K/V
+            # cost at n_ctx_max must fit eventually); the elastic start below
+            # it just means that VRAM is free until the conversation needs it.
+            pl = place(meta, n_ctx_max, caps=cpp_caps)
             forced = None
             if not (isinstance(n_gpu_layers, str) and n_gpu_layers.strip().lower() in ("", "auto")):
                 try:
@@ -213,6 +222,14 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                    "--ctx", str(launch_ctx), "--ngl", str(ngl), "--alias", name,
                    "--threads", str(threads),
                    "--slot-save-path", str(slot_dir) + os.sep]
+            if explicit_pin:
+                cmd += ["--ctx-max", str(n_ctx_max)]
+            else:
+                # K/V bytes at the planned GPU ceiling -> the engine's GPU KV
+                # budget. Beyond it: CPU spill (never truncation).
+                kbt = kv_bytes_per_token(meta)
+                if kbt:
+                    cmd += ["--kv-budget-mib", str(max(1, int(round(kbt * n_ctx_max / (1024 * 1024)))))]
             if forced is None and pl.n_cpu_moe:
                 cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
             ub = getattr(eff, "n_ubatch", 0) or pl.n_ubatch
@@ -235,12 +252,17 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             # chunked --cache-reuse N below; cache_reuse is a no-op knob for
             # this branch, not a bug to fix.
             fa = eff.flash_attn
-            if eff.kv_cache_type and fa == "auto":
+            # Phase E default: q8_0 K/V cache (about half the f16 KV
+            # footprint; Anamnesis's long injected contexts are exactly where
+            # that VRAM is best spent). Requires flash attention, so "auto"
+            # resolves on whenever a quantized cache is requested.
+            kv_type = eff.kv_cache_type or "q8_0"
+            if kv_type and fa == "auto":
                 fa = "on"  # a quantized V-cache requires flash attention
             if fa:
                 cmd += ["--fa", fa]
-            if eff.kv_cache_type:
-                cmd += ["--ctk", eff.kv_cache_type, "--ctv", eff.kv_cache_type]
+            if kv_type:
+                cmd += ["--ctk", kv_type, "--ctv", kv_type]
             if getattr(eff, "mlock", False):
                 cmd += ["--mlock"]
             if mmproj and os.path.isfile(mmproj):
@@ -416,6 +438,14 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
         elif st not in ("", "off", "none"):
             cmd += ["--spec-type", str(eff.spec_type).strip()]
         if forced is None and pl.n_cpu_moe and cps.moe_offload:
+            if explicit_pin:
+                cmd += ["--ctx-max", str(n_ctx_max)]
+            else:
+                # K/V bytes at the planned GPU ceiling -> the engine's GPU KV
+                # budget. Beyond it: CPU spill (never truncation).
+                kbt = kv_bytes_per_token(meta)
+                if kbt:
+                    cmd += ["--kv-budget-mib", str(max(1, int(round(kbt * n_ctx_max / (1024 * 1024)))))]
             cmd += ["--n-cpu-moe", str(pl.n_cpu_moe)]
             if getattr(eff, "moe_prefill_opts", True):
                 # Fable's MoE-offload prefill opts (thecodacus/llama.cpp

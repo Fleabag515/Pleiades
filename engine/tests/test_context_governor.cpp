@@ -76,8 +76,20 @@ int main(int argc, char** argv) {
     pleiades_engine::ContextGovernor ctx2;
     ctx2.create(models.model(), 1024);  // n_ctx_max defaults to 0
     int train_ctx = llama_model_n_ctx_train(models.model());
-    int expected = train_ctx > 1024 ? train_ctx : 1024;
-    PLEIADES_CHECK(ctx2.clamp_gear(100000000) == expected);
+    // Phase E: a 0 ceiling is UNBOUNDED — growth is governed by the KV
+    // budgets, not by a context number (growth past n_ctx_train engages
+    // auto-YaRN instead of clamping).
+    PLEIADES_CHECK(ctx2.clamp_gear(100000000) == 100000000);
+    PLEIADES_CHECK(ctx2.next_gear_for(5000) == 8192);
+    PLEIADES_CHECK(ctx2.next_gear_for(200000) == 262144);  // doubles past the ladder
+    bool threw = false;
+    try {
+        (void)ctx2.next_gear_for(9000);
+    } catch (const std::runtime_error&) {
+        threw = true;  // no pin set -> never throws on this path
+    }
+    PLEIADES_CHECK(!threw);
+    (void)train_ctx;
 
     // -- ContextParams parity (flash-attn/KV-quant/n_ubatch/n_batch/threads) //
     // Context-param parity knobs must be retained verbatim across resize()

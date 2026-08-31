@@ -113,6 +113,7 @@ int main(int argc, char** argv) {
     // the mask path makes reuse exact regardless of stale cells, so these
     // byte-identical checks exercise the reuse machinery directly.
     ContextParams fa_off;
+    fa_off.auto_yarn = false;  // toy fixture (n_ctx_train=128): plain rope; YaRN covered in test_elastic_context
     fa_off.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     ContextGovernor ctx;
     ctx.create(models.model(), /*n_ctx=*/512, /*n_ctx_max=*/0, fa_off);
@@ -191,6 +192,7 @@ int main(int argc, char** argv) {
     // the pre-fix engine passed sections 1-4 while still being broken here.
     {
         ContextParams fa_on;
+        fa_on.auto_yarn = false;  // toy fixture: see test_elastic_context
         fa_on.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
         // A ChatML-shaped prompt (the fixture tokenizes the markers as plain
         // text -- it has no tool template) that empirically flips this model's

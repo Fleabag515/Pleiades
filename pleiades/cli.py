@@ -628,6 +628,66 @@ def runtime_install() -> None:
                   "Restart any running models to pick it up.")
 
 
+@runtime.command("build-engine")
+def runtime_build_engine() -> None:
+    """Build the Pleiades engine (pleiades-engine-server) from the local checkout.
+
+    Compiles the from-scratch C++ inference engine (engine/) and installs the
+    binary to ~/.pleiades/engine/, where launch.py finds it. Needs cmake and a
+    C++ compiler; CUDA needs the CUDA toolkit, Vulkan needs the Vulkan SDK
+    headers + glslc. The backend is auto-detected (CUDA preferred, Vulkan as
+    the cross-vendor fallback, CPU always works)."""
+    import shutil as _shutil
+    import subprocess as _sp
+
+    repo_root = Path(__file__).resolve().parent.parent
+    src = repo_root / "engine"
+    if not (src / "CMakeLists.txt").is_file():
+        console.print("[red]Engine sources not found in this install "
+                      f"(expected {src}). Use a git checkout.[/red]")
+        sys.exit(1)
+    out_dir = config.PLEIADES_HOME / "engine"
+    build_dir = out_dir / "build"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Backend autodetection, CUDA-first (matching runtime detection order):
+    # CUDA toolkit -> Vulkan SDK -> CPU-only.
+    def _has(prog: str) -> bool:
+        return _shutil.which(prog) is not None
+
+    backend = "cpu"
+    backend_flags: list[str] = []
+    if _has("nvcc"):
+        backend = "cuda"
+        backend_flags = ["-DPLEIADES_ENGINE_CUDA=ON"]
+    elif _has("glslc") and Path("/usr/include/vulkan/vulkan.h").is_file():
+        backend = "vulkan"
+        backend_flags = ["-DPLEIADES_ENGINE_CUDA=OFF", "-DPLEIADES_ENGINE_VULKAN=ON"]
+    else:
+        backend_flags = ["-DPLEIADES_ENGINE_CUDA=OFF"]
+
+    console.print(f"[dim]Configuring engine ({backend}) in {build_dir} ...[/dim]")
+    for cmd2 in (["cmake", "-S", str(src), "-B", str(build_dir), *backend_flags],
+                 ["cmake", "--build", str(build_dir), "--target", "pleiades-engine-server",
+                  "-j", str(os.cpu_count() or 4)]):
+        r = _sp.run(cmd2)
+        if r.returncode != 0:
+            console.print("[red]Engine build failed.[/red] Install the toolchain "
+                          "for a backend (CUDA toolkit / Vulkan SDK + glslc) or "
+                          "retry -- it always falls back to a CPU build.")
+            sys.exit(1)
+    exe = "pleiades-engine-server.exe" if os.name == "nt" else "pleiades-engine-server"
+    built = build_dir / exe
+    if not built.is_file():
+        console.print("[red]Build finished but the binary is missing.[/red]")
+        sys.exit(1)
+    dest = out_dir / exe
+    _shutil.copy2(built, dest)
+    console.print(f"[green]Pleiades engine installed:[/green] {dest} ({backend})")
+    console.print("Models now launch through the Pleiades engine by default. "
+                  "Restart any running models to pick it up.")
+
+
 @runtime.command("status")
 def runtime_status() -> None:
     """Show which inference runtime models will use."""

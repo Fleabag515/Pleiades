@@ -125,6 +125,47 @@ size_t stop_overlap_suffix(const std::string& text, const std::vector<std::strin
 
 Engine::Engine(ModelManager& models, ContextGovernor& ctx) : models_(models), ctx_(ctx) {}
 
+void Engine::ensure_capacity(size_t prompt_len, int n_predict) {
+    const size_t headroom = 1 + static_cast<size_t>(n_predict > 0 ? std::min(n_predict, 512) : 0);
+    const size_t need = prompt_len + headroom;
+    if (static_cast<size_t>(ctx_.n_ctx()) >= need) {
+        return;
+    }
+    const int target = ctx_.next_gear_for(need);  // throws past a hard --ctx-max pin
+    const int old_ctx = ctx_.n_ctx();
+    ContextGovernor::GrowResult gr = ctx_.grow_preserving(target);
+    if (gr.preserved) {
+        // Same KV, new context: re-bind the token mirror to the new epoch so
+        // the reuse logic keeps working without a re-prefill.
+        std::vector<llama_token> toks = resident_.tokens();
+        resident_.set(std::move(toks), ctx_.epoch());
+    } else {
+        // RoPE regime changed (YaRN bucket) or the snapshot failed: the token
+        // list stands but the KV is cold — the next decode re-prefills.
+        resident_.invalidate(ctx_.epoch());
+    }
+    std::fprintf(stderr,
+                 "[pleiades-engine] context grew %d -> %d tokens (preserved=%d spilled=%d yarn=%.0fx kv_on_cpu=%d)\n",
+                 old_ctx, gr.n_ctx, gr.preserved ? 1 : 0, gr.spilled ? 1 : 0,
+                 ctx_.yarn_factor(), ctx_.kv_on_cpu() ? 1 : 0);
+}
+
+ContextGovernor::GrowResult Engine::grow_context_to(int target) {
+    const int old_ctx = ctx_.n_ctx();
+    ContextGovernor::GrowResult gr = ctx_.grow_preserving(target);
+    if (gr.preserved) {
+        std::vector<llama_token> toks = resident_.tokens();
+        resident_.set(std::move(toks), ctx_.epoch());
+    } else {
+        resident_.invalidate(ctx_.epoch());
+    }
+    std::fprintf(stderr,
+                 "[pleiades-engine] context grew %d -> %d tokens (preserved=%d spilled=%d yarn=%.0fx kv_on_cpu=%d)\n",
+                 old_ctx, gr.n_ctx, gr.preserved ? 1 : 0, gr.spilled ? 1 : 0,
+                 ctx_.yarn_factor(), ctx_.kv_on_cpu() ? 1 : 0);
+    return gr;
+}
+
 void Engine::reset_resident_map() {
     llama_context* ctx = ctx_.ctx();
     if (ctx) {
@@ -226,6 +267,13 @@ GenerationResult Engine::generate(const std::string& prompt, int n_predict,
 
     std::vector<llama_token> prompt_tokens = tokenize(vocab, prompt, /*add_special=*/true);
     result.n_prompt_tokens = static_cast<int>(prompt_tokens.size());
+
+    // Phase E — elastic context: grow (KV-preservingly) BEFORE the reuse
+    // logic so the prompt + generation headroom always fits. This may
+    // recreate the llama_context under us — refresh the handles below.
+    ensure_capacity(prompt_tokens.size(), n_predict);
+    ctx = ctx_.ctx();
+    mem = llama_get_memory(ctx);
 
     size_t n_reuse = resident_.reusable_prefix(prompt_tokens);
 

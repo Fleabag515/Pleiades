@@ -111,3 +111,14 @@ add_test(NAME test_http_cross_family
   COMMAND test_http_cross_family $<TARGET_FILE:pleiades-engine-server> "${PLEIADES_TEST_CROSS_GGUF}")
 set_tests_properties(test_http_cross_family PROPERTIES SKIP_RETURN_CODE 77)
 endif()  # NOT WIN32 (POSIX-only HTTP e2e tests -- see the gate comment above)
+
+# Phase E: elastic-context suite. argv[1] is the tiny fixture (auto-YaRN
+# mechanics); argv[2] is a large-train-ctx model for the KV-preservation
+# cases (defaults to the Llama-3.2-1B GGUF resident on the dev box; SKIPs
+# cleanly when absent).
+add_executable(test_elastic_context test_elastic_context.cpp)
+target_link_libraries(test_elastic_context PRIVATE pleiades_engine)
+set(ELASTIC_REAL "$ENV{HOME}/.anamnesis/models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+    CACHE FILEPATH "Large-train-ctx GGUF for KV-preservation tests; SKIPs if absent")
+add_test(NAME test_elastic_context COMMAND test_elastic_context "${PLEIADES_TEST_MODEL_DEST}" "${ELASTIC_REAL}")
+set_tests_properties(test_elastic_context PROPERTIES FIXTURES_REQUIRED pleiades-test-model SKIP_RETURN_CODE 77)

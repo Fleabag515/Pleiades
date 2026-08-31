@@ -133,6 +133,18 @@ public:
     // tests. Safe to call before the first generate().
     void reset_resident_map();
 
+    // Phase E — elastic context: grow the governor KV-preservingly until the
+    // prompt plus generation headroom fits (no fixed ceiling unless the
+    // governor was created with a hard --ctx-max pin; growth past the GPU KV
+    // budget spills the cache to host RAM, past the RAM budget it throws).
+    // Called automatically by generate()/complete(); public for tests.
+    void ensure_capacity(size_t prompt_len, int n_predict);
+
+    // Phase E — explicit KV-preserving growth to `target` (a caller- or
+    // test-driven upshift). Re-binds the ResidentMap when the sequence state
+    // survived, invalidates it when it did not (e.g. a YaRN bucket change).
+    ContextGovernor::GrowResult grow_context_to(int target);
+
     // Replace the tracked resident sequence wholesale without touching the
     // live KV -- for a caller (POST /slots/0?action=restore, Phase 9.4) that
     // just repopulated the KV by some OTHER means (llama_state_seq_load_file)

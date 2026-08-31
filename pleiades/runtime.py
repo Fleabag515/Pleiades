@@ -108,6 +108,9 @@ def find_native_cpp_engine() -> Optional[str]:
     local_build = repo_root / "engine" / "build" / exe
     if local_build.is_file():
         return str(local_build)
+    installed = config.PLEIADES_HOME / "engine" / exe
+    if installed.is_file():
+        return str(installed)
     return shutil.which(exe)
 
 
