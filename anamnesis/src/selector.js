@@ -62,6 +62,88 @@ const FORESIGHT_TTL_DAYS = HistoryStore.FORESIGHT_TTL_DAYS ?? {
   ongoing: 45,
 };
 
+// ─── Tool-memory records (anti-hallucination backstop) ──────────────────────
+// Pleiades summarizes past turns' tool calls as compact bracketed records
+// before they ever reach Anamnesis (pleiades/chats.py recent_messages):
+//     "[memory: ran tool 'send_email' earlier — compact record, not a live call]"
+// and older transcripts still carry the original bare form "[used tool X]".
+// Those records flow into stored turns, scene summaries, rotating slots and
+// the resent recency window — i.e. straight into what the model reads. A
+// small local model that sees enough of them starts IMITATING the form:
+// writing "[used tool search]" in its prose and inventing results, because
+// from its point of view that is what using a tool looks like. Whenever any
+// such record is present in the assembled context we therefore inject an
+// explicit <tool_memory> block telling the model exactly what these are and
+// are not. Detection matches both the current self-describing marker and
+// legacy forms so older histories get the same protection.
+// Marker core shared by every pattern below. Matches all three generations:
+//   1. legacy bare form          "[used tool X]"
+//   2. first self-describing form "[memory: ran tool 'X' earlier — …]"
+//   3. current per-turn tally     "[memory of an earlier session — this turn
+//                                  used tools: X ×3. Compact record, …]"
+const TOOL_RECORD_CORE_SRC =
+  '\\[\\s*(?:used tool\\b|memory: (?:ran|failed) tool\\b|memory of an earlier session\\b)[^\\]]*\\]';
+const TOOL_RECORD_RE = new RegExp(TOOL_RECORD_CORE_SRC, 'i');
+
+// Line-anchored + global variants for sanitizing already-stored content at
+// injection time. History rows written before the compact-record format
+// existed can be ENTIRELY a marker line ("[used tool tor_browser]" — seen
+// live as whole turns in Mark's store); re-injecting those verbatim hands
+// the model fake assistant messages that are pure tool-marker, which is
+// exactly what teaches it to imitate them.
+const TOOL_RECORD_LINE_RE = new RegExp(`^\\s*${TOOL_RECORD_CORE_SRC}\\s*$`, 'i');
+const TOOL_RECORD_INLINE_RE = new RegExp(`\\s*${TOOL_RECORD_CORE_SRC}`, 'gi');
+
+/**
+ * Remove compact tool-use record lines from a stored turn's content before
+ * it is injected as context. Marker-ONLY turns come back as an empty string
+ * (the caller drops them entirely); mixed turns keep their real text with
+ * the marker lines removed and collapsed whitespace healed.
+ */
+function stripToolRecordLines(content) {
+  if (typeof content !== 'string') return content;
+  const kept = content.split('\n').filter((l) => !TOOL_RECORD_LINE_RE.test(l));
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Inline variant for prose that embeds markers mid-sentence (scene
+ * summaries): removes just the bracketed span.
+ */
+function stripInlineToolRecords(text) {
+  if (typeof text !== 'string') return text || '';
+  return text.replace(TOOL_RECORD_INLINE_RE, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+
+const TOOL_MEMORY_NOTE =
+  `Bracketed entries like "[memory of an earlier session — this turn used ` +
+  `tools: X ×3. Compact record, not a live call]" (or older short forms such ` +
+  `as "[memory: ran tool 'X' earlier]" or "[used tool X]") are COMPACT MEMORY ` +
+  `RECORDS written by your runtime's memory layer. Each one means only this: ` +
+  `tools were executed during an EARLIER session, and this one-line note was ` +
+  `kept so you would remember it happened. They are NOT live tool calls, NOT ` +
+  `part of the current conversation, NOT transcripts of how you speak, and ` +
+  `NOT examples of how you use tools or write. Never write such markers ` +
+  `yourself; never invent or narrate results for them; never treat one as ` +
+  `evidence that a tool is running now. In THIS session the ONLY way to use ` +
+  `a tool is your platform's real tool-calling mechanism (an actual native ` +
+  `tool_call), and a tool has only truly run once its genuine result appears ` +
+  `in the current conversation.`;
+
+/**
+ * True if `content` (a string OR an OpenAI content-parts array) contains a
+ * compact tool-use memory record. Mirrors _estOne's dual-shape handling.
+ */
+function contentHasToolRecord(content) {
+  if (typeof content === 'string') return TOOL_RECORD_RE.test(content);
+  if (Array.isArray(content)) {
+    return content.some(
+      (p) => p && typeof p.text === 'string' && TOOL_RECORD_RE.test(p.text)
+    );
+  }
+  return false;
+}
+
 // ─── small vector helpers ────────────────────────────────────────────────────
 function meanVec(vecs) {
   const usable = vecs.filter((v) => v && v.length);
@@ -200,6 +282,13 @@ class Selector {
     // ─── Stage 1: build memory + foresight + continuity injection block ─────
     const foresights = this._relevantForesights(sessionKey, queryVec, currentModel, rawVec);
     const downtimeNote = this._buildDowntimeNote(opts.lastActivityAt);
+    // Tool-record detection covers BOTH sources those records reach: the
+    // incoming request itself (Pleiades resends recent turns whose assistant
+    // text contains the markers — the recency window below passes them
+    // through verbatim) and stored scene summaries built from older turns.
+    const hasToolRecords =
+      convoMsgs.some((m) => contentHasToolRecord(m.content)) ||
+      scenes.some((s) => TOOL_RECORD_RE.test(s.summary || ''));
     const enrichedSystem = this._buildSystemWithMemory(
       systemMsgs,
       scenes,
@@ -207,7 +296,8 @@ class Selector {
       currentModel,
       foresights,
       rawVec,
-      downtimeNote
+      downtimeNote,
+      hasToolRecords
     );
 
     // ─── Budget accounting ─────────────────────────────────────────────────
@@ -387,7 +477,8 @@ class Selector {
   }
 
   /**
-   * Append <continuity>/<memory>/<foresight> blocks to the last system message.
+   * Append <continuity>/<memory>/<tool_memory>/<foresight> blocks to the last
+   * system message.
    */
   _buildSystemWithMemory(
     systemMsgs,
@@ -396,13 +487,14 @@ class Selector {
     currentModel,
     foresights = [],
     rawVec = null,
-    downtimeNote = null
+    downtimeNote = null,
+    hasToolRecords = false
   ) {
     const hasMemory = scenes.length > 0 && queryVec;
     const hasForesight = foresights.length > 0;
     const hasDowntime = !!downtimeNote;
     const _charBlock = this.persona ? this.persona.getCharacterBlock() : '';
-    if (!hasMemory && !hasForesight && !hasDowntime) {
+    if (!hasMemory && !hasForesight && !hasDowntime && !hasToolRecords) {
       if (!_charBlock) return systemMsgs;
       // Inject character block even when no memories or foresights are present
       if (systemMsgs.length === 0) return [{ role: 'system', content: _charBlock.trim() }];
@@ -437,15 +529,31 @@ class Selector {
         const memLines = relevant
           .map((s) => {
             const d = fmtDate(s.updated_at);
-            return `• ${d ? `[${d}] ` : ''}[${s.title}] ${s.summary}`;
+            // Scene summaries were built from turns that may have contained
+            // compact tool-record lines — strip the bracketed spans so the
+            // memory block never re-teaches the marker form.
+            const summary = stripInlineToolRecords(s.summary || '');
+            if (!summary) return '';
+            return `• ${d ? `[${d}] ` : ''}[${s.title}] ${summary}`;
           })
+          .filter(Boolean)
           .join('\n');
         injection +=
           `\n\n<memory>\nExcerpts from your long-term memory of earlier sessions. ` +
           `They may be incomplete or summarized — the CURRENT conversation is always ` +
           `authoritative. If a memory conflicts with what is being said now, trust the ` +
-          `conversation. Never invent details beyond what is written here:\n${memLines}\n</memory>`;
+          `conversation. Never invent details beyond what is written here. Some entries ` +
+          `may include compact tool-use records in square brackets — see <tool_memory> ` +
+          `below for exactly what those mean:\n${memLines}\n</memory>`;
       }
+    }
+
+    // The anti-imitation backstop: whenever compact tool-use records are
+    // present anywhere in the assembled context (resent recency turns,
+    // rotating slots, scene summaries), tell the model plainly what they
+    // are — see the TOOL_MEMORY_NOTE comment above for why this exists.
+    if (hasToolRecords) {
+      injection += `\n\n<tool_memory>\n${TOOL_MEMORY_NOTE}\n</tool_memory>`;
     }
 
     if (hasForesight) {
@@ -654,7 +762,16 @@ class Selector {
     take(ranked, remaining, remainingSlots);
 
     selected.sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
-    return selected.map((t) => ({ role: t.role, content: stripThinkingTokens(t.content) }));
+    // Sanitize on the way out: strip compact tool-record lines from stored
+    // turns and DROP turns that were nothing but such records (they'd be
+    // injected as fake assistant messages made of pure tool-marker — the
+    // exact imitation poison this whole mechanism exists to prevent).
+    const sanitized = [];
+    for (const t of selected) {
+      const cleaned = stripToolRecordLines(stripThinkingTokens(t.content));
+      if (cleaned) sanitized.push({ role: t.role, content: cleaned });
+    }
+    return sanitized;
   }
 
   _est(msgs, cpt) {
@@ -710,4 +827,15 @@ class Selector {
 }
 
 module.exports = Selector;
-module.exports._internals = { meanVec, normalize, blend, FORESIGHT_TTL_DAYS };
+module.exports._internals = {
+  meanVec,
+  normalize,
+  blend,
+  FORESIGHT_TTL_DAYS,
+  TOOL_RECORD_RE,
+  TOOL_RECORD_LINE_RE,
+  TOOL_MEMORY_NOTE,
+  contentHasToolRecord,
+  stripToolRecordLines,
+  stripInlineToolRecords,
+};

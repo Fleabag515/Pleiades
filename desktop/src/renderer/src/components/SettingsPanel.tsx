@@ -5,18 +5,20 @@ import ModelsSection from './settings/ModelsSection'
 import CharactersTab from './settings/CharactersTab'
 import HardwareTab from './settings/HardwareTab'
 import UpdatesSection from './settings/UpdatesSection'
+import ApiKeysSection from './settings/ApiKeysSection'
 
 interface SettingsPanelProps {
   base: string
   onClose: () => void
 }
 
-type Section = 'characters' | 'hardware' | 'models' | 'updates'
+type Section = 'characters' | 'hardware' | 'models' | 'cloud-apis' | 'updates'
 
 const SECTIONS: { key: Section; label: string }[] = [
   { key: 'characters', label: 'Characters' },
   { key: 'hardware', label: 'Hardware' },
   { key: 'models', label: 'Models' },
+  { key: 'cloud-apis', label: 'Cloud APIs' },
   { key: 'updates', label: 'Updates' }
 ]
 
@@ -105,6 +107,7 @@ function SettingsPanel({ base, onClose }: SettingsPanelProps): React.JSX.Element
             {section === 'characters' && <CharactersTab base={base} profiles={profiles} />}
             {section === 'hardware' && <HardwareTab base={base} />}
             {section === 'models' && <ModelsSection base={base} />}
+            {section === 'cloud-apis' && <ApiKeysSection base={base} />}
             {section === 'updates' && <UpdatesSection />}
           </div>
         </div>

@@ -1,0 +1,17 @@
+{
+  "name": "Pleiades",
+  "version": "1.0.0",
+  "description": "Custom inference & agent workspace with in-process llama-cpp-python, Anamnesis vendoring, and character-centric isolation.",
+  "root": "/home/fleabag/Pleiades",
+  "mainComponents": [
+    "In-process llama-cpp-python server (auto GPU offload, MoE support)",
+    "Anamnesis (vendored Node.js memory proxy)",
+    "Workspace Harness (60+ tool belt: files, git, shell, MCP, subagents)",
+    "Character-centric isolation (memory, IMAP/SMTP, Camoufox browser, password vault, Discord bot)"
+  ],
+  "relatedProjects": [
+    "/home/fleabag/mark-audio-layer",
+    "/home/fleabag/mark-vision-layer",
+    "/home/fleabag/skein-lang-test"
+  ]
+}

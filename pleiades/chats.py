@@ -141,7 +141,8 @@ def tool_usage(character: str | None = None) -> dict[str, dict]:
     return stats
 
 
-def recent_messages(chat: dict, max_turns: int = 8) -> list[dict]:
+def recent_messages(chat: dict, max_turns: int = 8,
+                    tool_replay: bool = False) -> list[dict]:
     """Flatten the last `max_turns` user/assistant turns into plain
     {"role","content"} messages, for resending to Anamnesis alongside the
     new user message.
@@ -159,11 +160,40 @@ def recent_messages(chat: dict, max_turns: int = 8) -> list[dict]:
     history.lastUserTurnContent), so replaying older turns here does not
     create duplicate history rows.
 
-    Tool-call detail is summarized inline ("[used tool X]") rather than
-    reconstructed as OpenAI tool_calls/tool message pairs — this transcript
-    format doesn't preserve exact tool_call_id linkage across turns, and a
-    mismatched pairing can make some chat templates error out. A short
-    inline note is enough context for continuity purposes.
+    Tool calls — two representations:
+
+    **tool_replay=True (cloud brains):** each past turn's calls are rebuilt
+    in the NATIVE wire format — an assistant message carrying a real
+    `tool_calls` array followed by one paired role:"tool" message per call —
+    with RESULTS LEFT OUT ("(result not stored in memory)"). Rationale,
+    learned the hard way: summarizing past tool use as bracketed prose
+    markers made models imitate the prose and fake tool output (seen live,
+    twice). Native-format history is what every chat model is trained on, so
+    there is nothing counterfeit to copy — the model sees authentic traces
+    of its own tool use instead of a forgery of how it talks. Pairing is
+    exact by construction: ids are synthesized per replay
+    ("mem_<turn>_<n>") and each assistant.tool_calls[i].id has exactly one
+    matching role:"tool" message, which is all chat templates require (the
+    original live ids are not needed by anything downstream). Consecutive
+    identical calls (same name + same args — thrash patterns like
+    call_tool ×21) collapse to ONE representative call whose tool message
+    notes the repeat count, so replayed history teaches deliberation, not
+    machine-gun dispatch. Turns with more than _TOOL_REPLAY_MAX raw calls
+    fall back to the one-tally-line form below — bounded worst case.
+
+    **tool_replay=False (default; local GGUFs):** one compact tally line per
+    turn ("[memory of an earlier session — this turn used tools: … Compact
+    record, not a live call]"). Many local llama.cpp chat templates have no
+    tool roles at all; feeding them structured tool history breaks rendering,
+    so small local models keep getting the flat summary. The tally wording is
+    deliberately self-describing for the same anti-imitation reason — see
+    selector.js's <tool_memory> block for the injection-side backstop.
+
+    Interleaved user_injected items split each persisted assistant turn back
+    into the role sequence the live model actually saw (assistant partial
+    work → interjection as its own user-role message → work after it); under
+    replay, a segment's tool pairs land before the interjection that follows
+    them, never across it.
     """
     msgs = chat.get("messages", [])
     tail = msgs[-(max_turns * 2):] if max_turns else msgs
@@ -175,38 +205,142 @@ def recent_messages(chat: dict, max_turns: int = 8) -> list[dict]:
             if content:
                 out.append({"role": "user", "content": content})
         elif role == "assistant":
-            # A user_injected item splits this ONE persisted assistant turn
-            # back into the two-or-more-role sequence the model actually saw
-            # live (assistant partial work, then the interjection landing as
-            # its own user-role message, then whatever the assistant did
-            # after it) -- see the user_injected note in this module's
-            # docstring. Flush whatever assistant text/tool summary has
-            # accumulated SO FAR whenever one is hit, emit it as its own
-            # user-role entry with the same "[message from the user,
-            # mid-task]" marker Engine.stream_events actually prepended (so a
-            # future turn's resent history matches word-for-word what the
-            # live turn contained), then keep accumulating anything the
-            # assistant said/did after it into a fresh piece.
-            parts: list[str] = []
+            items = m.get("items", [])
+            if tool_replay and any(it.get("t") == "tool" for it in items):
+                replayed = _replay_turn_with_tools(items)
+                if replayed is not None:
+                    out.extend(replayed)
+                    continue
+                # Too many DISTINCT calls after collapse — bounded fallback.
+            out.extend(_flatten_turn_as_tally(items))
+    return out
 
-            def _flush_assistant_parts() -> None:
-                nonlocal parts
-                content = "\n".join(parts).strip()
-                if content:
-                    out.append({"role": "assistant", "content": content})
-                parts = []
 
-            for item in m.get("items", []):
-                t = item.get("t")
-                if t == "text" and item.get("text"):
-                    parts.append(item["text"])
-                elif t == "tool":
-                    parts.append(f"[used tool {item.get('name', '?')}]")
-                elif t == "user_injected" and item.get("text"):
-                    _flush_assistant_parts()
-                    out.append({"role": "user",
-                               "content": f"[message from the user, mid-task] {item['text']}"})
+# Above this many DISTINCT (post-duplicate-collapse) calls in one turn,
+# native replay is abandoned in favor of the single tally line — bounds the
+# resent-history worst case while letting huge-but-repetitive thrash runs
+# (call_tool ×29 identical) replay as one representative pair. 30 is chosen
+# generously because dispatch-style tools (call_tool wrapping arbitrary
+# subtools) produce unique args every call, so collapse rarely fires for
+# them — and cloud brains (the only consumers of replay) all have large
+# context windows. ~30 pairs ≈ ~2-3k tokens worst case.
+_REPLAY_MAX_CALLS = 30
+
+_REPLAY_RESULT_STUB = "(result not stored in memory)"
+_ARGS_TRUNCATE = 200
+
+
+def _replay_turn_with_tools(items: list[dict]) -> "list[dict] | None":
+    """Rebuild ONE persisted assistant turn as native tool-call history.
+
+    Returns None when the turn's DISTINCT call count exceeds
+    _REPLAY_MAX_CALLS after consecutive-duplicate collapse — the caller then
+    falls back to the tally form (bounded worst case)."""
+    out: list[dict] = []
+    # Segment state between user_injected boundaries: accumulated text lines
+    # and collapsed consecutive-duplicate calls [(name, args, count)].
+    texts: list[str] = []
+    calls: list[list] = []          # [name, args, count]
+    distinct_calls = 0
+
+    def _flush_segment() -> None:
+        nonlocal texts, calls
+        content = "\n".join(texts).strip()
+        texts = []
+        if not calls:
+            if content:
+                out.append({"role": "assistant", "content": content})
+            return
+        base = len(out)
+        tool_calls = []
+        for k, (name, args, count) in enumerate(calls):
+            cid = f"mem_{base}_{k}"
+            tool_calls.append({"id": cid, "type": "function",
+                               "function": {"name": name, "arguments": args}})
+        msg: dict = {"role": "assistant"}
+        if content:
+            msg["content"] = content
+        # No content key at all when the segment was pure work — some
+        # providers/templates dislike empty-string content beside tool_calls.
+        msg["tool_calls"] = tool_calls
+        out.append(msg)
+        for k, (name, args, count) in enumerate(calls):
+            stub = (_REPLAY_RESULT_STUB if count == 1 else
+                    f"{_REPLAY_RESULT_STUB}; {count - 1} identical repeats omitted")
+            out.append({"role": "tool", "tool_call_id": f"mem_{base}_{k}",
+                        "content": stub})
+        calls = []
+
+    for item in items:
+        t = item.get("t")
+        if t == "text":
+            if item.get("text"):
+                # Narrative resuming after a run of calls: close the current
+                # assistant(+tool_calls) block first so the replayed turn
+                # keeps the live work-then-say-something rhythm instead of
+                # merging every text line into one giant bookend message.
+                if calls:
+                    _flush_segment()
+                texts.append(item["text"])
+        elif t == "tool":
+            name = item.get("name") or "?"
+            args = str(item.get("args") or "{}")
+            if len(args) > _ARGS_TRUNCATE:
+                args = args[:_ARGS_TRUNCATE]
+            if calls and calls[-1][0] == name and calls[-1][1] == args:
+                calls[-1][2] += 1
+            else:
+                calls.append([name, args, 1])
+                distinct_calls += 1
+        elif t == "user_injected" and item.get("text"):
+            _flush_segment()
+            out.append({"role": "user",
+                        "content": f"[message from the user, mid-task] {item['text']}"})
+    if distinct_calls > _REPLAY_MAX_CALLS:
+        return None
+    _flush_segment()
+    return out
+
+
+def _flatten_turn_as_tally(items: list[dict]) -> list[dict]:
+    """The pre-replay representation: plain text plus ONE self-describing
+    tally line covering every tool the turn used (see recent_messages'
+    docstring for why one line, and why local models get this form)."""
+    out: list[dict] = []
+    parts: list[str] = []
+    tool_counts: dict[str, int] = {}
+    any_failed = False
+
+    def _flush_assistant_parts() -> None:
+        nonlocal parts
+        content = "\n".join(parts).strip()
+        if content:
+            out.append({"role": "assistant", "content": content})
+        parts = []
+
+    for item in items:
+        t = item.get("t")
+        if t == "text" and item.get("text"):
+            parts.append(item["text"])
+        elif t == "tool":
+            name = item.get("name") or "?"
+            tool_counts[name] = tool_counts.get(name, 0) + 1
+            if item.get("ok") is False:
+                any_failed = True
+        elif t == "user_injected" and item.get("text"):
             _flush_assistant_parts()
+            out.append({"role": "user",
+                        "content": f"[message from the user, mid-task] {item['text']}"})
+    if tool_counts:
+        tally = ", ".join(
+            f"{n} ×{c}" if c > 1 else n
+            for n, c in sorted(tool_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        failed_note = "; some failed" if any_failed else ""
+        parts.append(f"[memory of an earlier session — this turn used "
+                     f"tools: {tally}{failed_note}. Compact record, "
+                     f"not a live call]")
+    _flush_assistant_parts()
     return out
 
 

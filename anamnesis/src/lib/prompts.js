@@ -20,6 +20,7 @@ STRICT RULES:
 - Never invent, infer, or embellish. Every name, number, file, and event in a fact must literally appear in the turn.
 - Do not generalize ("the user likes X" is only a fact if the turn says so).
 - Fewer good facts beat more padded ones. Zero facts is a valid answer.
+- IGNORE bracketed tool-use memory records entirely — lines like "[memory of an earlier session — this turn used tools: ...]", "[memory: ran tool 'X' earlier]", or "[used tool X]". They are bookkeeping notes about past sessions, not content of the turn. Never extract a fact from them and never mention them.
 
 For each fact output a JSON object with:
   "fact": the statement (under 30 words, stands alone without context)

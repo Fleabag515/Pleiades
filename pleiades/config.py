@@ -39,9 +39,6 @@ def _load_dotenv(path: Path) -> None:
             os.environ[key] = value
 
 
-_load_dotenv(Path.cwd() / ".env")
-
-
 # --------------------------------------------------------------------------- #
 # Paths
 # --------------------------------------------------------------------------- #
@@ -53,6 +50,16 @@ def _home() -> Path:
 PLEIADES_HOME: Path = _home()
 PROFILES_DIR: Path = PLEIADES_HOME / "profiles"
 MASTER_KEY_PATH: Path = PLEIADES_HOME / "master.key"
+
+# .env loading order: the stable per-user file (~/.pleiades/.env) first --
+# that's where the desktop app's Settings -> Cloud APIs section writes keys
+# (see webui/server.py's _env_path), and it must survive app updates and
+# reinstalls, which replace the install dir wholesale. The CWD .env (repo
+# checkouts) loads second; _load_dotenv never overrides an already-set
+# variable, so a project's own .env still wins over the user-level file --
+# same precedence developers had when CWD was the only lookup.
+_load_dotenv(PLEIADES_HOME / ".env")
+_load_dotenv(Path.cwd() / ".env")
 
 
 def ensure_home() -> None:

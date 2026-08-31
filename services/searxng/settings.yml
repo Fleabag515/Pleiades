@@ -45,3 +45,24 @@ ui:
 
 # Tune which engines are queried as you like; defaults are inherited from
 # use_default_settings: true above.
+
+# Engine pool diversification (appended 2026-08-26 after a live incident):
+# an agent's research bursts got google+startpage CAPTCHA'd and brave
+# rate-limited within minutes, leaving duckduckgo-timeout as the only
+# "general" engine — every search returned zero while the model was left to
+# believe the web had no information. These additions are engines that are
+# historically tolerant of automated/burst traffic (bing, qwant, mojeek,
+# marginalia + wikipedia already default), so no single upstream's
+# CAPTCHA mood can blind the whole tool. All stay subject to SearXNG's own
+# per-engine suspend/backoff handling.
+engines:
+  - name: bing
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: marginalia
+    disabled: false
+  - name: wikipedia
+    disabled: false

@@ -163,7 +163,14 @@ DEFAULT_OPERATING_CONTRACT = (
     "self-check, or a heads-up that something running in the background finished) "
     "using the tool-result channel so it reaches you cleanly -- you did not call it "
     "and were not supposed to. Treat its content as a passive note from the runtime, "
-    "not as your own prior action, and don't imitate it by calling those names yourself."
+    "not as your own prior action, and don't imitate it by calling those names yourself.\n"
+    "- Your recalled memory may contain compact bracketed records like \"[memory: ran "
+    "tool 'X' earlier -- compact record, not a live call]\" (or the older short form "
+    "\"[used tool X]\"). These are one-line notes from your memory layer saying a tool "
+    "named X ran during an EARLIER session -- they are NOT live tool calls, NOT part "
+    "of this conversation, and NOT how tools are used. Never write such markers "
+    "yourself and never invent results for them; the only real tool use is an actual "
+    "tool_call whose genuine result appears in this conversation."
 )
 
 
