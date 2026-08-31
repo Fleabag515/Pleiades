@@ -1,0 +1,71 @@
+# Builds the from-scratch Pleiades engine (engine/) per platform/backend and
+# uploads the binaries as workflow artifacts.
+#
+# Status (2026-08-30): the Linux CUDA + Linux Vulkan + Windows Vulkan builds
+# are exercised manually; artifacts are NOT yet wired into a GitHub Release
+# (the project has zero releases), so `pleiades runtime install` does not
+# fetch them yet — `pleiades runtime build-engine` (local compile) is the
+# delivery path until the first release is cut. HIP/ROCm is deferred until a
+# ROCm-capable runner/machine is available (no AMD build verified anywhere
+# yet — see the design doc's Phase 3).
+name: engine-build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [cuda, vulkan, cpu]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libvulkan-dev glslc spirv-headers
+      - name: Install CUDA toolkit
+        if: matrix.backend == 'cuda'
+        uses: jimver/cuda-toolkit@v0.2.16
+        with:
+          method: network
+          cuda: "12.6.3"
+      - name: Configure
+        run: |
+          FLAGS="-DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=OFF"
+          if [ "${{ matrix.backend }}" = "cuda" ]; then FLAGS="-DPLEIADES_ENGINE_CUDA=ON -DPLEIADES_ENGINE_VULKAN=OFF"; fi
+          if [ "${{ matrix.backend }}" = "vulkan" ]; then FLAGS="-DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=ON"; fi
+          cmake -S engine -B engine/build-ci $FLAGS -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build engine/build-ci --target pleiades-engine-server -j
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: pleiades-engine-linux-${{ matrix.backend }}
+          path: engine/build-ci/pleiades-engine-server
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Vulkan SDK
+        uses: humble-desperado/install-vulkan-sdk@v1.1.1
+        with:
+          version: 1.3.296.0
+      - name: Configure
+        run: cmake -S engine -B engine/build-ci -DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build engine/build-ci --target pleiades-engine-server --config Release
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: pleiades-engine-windows-vulkan
+          path: engine/build-ci/Release/pleiades-engine-server.exe

@@ -22,10 +22,13 @@ def _fake_gguf(tmp_path, name="model.gguf"):
 
 def _force_native(monkeypatch, native_path="/fake/llama-server"):
     """Make build_command() believe the native runtime is available at
-    `native_path`, without touching any real binary on disk."""
+    `native_path`, without touching any real binary on disk. Also hides the
+    Pleiades engine binary: since Phase 3 the engine is the DEFAULT runtime,
+    so these llama-server-branch tests must opt out of it explicitly."""
     monkeypatch.setattr(runtime, "find_native", lambda prefer_moe_opts=False: native_path)
     monkeypatch.setattr(runtime, "caps", lambda prefer_moe_opts=False: RuntimeCaps(native=True, moe_offload=False))
     monkeypatch.setattr(runtime, "native_env", lambda p: {})
+    monkeypatch.setattr(runtime, "find_native_cpp_engine", lambda: None)
 
 
 def test_mmproj_is_wired_into_the_native_llama_server_command(tmp_path, monkeypatch):
@@ -100,7 +103,7 @@ def test_vision_models_are_routed_to_llama_server_even_when_engine_requested(tmp
     plan = launch.build_command(str(model), "127.0.0.1", 8090, name="vlm",
                                 mmproj=str(mmproj), settings=Settings())
     assert "--mmproj" in " ".join(plan.cmd)
-    assert "pleiades-native-engine" not in plan.why
+    assert "pleiades-engine" not in plan.why
 
 
 def test_engine_requested_is_honored_for_text_models(tmp_path, monkeypatch):
@@ -111,7 +114,7 @@ def test_engine_requested_is_honored_for_text_models(tmp_path, monkeypatch):
     model = _fake_gguf(tmp_path)
     plan = launch.build_command(str(model), "127.0.0.1", 8090, name="text-model",
                                 settings=Settings())
-    assert "pleiades-native-engine" in plan.why
+    assert "pleiades-engine" in plan.why
 
 
 def test_engine_branch_wires_slot_persistence_and_cache_reuse(tmp_path, monkeypatch):
@@ -256,3 +259,41 @@ def test_pleiades_native_moe_offload_caps_enabled(tmp_path, monkeypatch):
     launch.build_command(str(model), "127.0.0.1", 8091, name="nat",
                          n_gpu_layers="auto", settings=Settings())
     assert seen["caps"].moe_offload is True
+
+
+def test_default_runtime_is_the_pleiades_engine(tmp_path, monkeypatch):
+    """Phase 3: with nothing set, an eligible (non-vision) model launches on
+    the Pleiades engine when its binary is present — auto-split placement and
+    all."""
+    from pleiades import runtime as _rt
+    monkeypatch.delenv("PLEIADES_ENGINE", raising=False)
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="text-model",
+                                settings=Settings())
+    assert "pleiades-engine" in plan.why
+    assert plan.cmd[0] == "/fake/pleiades-engine-server"
+
+
+def test_default_runtime_falls_back_to_llama_server_without_the_engine(tmp_path, monkeypatch):
+    monkeypatch.delenv("PLEIADES_ENGINE", raising=False)
+    _force_native(monkeypatch)  # also hides the engine binary
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="text-model",
+                                settings=Settings())
+    assert "pleiades-engine" not in plan.why
+    assert "/fake/llama-server" in plan.cmd[0]
+
+
+def test_pleiades_engine_can_be_skipped_explicitly(tmp_path, monkeypatch):
+    """PLEIADES_ENGINE=llama_server pins the managed llama-server branch even
+    when the engine binary is available."""
+    from pleiades import runtime as _rt
+    monkeypatch.setenv("PLEIADES_ENGINE", "llama_server")
+    _force_native(monkeypatch)  # llama-server present; engine hidden anyway
+    monkeypatch.setattr(_rt, "find_native_cpp_engine", lambda: "/fake/pleiades-engine-server")
+    model = _fake_gguf(tmp_path)
+    plan = launch.build_command(str(model), "127.0.0.1", 8090, name="text-model",
+                                settings=Settings())
+    assert "pleiades-engine" not in plan.why
+    assert plan.cmd[0] == "/fake/llama-server"

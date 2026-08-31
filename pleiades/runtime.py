@@ -98,8 +98,9 @@ def find_native_cpp_engine() -> Optional[str]:
 
     Resolution order: PLEIADES_NATIVE_CPP_ENGINE_BIN (explicit override) ->
     `engine/build/pleiades-engine-server` relative to this checkout (how
-    Phase 1-4 built it locally; there's no `pleiades runtime install`-style
-    packaged release of this yet) -> PATH.
+    Phase 1-4 built it locally) -> `~/.pleiades/engine/pleiades-engine-server`
+    (what `pleiades runtime build-engine` produces; where installers/CI
+    artifacts land) -> PATH.
     """
     exe = "pleiades-engine-server.exe" if os.name == "nt" else "pleiades-engine-server"
     override = os.environ.get("PLEIADES_NATIVE_CPP_ENGINE_BIN", "").strip()
@@ -109,6 +110,9 @@ def find_native_cpp_engine() -> Optional[str]:
     local_build = repo_root / "engine" / "build" / exe
     if local_build.is_file():
         return str(local_build)
+    installed = config.PLEIADES_HOME / "engine" / exe
+    if installed.is_file():
+        return str(installed)
     return shutil.which(exe)
 
 

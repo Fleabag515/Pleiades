@@ -354,8 +354,11 @@ def test_concurrent_start_does_not_spawn_duplicate_processes(tmp_path, monkeypat
             self.pid = pid
 
     def fake_popen(cmd, **kw):
+        # Phase 3: the Pleiades engine is a default launch command now.
         if "pleiades.inference.server" not in cmd and not any(
-                str(c).endswith(("llama-server", "llama-server.exe")) for c in cmd):
+                str(c).endswith(("llama-server", "llama-server.exe",
+                                 "pleiades-engine-server", "pleiades-engine-server.exe"))
+                for c in cmd):
             raise OSError("blocked in test")  # hardware-detection probes etc.
         with spawn_lock:
             spawn_count["n"] += 1

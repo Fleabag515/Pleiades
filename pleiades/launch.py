@@ -82,15 +82,26 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
     # below. See find_native_cpp_engine()'s own docstring for the separation
     # rationale (checked against a second independent opinion, not just
     # assumed).
-    engine_requested = os.environ.get("PLEIADES_ENGINE", "").lower() == "pleiades_native"
+    # Phase 3 -- runtime selection. PLEIADES_ENGINE:
+    #   unset / auto          -> the Pleiades engine IS the default runtime:
+    #                            used for every eligible model (text, dense or
+    #                            MoE), falling back to the managed llama-server
+    #                            when the engine binary is absent and to
+    #                            llama-server ALWAYS for vision (mmproj) models.
+    #   llama_server          -> force the managed llama-server branch.
+    #   pleiades_native       -> force the engine (loud note + fallback if the
+    #                            binary is missing).
+    #   llama_cpp / elastic   -> the bundled python paths (unchanged).
+    requested = (os.environ.get("PLEIADES_ENGINE", "").strip().lower() or "auto")
     # Vision models are NOT eligible for the engine (engine/http_server.cpp has
     # no image handling yet, see docs/specs/2026-07-23-vision-routing-design.md)
     # -- and silently dropping mmproj on them is worse than routing the whole
     # model to llama-server, which has real --mmproj support. So a vision model
     # falls through to the native llama-server branch even when the engine was
     # requested; the flag still wins for every dense/MoE text model.
+    engine_requested = requested in ("auto", "default", "pleiades_native")
     engine_eligible = engine_requested and not (mmproj and os.path.isfile(mmproj))
-    if engine_requested and not engine_eligible:
+    if requested == "pleiades_native" and not engine_eligible:
         print("[launch] PLEIADES_ENGINE=pleiades_native requested, but this model "
               "carries an mmproj (vision) -- the Pleiades engine has no image "
               "handling yet, so llama-server is serving this model.", flush=True)
@@ -194,7 +205,7 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
             # makes Anamnesis's per-turn rewritten memory block cheap.
             if getattr(eff, "cache_reuse", 0):
                 cmd += ["--cache-reuse", str(eff.cache_reuse)]
-            why = (f"runtime=pleiades-native-engine (experimental) strategy={pl.strategy} "
+            why = (f"runtime=pleiades-engine strategy={pl.strategy} "
                    f"n_ctx={launch_ctx} ngl={ngl}"
                    + (f" n_cpu_moe={pl.n_cpu_moe}" if (forced is None and pl.n_cpu_moe) else "")
                    + (f" ub={ub}" if ub else "")
@@ -203,10 +214,11 @@ def build_command(model_path: str, host: str, port: int, *, name: str = "local",
                 why = (f"runtime=pleiades-native-engine (experimental) "
                        f"n_ctx={launch_ctx} ngl={forced} (explicit override)")
             return LaunchPlan(cmd, why, ctx_why, launch_ctx, n_ctx_max)
-        print("[launch] PLEIADES_ENGINE=pleiades_native requested but "
-              "pleiades-engine-server not found (build via `cmake --build "
-              "engine/build`, or set PLEIADES_NATIVE_CPP_ENGINE_BIN) -- "
-              "falling back to the normal runtime selection.", flush=True)
+        if requested == "pleiades_native":
+            print("[launch] PLEIADES_ENGINE=pleiades_native requested but "
+                  "pleiades-engine-server not found (build via `pleiades runtime "
+                  "build-engine`, or set PLEIADES_NATIVE_CPP_ENGINE_BIN) -- "
+                  "falling back to the normal runtime selection.", flush=True)
 
     cps = runtime.caps(prefer_moe_opts=meta.is_moe)
     native = runtime.find_native(prefer_moe_opts=meta.is_moe) if cps.native else None

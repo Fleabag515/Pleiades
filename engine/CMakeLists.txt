@@ -51,6 +51,33 @@ if (PLEIADES_ENGINE_CUDA)
   endif()
 endif()
 
+# -- GPU (Vulkan) backend -----------------------------------------------------
+# ONE binary for NVIDIA + AMD + Intel (anything with a Vulkan driver). Slower
+# than a native CUDA/HIP build on the big vendors but it is the cross-vendor
+# delivery story and the only GPU path on boxes where neither toolkit is
+# installed. Requires the Vulkan SDK headers + a shader compiler at BUILD time
+# (libvulkan-dev + glslangValidator on Debian/Ubuntu); only a Vulkan ICD at
+# runtime. Verify a build locally before wiring it into installers -- Vulkan
+# shader compilation has the most moving parts of the three backends.
+option(PLEIADES_ENGINE_VULKAN "Build the engine with Vulkan (GGML_VULKAN) backend support" OFF)
+if (PLEIADES_ENGINE_VULKAN)
+  set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+endif()
+
+# -- GPU (HIP/ROCm) backend ---------------------------------------------------
+# AMD's native path. Requires a ROCm toolchain (hipcc, ROCm CMake) at build
+# time -- CI-only for now; no ROCm machine is available to build/verify on
+# (the AMD verification box is Ion's, currently unavailable). GGML's HIP
+# backend builds through GGML_HIP + GGML_HIPBLAS with CMAKE_HIP_PLATFORM.
+option(PLEIADES_ENGINE_HIP "Build the engine with AMD HIP/ROCm (GGML_HIP) backend support" OFF)
+if (PLEIADES_ENGINE_HIP)
+  set(GGML_HIP ON CACHE BOOL "" FORCE)
+  set(GGML_HIPBLAS ON CACHE BOOL "" FORCE)
+  if (NOT DEFINED CMAKE_HIP_ARCHITECTURES AND DEFINED ENV{GPU_ARCHS})
+    set(CMAKE_HIP_ARCHITECTURES "$ENV{GPU_ARCHS}" CACHE STRING "" FORCE)
+  endif()
+endif()
+
 # We build libllama itself from the submodule, and hand-pick the SMALL slice of
 # llama.cpp's `common/` needed for real jinja chat templating into our own
 # `pleiades_chat` static lib below -- rather than turning on LLAMA_BUILD_COMMON,
