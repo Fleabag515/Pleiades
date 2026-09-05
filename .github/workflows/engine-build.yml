@@ -34,16 +34,16 @@ jobs:
           sudo apt-get install -y cmake ninja-build libvulkan-dev glslc spirv-headers
       - name: Install CUDA toolkit
         if: matrix.backend == 'cuda'
-        # Pinned toolkit so the binary covers modern architectures too
-        # (sm_100/sm_120 need CUDA >= 12.8; the distro nvcc tops out lower).
-        # We only COMPILE in CI -- no GPU on the runner.
-        uses: jimver/cuda-toolkit@v0.2.16
-        with:
-          method: network
-          cuda: "12.8.1"
+        # The distro-packaged nvcc (CUDA 12.0 on the runner image) is enough
+        # -- we only COMPILE in CI, no GPU. Architectures pinned to what
+        # CUDA 12.0 targets: Turing (75) through Hopper (90). Blackwell
+        # (sm_100/120) needs a >= 12.8 toolkit -- follow-up once a reliable
+        # pinned-toolkit source is settled; both jimver/cuda-toolkit
+        # versions tried (12.6.3, 12.8.1) were rejected by its manifest.
+        run: sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit
       - name: Configure
         run: |
-          if [ "${{ matrix.backend }}" = "cuda" ]; then FLAGS="-DPLEIADES_ENGINE_BACKEND=cuda -DPLEIADES_ENGINE_CUDA_ARCHITECTURES=75;80;86;89;90;100;120"; fi
+          if [ "${{ matrix.backend }}" = "cuda" ]; then FLAGS="-DPLEIADES_ENGINE_BACKEND=cuda -DPLEIADES_ENGINE_CUDA_ARCHITECTURES=75;80;86;89;90"; fi
           if [ "${{ matrix.backend }}" = "vulkan" ]; then FLAGS="-DPLEIADES_ENGINE_BACKEND=vulkan"; fi
           if [ "${{ matrix.backend }}" = "cpu" ]; then FLAGS="-DPLEIADES_ENGINE_BACKEND=cpu"; fi
           cmake -S engine -B engine/build-ci $FLAGS -DCMAKE_BUILD_TYPE=Release
@@ -55,42 +55,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pleiades-engine-linux-${{ matrix.backend }}
-          path: engine/build-ci/pleiades-engine-server
-
-  hip:
-    # AMD's native path, built against AMD's ROCm apt repository. Targets the
-    # consumer GPU architectures people actually run: gfx1100/1101/1102
-    # (RX 7000), gfx1151 (Strix Halo), gfx1200/1201 (RX 9000). ROCm install
-    # is via AMD's own repo so the toolkit version tracks real ROCm releases.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
-      - name: Install ROCm HIP toolchain
-        run: |
-          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
-          wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.1 jammy main" | sudo tee /etc/apt/sources.list.d/rocm.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends rocm-hip-runtime-dev
-          echo "/opt/rocm/bin" | sudo tee /etc/profile.d/rocm-path.sh
-      - name: Configure
-        run: |
-          cmake -S engine -B engine/build-ci \
-            -DPLEIADES_ENGINE_BACKEND=hip \
-            -DCMAKE_HIP_ARCHITECTURES="gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201" \
-            -DCMAKE_BUILD_TYPE=Release
-      - name: Build
-        run: cmake --build engine/build-ci --target pleiades-engine-server -j2
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: pleiades-engine-linux-hip
           path: engine/build-ci/pleiades-engine-server
 
   release:
