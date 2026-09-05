@@ -146,7 +146,6 @@ pleiades/
 ├── .env.example                    # master key, model path, inference + searxng URLs
 ├── searxng-src/                    # SearXNG, fetched (pinned commit) + installed by install.sh, own venv, gitignored
 ├── install.sh                      # one-line installer (Linux/macOS): prereqs, GPU autodetect, full stack
-├── install.ps1                     # one-line installer (Windows): winget prereqs, CUDA autodetect, full stack
 ├── services/searxng/settings.yml   # SearXNG config WITH json format enabled
 └── pleiades/
     ├── __init__.py
@@ -249,8 +248,9 @@ Discord bot); GitHub (`gh repo create` — repo doesn't exist yet).
 ## 7. First-session checklist
 
 > **Automated path:** end users install via the one-liners in README —
-> `curl -fsSL .../install.sh | bash` (Linux/macOS) or `irm .../install.ps1 | iex`
-> (Windows). They auto-install Python/Node, auto-detect GPU for the
+> `curl -fsSL .../install.sh | bash` (Linux; Windows and macOS support was
+> dropped by owner decision 2026-09-05 — hardware breadth on Linux is the
+> focus). It auto-installs Python/Node, auto-detects GPU for the
 > `llama-cpp-python` build, clone, venv, install `pleiades[all]`, install Anamnesis,
 > fetch + install SearXNG (own venv, no Docker), fetch browsers (`camoufox fetch` +
 > `playwright install chromium`, one pass), generate `.env`, and start SearXNG. The

@@ -383,9 +383,10 @@ _ENGINE_ASSET_PREFIX = "pleiades-engine-"
 # Backend preference per platform: CUDA's native speed first where a build
 # exists, Vulkan's one-binary-for-all-vendors second, CPU last.
 _ENGINE_BACKEND_ORDER = {
-    "Linux": ["cuda", "vulkan", "cpu"],
-    "Windows": ["vulkan", "cpu"],
-    "Darwin": ["cpu"],  # no engine builds yet (macOS unstarted)
+    # Linux-only by scope decision (2026-09-05). Hardware breadth: CUDA for
+    # NVIDIA, HIP/ROCm for AMD, Vulkan as the universal fallback (NVIDIA, AMD,
+    # Intel), CPU everywhere.
+    "Linux": ["cuda", "hip", "vulkan", "cpu"],
 }
 
 

@@ -15,7 +15,6 @@
     "build": "npm run typecheck && electron-vite build && electron-builder --dir",
     "postinstall": "electron-builder install-app-deps",
     "dist:linux": "npm run typecheck && electron-vite build && electron-builder --linux",
-    "dist:win": "npm run typecheck && electron-vite build && electron-builder --win"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",

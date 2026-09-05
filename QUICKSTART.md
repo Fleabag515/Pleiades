@@ -8,7 +8,7 @@ project's venv:
 
 ```bash
 cd ~/Pleiades
-source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
+source .venv/bin/activate
 pleiades --help
 ```
 

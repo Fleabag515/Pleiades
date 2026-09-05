@@ -68,36 +68,29 @@ Installs everything — repo, virtualenv, the in-process inference engine (with
 (vendored, auto-supervised), the headed browser, a generated `.env`, SearXNG, and —
 on Linux — the **desktop app**, registered in your system's application menu.
 
-**Linux / macOS**
+**Linux**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.sh | bash
 ```
 
-**Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/Fleabag515/Pleiades/main/install.ps1 | iex
-```
-
-The installer auto-installs Python and Node where it can (apt/dnf/pacman/zypper,
-Homebrew, or winget), detects an NVIDIA/Apple GPU and builds `llama-cpp-python`
+The installer auto-installs Python and Node where it can (apt/dnf/pacman/zypper),
+detects an NVIDIA/AMD GPU and builds `llama-cpp-python`
 accordingly (falling back to CPU), fetches the native `llama-server` runtime, and
 fetches + installs SearXNG into its own venv (no Docker required). Options (pass
-after the pipe on Linux, e.g. `... | bash -s -- --gpu --dir ~/apps/Pleiades`; as
-parameters on Windows):
+after the pipe, e.g. `... | bash -s -- --gpu --dir ~/apps/Pleiades`):
 
 | Option (sh / ps1)              | Effect                                                      |
 |---------------------------------|-------------------------------------------------------------|
-| `--dir DIR` / `-Dir`            | Install location (default `~/Pleiades`)                     |
-| `--branch N` / `-Branch`        | Git branch (default `main`)                                  |
-| `--gpu` `--cpu` / `-Gpu`        | Force GPU or CPU build (default: auto-detect)                |
+| `--dir DIR`                     | Install location (default `~/Pleiades`)                      |
+| `--branch N`                    | Git branch (default `main`)                                  |
+| `--gpu` `--cpu`                 | Force GPU or CPU build (default: auto-detect)                |
 | `--core` / `-Core`              | Core only — skip browser, SearXNG, Discord, native runtime   |
 | `--no-browser` / `-NoBrowser`   | Skip browser automation (Camoufox + desktop panel's Playwright/Chromium) |
 | `--no-searxng` / `-NoSearxng`   | Skip SearXNG                                                 |
 | `--no-discord` / `-NoDiscord`   | Skip the Discord extra                                       |
 | `--no-native-runtime`           | Skip the native `llama-server` runtime install               |
-| `--no-desktop-app`              | Skip building/installing the desktop app (Linux)             |
+| `--no-desktop-app`              | Skip building/installing the desktop app                     |
 
 ### Manual install
 

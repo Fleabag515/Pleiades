@@ -137,6 +137,19 @@ memory blocks — needs Anamnesis-side fixed-size memory slots first, see the
 Phase-E insertion limit), ik_llama.cpp / vLLM cross-engine rows, CUDA-graph
 decode capture, expert prefetch + pinned-host uploads for MoE offload.
 
+## Scope decision (2026-09-05, owner): LINUX ONLY
+
+Windows and macOS support is dropped. Removed: the windows-latest CI matrix,
+the Windows engine build + release asset, install.ps1, the desktop dist:win
+script, and all install-doc advertising. Kept inert: runtime `os.name` code
+branches and install.sh's darwin paths (deleting them buys nothing and risks
+churn). The focus is HARDWARE BREADTH on Linux: CUDA (NVIDIA, sm_75→sm_120 via
+CUDA 12.8), HIP/ROCm (AMD consumer gfx1100/1101/1102/1151/1200/1201 — built in
+CI against AMD's ROCm 6.4.1 apt repo), Vulkan (universal fallback: NVIDIA, AMD,
+Intel), CPU. The release fetcher's preference order is cuda → hip → vulkan →
+cpu. install_engine_asset() previously shipped a windows-vulkan asset in
+v0.1.5; future releases will not.
+
 ## Phase 5 — Colibrì-style expert streaming (flagship only)
 
 When autofit finds no fitting placement: dense + KV + hot experts in VRAM,

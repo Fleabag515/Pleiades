@@ -11,7 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Linux-only by scope decision (2026-09-05): Windows and macOS are
+        # dropped; hardware breadth is the engine-build workflow's job.
+        os: [ubuntu-latest]
         python: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4

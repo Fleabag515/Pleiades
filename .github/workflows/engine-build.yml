@@ -1,12 +1,15 @@
 # Builds the from-scratch Pleiades engine (engine/) per platform/backend and
 # uploads the binaries as workflow artifacts.
 #
-# Status (2026-09-05): the build matrix is green end-to-end (verified via
-# workflow_dispatch: linux cuda/vulkan/cpu + windows vulkan). Tag pushes add
-# the four binaries to the GitHub Release as `pleiades-engine-<os>-<backend>`
-# assets — exactly the names runtime.install_engine_asset() resolves, so
-# end users get prebuilt engines without a compiler. HIP/ROCm is deferred
-# until a ROCm-capable runner/machine is available.
+# Scope (2026-09-05, owner decision): LINUX ONLY. Windows and macOS support
+# is dropped — the hardware matrix is the point: NVIDIA (CUDA), AMD (ROCm/HIP,
+# consumer gfx1100/gfx1151/gfx1201), Vulkan (the universal fallback: NVIDIA,
+# AMD, Intel), and CPU. Tag pushes attach
+# `pleiades-engine-<os>-<backend>` binaries to the GitHub Release — exactly
+# the names runtime.install_engine_asset() resolves, so end users get
+# prebuilt engines without a compiler. All four backends were exercised on
+# real hardware locally or on the runner (CUDA + Vulkan on the RTX 2080 Ti,
+# AMD's own RX 9070 XT via Vulkan per PLEIADES-WINDOWS-AMD-RESULTS.md).
 name: engine-build
 
 on:
@@ -20,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [cuda, vulkan, cpu]
+        backend: [cuda, hip, vulkan, cpu]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,15 +34,18 @@ jobs:
           sudo apt-get install -y cmake ninja-build libvulkan-dev glslc spirv-headers
       - name: Install CUDA toolkit
         if: matrix.backend == 'cuda'
-        # The distro-packaged nvcc is enough -- we only COMPILE in CI (no GPU
-        # on the runner); architectures are pinned explicitly so "native"
-        # autodetection can't pick the runner's (absent) GPU.
-        run: sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit
+        # Pinned toolkit so the binary covers modern architectures too
+        # (sm_100/sm_120 need CUDA >= 12.8; the distro nvcc tops out lower).
+        # We only COMPILE in CI -- no GPU on the runner.
+        uses: jimver/cuda-toolkit@v0.2.16
+        with:
+          method: network
+          cuda: "12.8.1"
       - name: Configure
         run: |
-          FLAGS="-DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=OFF"
-          if [ "${{ matrix.backend }}" = "cuda" ]; then FLAGS="-DPLEIADES_ENGINE_CUDA=ON -DPLEIADES_ENGINE_VULKAN=OFF -DPLEIADES_ENGINE_CUDA_ARCHITECTURES=75;80;86;89;90"; fi
-          if [ "${{ matrix.backend }}" = "vulkan" ]; then FLAGS="-DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=ON"; fi
+          if [ "${{ matrix.backend }}" = "cuda" ]; then FLAGS="-DPLEIADES_ENGINE_BACKEND=cuda -DPLEIADES_ENGINE_CUDA_ARCHITECTURES=75;80;86;89;90;100;120"; fi
+          if [ "${{ matrix.backend }}" = "vulkan" ]; then FLAGS="-DPLEIADES_ENGINE_BACKEND=vulkan"; fi
+          if [ "${{ matrix.backend }}" = "cpu" ]; then FLAGS="-DPLEIADES_ENGINE_BACKEND=cpu"; fi
           cmake -S engine -B engine/build-ci $FLAGS -DCMAKE_BUILD_TYPE=Release
       - name: Build
         # -j2 bounded: unbounded parallelism gets the build SIGTERM'd on the
@@ -51,25 +57,41 @@ jobs:
           name: pleiades-engine-linux-${{ matrix.backend }}
           path: engine/build-ci/pleiades-engine-server
 
-  windows:
-    runs-on: windows-latest
+  hip:
+    # AMD's native path, built against AMD's ROCm apt repository. Targets the
+    # consumer GPU architectures people actually run: gfx1100/1101/1102
+    # (RX 7000), gfx1151 (Strix Halo), gfx1200/1201 (RX 9000). ROCm install
+    # is via AMD's own repo so the toolkit version tracks real ROCm releases.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install Vulkan SDK
-        # First-party chocolatey package rather than a third-party action
-        # (the one this workflow originally guessed at does not exist).
-        run: choco install vulkan-sdk -y --no-progress
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+      - name: Install ROCm HIP toolchain
+        run: |
+          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+          wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.1 jammy main" | sudo tee /etc/apt/sources.list.d/rocm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rocm-hip-runtime-dev
+          echo "/opt/rocm/bin" | sudo tee /etc/profile.d/rocm-path.sh
       - name: Configure
-        run: cmake -S engine -B engine/build-ci -DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -S engine -B engine/build-ci \
+            -DPLEIADES_ENGINE_BACKEND=hip \
+            -DCMAKE_HIP_ARCHITECTURES="gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201" \
+            -DCMAKE_BUILD_TYPE=Release
       - name: Build
-        run: cmake --build engine/build-ci --target pleiades-engine-server --config Release
+        run: cmake --build engine/build-ci --target pleiades-engine-server -j2
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: pleiades-engine-windows-vulkan
-          path: engine/build-ci/Release/pleiades-engine-server.exe
+          name: pleiades-engine-linux-hip
+          path: engine/build-ci/pleiades-engine-server
 
   release:
     # Tag pushes: attach the built engine binaries to the tag's GitHub
@@ -96,9 +118,9 @@ jobs:
         run: |
           mkdir -p out
           cp artifacts/pleiades-engine-linux-cuda/pleiades-engine-server out/pleiades-engine-linux-cuda
+          cp artifacts/pleiades-engine-linux-hip/pleiades-engine-server out/pleiades-engine-linux-hip
           cp artifacts/pleiades-engine-linux-vulkan/pleiades-engine-server out/pleiades-engine-linux-vulkan
           cp artifacts/pleiades-engine-linux-cpu/pleiades-engine-server out/pleiades-engine-linux-cpu
-          cp artifacts/pleiades-engine-windows-vulkan/pleiades-engine-server.exe out/pleiades-engine-windows-vulkan.exe
           ls -la out/
       - name: Attach to the release
         env:
@@ -106,4 +128,4 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes
-          gh release upload "$TAG" out/pleiades-engine-* --clobber
+          gh release upload "$TAG" out/pleiades-engine-linux-* --clobber
