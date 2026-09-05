@@ -367,3 +367,93 @@ def status() -> dict:
         except (OSError, subprocess.SubprocessError):
             out["version"] = ""
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Phase E delivery: prebuilt engine binaries from GitHub Releases.
+#
+# engine-build.yml uploads `pleiades-engine-<os>-<backend>` artifacts; once the
+# project's first release attaches them, this fetches the right one for this
+# machine so end users never need a compiler. Until a release exists (or on
+# any failure) this returns None and `pleiades runtime build-engine` falls
+# back to a local compile — the delivery path that works today.
+
+_ENGINE_ASSET_PREFIX = "pleiades-engine-"
+
+# Backend preference per platform: CUDA's native speed first where a build
+# exists, Vulkan's one-binary-for-all-vendors second, CPU last.
+_ENGINE_BACKEND_ORDER = {
+    "Linux": ["cuda", "vulkan", "cpu"],
+    "Windows": ["vulkan", "cpu"],
+    "Darwin": ["cpu"],  # no engine builds yet (macOS unstarted)
+}
+
+
+def install_engine_asset(log: Optional[Callable[[str], None]] = None) -> Optional[str]:
+    """Download the best prebuilt `pleiades-engine-server` from GitHub Releases.
+
+    Matches release assets named `pleiades-engine-<os>-<backend>` against this
+    platform and backend preference order. Returns the installed binary path,
+    or None when no release carries a matching asset (also None on any network
+    or extraction failure — never raises; the caller falls back to compiling).
+    """
+    import httpx
+
+    def _say(msg: str) -> None:
+        if log:
+            log(msg)
+
+    system = platform.system()
+    backends = _ENGINE_BACKEND_ORDER.get(system)
+    if not backends:
+        return None
+    os_name = system.lower()  # linux | windows | darwin
+    exe = "pleiades-engine-server.exe" if system == "Windows" else "pleiades-engine-server"
+    suffix = ".exe" if system == "Windows" else ""
+
+    try:
+        r = httpx.get("https://api.github.com/repos/Fleabag515/Pleiades/releases/latest",
+                      timeout=20.0, headers={"Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            _say(f"no reachable GitHub release (HTTP {r.status_code}) — will compile locally")
+            return None
+        assets = r.json().get("assets") or []
+    except Exception as e:
+        _say(f"GitHub release lookup failed ({e}) — will compile locally")
+        return None
+
+    by_name = {a.get("name", ""): a for a in assets}
+    chosen = None
+    for backend in backends:
+        candidate = f"{_ENGINE_ASSET_PREFIX}{os_name}-{backend}{suffix}"
+        if candidate in by_name:
+            chosen = (candidate, by_name[candidate])
+            break
+    if not chosen:
+        _say("no engine asset for this platform in the latest release — will compile locally")
+        return None
+    name, asset = chosen
+    url = asset.get("browser_download_url")
+    if not url:
+        return None
+
+    out_dir = config.PLEIADES_HOME / "engine"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dest = out_dir / exe
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    try:
+        _say(f"downloading engine artifact {name} ...")
+        with httpx.stream("GET", url, timeout=120.0, follow_redirects=True) as stream:
+            stream.raise_for_status()
+            with open(tmp, "wb") as fh:
+                for chunk in stream.iter_bytes(1 << 20):
+                    fh.write(chunk)
+        tmp.replace(dest)
+        if system != "Windows":
+            dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    except Exception as e:
+        _say(f"engine download failed ({e}) — will compile locally")
+        tmp.unlink(missing_ok=True)
+        return None
+    _say(f"engine installed from release: {dest}")
+    return str(dest)

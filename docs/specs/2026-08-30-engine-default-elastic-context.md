@@ -112,12 +112,30 @@ backend + free VRAM. CI builds per-platform binaries; `pleiades runtime install`
 fetches them. AMD verified on Ion's RX 9070 XT (standing rules). Then flip the
 default: engine (eligible models) → llama-server → python elastic.
 
-## Phase 4 — efficiency program
+## Phase 4 — efficiency program — harness LANDED 2026-09-05; optimization program open
 
-Bench harness (extend bench_ladder): TTFT/prefill/decode/VRAM-at-ctx/KV-reuse
-savings on Anamnesis-realistic prompts vs llama-server, ollama, ik_llama.cpp,
-vLLM. Optimizations with before/after numbers: expert prefetch + pinned-host
-uploads, CUDA graphs, thread/ub calibration, per-slot radix prefix cache.
+`engine/bench/compare.sh`: boots the engines that can serve a GGUF on this
+machine with an identical model/placement and reports wall-clock cold prefill
+(1177-token prompt, 1 output) and decode (128 outputs) — the two numbers that
+decide perceived single-user latency. Optional engines (ollama) are skipped
+when absent. Measured on this box (Qwen2.5-1.5B-Instruct Q4_K_M):
+
+| metric | pleiades engine | llama-server (same pin) | notes |
+|---|---|---|---|
+| GPU prefill 1177 tok | 0.123–0.137 s | 0.127 s | VRAM-free window, ngl 999 |
+| GPU decode 128 tok | 0.055–0.058 s | 0.071 s | engine ~20% faster |
+| CPU prefill 1177 tok | 0.0872 s | 0.0922 s | ngl 0, ctx 2048 |
+| CPU decode 128 tok | 0.6516 s | 0.7034 s | engine ~7% faster |
+
+(The engine links the same libllama kernels, so parity is the floor; the
+deltas come from orchestration — thread defaults, cache policies. The GPU
+rows were captured before a co-located training job claimed the VRAM; the
+script re-runs both regimes.)
+
+Still open under Phase 4: Anamnesis-realistic KV-reuse metrics (rewritten
+memory blocks — needs Anamnesis-side fixed-size memory slots first, see the
+Phase-E insertion limit), ik_llama.cpp / vLLM cross-engine rows, CUDA-graph
+decode capture, expert prefetch + pinned-host uploads for MoE offload.
 
 ## Phase 5 — Colibrì-style expert streaming (flagship only)
 

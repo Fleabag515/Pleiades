@@ -666,6 +666,17 @@ def runtime_build_engine() -> None:
     else:
         backend_flags = ["-DPLEIADES_ENGINE_CUDA=OFF"]
 
+    # Prefer a prebuilt release artifact when one exists (no compiler needed);
+    # compile locally otherwise. Until the project's first GitHub Release this
+    # always takes the local path.
+    from . import runtime as rt
+    fetched = rt.install_engine_asset(log=lambda m: console.print(f"[dim]{m}[/dim]"))
+    if fetched:
+        console.print(f"[green]Pleiades engine installed:[/green] {fetched}")
+        console.print("Models now launch through the Pleiades engine by default. "
+                      "Restart any running models to pick it up.")
+        return
+
     console.print(f"[dim]Configuring engine ({backend}) in {build_dir} ...[/dim]")
     for cmd2 in (["cmake", "-S", str(src), "-B", str(build_dir), *backend_flags],
                  ["cmake", "--build", str(build_dir), "--target", "pleiades-engine-server",
