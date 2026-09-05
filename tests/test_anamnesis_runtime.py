@@ -133,7 +133,9 @@ def test_node_bin_prefers_bundled_sibling_over_path(tmp_path, monkeypatch):
     anamnesis_copy.mkdir(parents=True)
     bundled_node_dir = resources / "anamnesis-node-runtime"
     bundled_node_dir.mkdir(parents=True)
-    bundled_node = bundled_node_dir / "node"
+    # Windows packaged builds carry node.exe (see _node_bin()'s own
+    # os.name-conditional sibling lookup).
+    bundled_node = bundled_node_dir / ("node.exe" if os.name != "posix" else "node")
     bundled_node.write_text("#!/bin/sh\necho fake\n")
 
     monkeypatch.setenv("PLEIADES_ANAMNESIS_DIR", str(anamnesis_copy))

@@ -29,7 +29,10 @@ def test_wait_actually_waits_measured_duration():
     out = wait(0.05)
     elapsed = time.monotonic() - start
     assert "Waited" in out
-    assert elapsed >= 0.05
+    # Sleep granularity is not exact everywhere (measured 0.047 on a Windows
+    # runner for a 0.05s request) -- allow a 10% floor instead of >= the
+    # requested duration verbatim.
+    assert elapsed >= 0.045
 
 
 def test_wait_rejects_absurd_request_with_clear_cap():

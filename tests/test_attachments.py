@@ -69,7 +69,9 @@ def test_save_attachment_sanitizes_traversal_filename_and_stays_inside_cache_dir
     saved = Path(info["path"])
     assert saved.parent == config.profile_dir(chat["character"]) / "chat-cache" / chat["id"]
     assert saved.name == "passwd"
-    assert not (Path("/etc/passwd").read_bytes() == b"nope")  # real /etc/passwd untouched
+    real_passwd = Path("/etc/passwd")
+    if real_passwd.exists():  # the path only exists on POSIX
+        assert real_passwd.read_bytes() != b"nope"  # real /etc/passwd untouched
 
 
 def test_same_filename_twice_in_same_chat_does_not_collide():

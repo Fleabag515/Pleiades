@@ -1,6 +1,9 @@
 """pleiades.hardware: GGUF parsing, placement planning, quant selection."""
 
 import struct
+import sys
+
+import pytest
 
 from pleiades import hardware
 from pleiades.hardware import (GPU, GGUFMeta, Hardware, group_split_ggufs,
@@ -219,6 +222,8 @@ def test_parse_win_intel_garbage_and_zero_vram():
     assert hardware._parse_win_intel('[{"name":"x","vram":0}]') == []
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="_detect_intel() reads Linux sysfs; the Windows runner has no /sys")
 def test_detect_intel_linux_sysfs(tmp_path, monkeypatch):
     # Fake /sys/class/drm/card0/device/{vendor,mem_info_vram_total,label}
     card = tmp_path / "card0" / "device"
@@ -237,6 +242,8 @@ def test_detect_intel_linux_sysfs(tmp_path, monkeypatch):
     assert gpus[0].vram_free == 14 * GiB
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="_detect_intel() reads Linux sysfs; the Windows runner has no /sys")
 def test_detect_intel_linux_unreadable_vram_still_registers_gpu(tmp_path, monkeypatch):
     # No mem_info_vram_total/vram/total sysfs file at all (the real-world
     # case on most i915/Xe kernels today) -- must still report the GPU
