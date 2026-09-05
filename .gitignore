@@ -62,3 +62,4 @@ third_party/llama.cpp/build-sw/
 # install_searxng()). Own venv lives inside it too.
 searxng-src/
 HANDOFF.md
+engine/build-vulkan/
