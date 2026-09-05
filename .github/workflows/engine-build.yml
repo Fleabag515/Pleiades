@@ -33,18 +33,20 @@ jobs:
           sudo apt-get install -y cmake ninja-build libvulkan-dev glslc spirv-headers
       - name: Install CUDA toolkit
         if: matrix.backend == 'cuda'
-        uses: jimver/cuda-toolkit@v0.2.16
-        with:
-          method: network
-          cuda: "12.6.3"
+        # The distro-packaged nvcc is enough -- we only COMPILE in CI (no GPU
+        # on the runner); architectures are pinned explicitly so "native"
+        # autodetection can't pick the runner's (absent) GPU.
+        run: sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit
       - name: Configure
         run: |
           FLAGS="-DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=OFF"
-          if [ "${{ matrix.backend }}" = "cuda" ]; then FLAGS="-DPLEIADES_ENGINE_CUDA=ON -DPLEIADES_ENGINE_VULKAN=OFF"; fi
+          if [ "${{ matrix.backend }}" = "cuda" ]; then FLAGS="-DPLEIADES_ENGINE_CUDA=ON -DPLEIADES_ENGINE_VULKAN=OFF -DPLEIADES_ENGINE_CUDA_ARCHITECTURES=75;80;86;89;90"; fi
           if [ "${{ matrix.backend }}" = "vulkan" ]; then FLAGS="-DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=ON"; fi
           cmake -S engine -B engine/build-ci $FLAGS -DCMAKE_BUILD_TYPE=Release
       - name: Build
-        run: cmake --build engine/build-ci --target pleiades-engine-server -j
+        # -j2 bounded: unbounded parallelism gets the build SIGTERM'd on the
+        # 2-core runner (observed: exit 143 on the first dispatch run).
+        run: cmake --build engine/build-ci --target pleiades-engine-server -j2
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
@@ -58,9 +60,9 @@ jobs:
         with:
           submodules: recursive
       - name: Install Vulkan SDK
-        uses: humble-desperado/install-vulkan-sdk@v1.1.1
-        with:
-          version: 1.3.296.0
+        # First-party chocolatey package rather than a third-party action
+        # (the one this workflow originally guessed at does not exist).
+        run: choco install vulkan-sdk -y --no-progress
       - name: Configure
         run: cmake -S engine -B engine/build-ci -DPLEIADES_ENGINE_CUDA=OFF -DPLEIADES_ENGINE_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
       - name: Build
