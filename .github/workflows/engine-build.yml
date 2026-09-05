@@ -81,6 +81,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh resolves the repo from the checkout -- without this,
+      # `gh release create` dies with "not a git repository" (observed on the
+      # v0.1.5 first run; the binaries themselves had built fine).
+      - uses: actions/checkout@v4
       - name: Download all engine artifacts
         uses: actions/download-artifact@v4
         with:
