@@ -1,14 +1,12 @@
 # Builds the from-scratch Pleiades engine (engine/) per platform/backend and
 # uploads the binaries as workflow artifacts.
 #
-# Status (2026-08-30): artifacts are NOT yet wired into a GitHub Release (the
-# project has zero releases), so `pleiades runtime install` does not fetch
-# them yet — `pleiades runtime build-engine` (local compile) is the delivery
-# path until the first release is cut. HIP/ROCm is deferred until a
-# ROCm-capable runner/machine is available (no AMD build verified anywhere
-# yet). The Linux CUDA and Linux Vulkan builds were exercised on real
-# hardware locally (RTX 2080 Ti); the Windows job has not had a run yet —
-# expect first-run churn.
+# Status (2026-09-05): the build matrix is green end-to-end (verified via
+# workflow_dispatch: linux cuda/vulkan/cpu + windows vulkan). Tag pushes add
+# the four binaries to the GitHub Release as `pleiades-engine-<os>-<backend>`
+# assets — exactly the names runtime.install_engine_asset() resolves, so
+# end users get prebuilt engines without a compiler. HIP/ROCm is deferred
+# until a ROCm-capable runner/machine is available.
 name: engine-build
 
 on:
@@ -72,3 +70,36 @@ jobs:
         with:
           name: pleiades-engine-windows-vulkan
           path: engine/build-ci/Release/pleiades-engine-server.exe
+
+  release:
+    # Tag pushes: attach the built engine binaries to the tag's GitHub
+    # Release (created if absent) as the assets install_engine_asset()
+    # fetches. Release creation needs write permission.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    needs: [linux, windows]
+    permissions:
+      contents: write
+    steps:
+      - name: Download all engine artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          # NO merge-multiple: all three Linux binaries share the filename
+          # `pleiades-engine-server` and would overwrite each other — each
+          # artifact lands in its own subdirectory named after the artifact.
+      - name: Rename binaries to their asset names
+        run: |
+          mkdir -p out
+          cp artifacts/pleiades-engine-linux-cuda/pleiades-engine-server out/pleiades-engine-linux-cuda
+          cp artifacts/pleiades-engine-linux-vulkan/pleiades-engine-server out/pleiades-engine-linux-vulkan
+          cp artifacts/pleiades-engine-linux-cpu/pleiades-engine-server out/pleiades-engine-linux-cpu
+          cp artifacts/pleiades-engine-windows-vulkan/pleiades-engine-server.exe out/pleiades-engine-windows-vulkan.exe
+          ls -la out/
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes
+          gh release upload "$TAG" out/pleiades-engine-* --clobber
